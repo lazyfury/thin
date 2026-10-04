@@ -190,6 +190,8 @@ struct App {
     clean_rows: Vec<TreeRow>,
     /// 清理页是否显示「需 sudo / 受系统保护」的项（默认隐藏，键 m 切换）
     show_manual: bool,
+    /// 清理页是否显示「受 thin protect 保护」的项（默认隐藏，键 b 切换）
+    show_protected: bool,
     apps: Load<Vec<AppInfo>>,
     history: Load<Vec<history::Record>>,
     browse: Option<BrowseState>,
@@ -220,6 +222,7 @@ impl App {
             tree_view: true,
             clean_rows: Vec::new(),
             show_manual: false,
+            show_protected: false,
             apps: Load::Idle,
             history: Load::Idle,
             browse: None,
@@ -258,12 +261,17 @@ impl App {
             0 if self.clean.is_idle() => {
                 let min = self.min;
                 let show_manual = self.show_manual;
+                let show_protected = self.show_protected;
                 self.clean = Load::spawn(move |p| {
                     let catalog = rules::load()?;
                     let mut items = scan::scan_progress(&catalog, true, min, p);
                     if !show_manual {
                         // 与 CLI 默认一致：需 sudo / 受系统保护的项不展示、也不可勾选。
                         items.retain(|it| !scan::is_manual(it));
+                    }
+                    if !show_protected {
+                        // 受 thin protect 保护的项默认也隐藏（键 b 显示）。
+                        items.retain(|it| !it.protected);
                     }
                     Ok(items)
                 });
@@ -546,6 +554,19 @@ impl App {
             self.warn("已显示需 sudo / 受系统保护的项：thin 不会清理它们");
         } else {
             self.info("已隐藏需 sudo / 受系统保护的项");
+        }
+    }
+
+    /// 切换清理页是否显示「受 thin protect 保护」的项（默认隐藏，改后重扫一次）。
+    fn toggle_protected(&mut self) {
+        self.show_protected = !self.show_protected;
+        self.clean = Load::Idle;
+        self.selected.clear();
+        self.ensure(CLEAN_TAB);
+        if self.show_protected {
+            self.warn("已显示受 thin protect 保护的项：thin 不会清理它们");
+        } else {
+            self.info("已隐藏受 thin protect 保护的项");
         }
     }
 
@@ -862,6 +883,7 @@ impl App {
             KeyCode::Char('p') if self.tab == CLEAN_TAB => self.protect_current(),
             KeyCode::Char('P') if self.tab == CLEAN_TAB => self.unprotect_current(),
             KeyCode::Char('m') if self.tab == CLEAN_TAB => self.toggle_manual(),
+            KeyCode::Char('b') if self.tab == CLEAN_TAB => self.toggle_protected(),
             KeyCode::Char('t') if self.tab == CLEAN_TAB => self.toggle_tree_view(),
             KeyCode::Char('c') if self.tab == CLEAN_TAB => {
                 if self.selected_count() > 0 {
@@ -988,7 +1010,7 @@ fn render_header(frame: &mut Frame, area: Rect) {
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  M6 · 定向清理"),
+        Span::raw("  Yes, yet another macOS cleaning tool."),
     ]);
     let line2 = if let Some(v) = disk {
         let pct = v.used_pct();
@@ -1195,6 +1217,10 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
 
     match &app.clean {
         Load::Ready(items) => {
+            if items.is_empty() {
+                render_clean_empty(frame, app, &parts);
+                return;
+            }
             let list_items: Vec<ListItem> = if app.tree_view {
                 app.clean_rows
                     .iter()
@@ -1451,6 +1477,49 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// 清理页空状态：真的没得清（或都被过滤隐藏）时给一句鼓励 + 显示开关提示。
+fn render_clean_empty(frame: &mut Frame, app: &App, parts: &[Rect]) {
+    let mut lines = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "✨ 您的电脑很干净！",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "没有已知的可清理项。",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ];
+    let mut hint = Vec::new();
+    if !app.show_manual {
+        hint.push("m 显示需 sudo / 受系统保护项");
+    }
+    if !app.show_protected {
+        hint.push("b 显示 protect 保护项");
+    }
+    if !hint.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            format!("（{}）", hint.join(" · ")),
+            Style::default().fg(Color::DarkGray),
+        )));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .alignment(Alignment::Center)
+            .block(Block::default().borders(Borders::ALL).title("清理项")),
+        parts[0],
+    );
+    frame.render_widget(
+        Paragraph::new(vec![Line::from("（无）")])
+            .block(Block::default().borders(Borders::ALL).title("详情")),
+        parts[1],
+    );
+}
+
 /// 应用
 fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
     let home = home_prefix();
@@ -1558,14 +1627,14 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.help {
         (
-            " 1-9/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · t 树形 · p 保护 · P 解除 · m 需sudo · r 重载 · c 清理 · Esc 关闭提示/退出 · q 退出"
+            " 1-9/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · t 树形 · p 保护 · P 解除 · m 需sudo · b 保护项 · r 重载 · c 清理 · Esc 关闭提示/退出 · q 退出"
                 .to_string(),
             toast::bar_style(),
         )
     } else {
         let hint = match app.tab {
             0 => {
-                " Tab 切页 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · t 树形 · p 保护 · P 解除 · m 需sudo · c 清理 · r 重载 · ? 帮助 · q 退出"
+                " Tab 切页 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · t 树形 · p 保护 · P 解除 · m 需sudo · b 保护项 · c 清理 · r 重载 · ? 帮助 · q 退出"
             }
             APPS_TAB => " ↑↓/jk 移动 · u 卸载 · r 重载 · ? 帮助 · q 退出",
             HISTORY_TAB => " ↑↓/jk 移动 · c 回填隔离区遗漏记录 · r 重载 · ? 帮助 · q 退出",
@@ -1795,6 +1864,25 @@ mod tests {
             !first.contains("q 退出"),
             "窄宽度下提示应换行到第二行: {first:?}"
         );
+    }
+
+    #[test]
+    fn clean_empty_state_is_friendly() {
+        let mut app = test_app();
+        app.tab = CLEAN_TAB;
+        app.clean = Load::Ready(vec![]);
+        let text = render(&mut app, 100, 30);
+        assert!(text.contains("您的电脑很干净"), "{text}");
+        // 默认隐藏，提示如何显示被隐藏的项
+        assert!(text.contains("m 显示需 sudo"), "{text}");
+        assert!(text.contains("b 显示 protect"), "{text}");
+
+        // 已开启显示时，不再提示对应开关
+        app.show_manual = true;
+        app.show_protected = true;
+        let text = render(&mut app, 100, 30);
+        assert!(!text.contains("m 显示需 sudo"), "{text}");
+        assert!(!text.contains("b 显示 protect"), "{text}");
     }
 
     #[test]
