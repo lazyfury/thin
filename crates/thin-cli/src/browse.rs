@@ -24,10 +24,14 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 use thin_core::catalog::Safety;
+use thin_core::clean;
 use thin_core::fmt::human;
 use thin_core::fsutil::{self, EntryKind};
+use thin_core::model::{Category, CleanItem, Explain, Risk};
 use thin_core::progress::{Progress, ProgressSnapshot};
 use thin_core::recognize::{Recognition, Recognizer, Source};
+
+use crate::treemap;
 
 #[derive(clap::Args)]
 pub struct BrowseArgs {
@@ -61,6 +65,10 @@ struct App {
     loader: Option<Loader>,
     generation: u64,
     show_hidden: bool,
+    show_treemap: bool,
+    filter: String,
+    filtering: bool,
+    confirm: bool,
     help: bool,
     quit: bool,
     tick: usize,
@@ -79,6 +87,10 @@ impl App {
             loader: None,
             generation: 0,
             show_hidden: false,
+            show_treemap: false,
+            filter: String::new(),
+            filtering: false,
+            confirm: false,
             help: false,
             quit: false,
             tick: 0,
@@ -138,11 +150,14 @@ impl App {
     }
 
     fn rebuild_visible(&mut self) {
+        let needle = self.filter.to_lowercase();
+        let show_hidden = self.show_hidden;
         self.visible = self
             .rows
             .iter()
             .enumerate()
-            .filter(|(_, r)| self.show_hidden || !is_hidden(&r.child.path))
+            .filter(|(_, r)| show_hidden || !is_hidden(&r.child.path))
+            .filter(|(_, r)| needle.is_empty() || row_matches(r, &needle))
             .map(|(i, _)| i)
             .collect();
         if self.selected >= self.visible.len() {
@@ -195,7 +210,83 @@ impl App {
         self.load();
     }
 
+    /// 把当前项移入隔离区（复用 clean 安全门）
+    fn clean_current(&mut self) {
+        let Some(row) = self.current().cloned() else {
+            return;
+        };
+        let rec = row.rec;
+        let item = CleanItem {
+            rule_id: rec.rule_id.clone().unwrap_or_else(|| "browse".into()),
+            name: rec.title.clone(),
+            path: row.child.path.clone(),
+            category: rec.category.unwrap_or(Category::Other),
+            risk: rec.risk.unwrap_or(Risk::Confirm),
+            regenerable: rec.safety == Safety::Regenerable,
+            sudo: false,
+            size: row.child.size,
+            reclaim: String::new(),
+            explain: rec.explain.clone().unwrap_or(Explain {
+                what: rec.note.clone(),
+                cost: String::new(),
+                recover: String::new(),
+            }),
+            protected: rec.protected,
+        };
+        match clean::quarantine(&[item], false) {
+            Ok(journal) if journal.entries.is_empty() => {
+                let reason = journal
+                    .skipped
+                    .first()
+                    .map(|s| s.reason.clone())
+                    .unwrap_or_default();
+                self.status = Some(format!("未清理：{reason}"));
+            }
+            Ok(journal) => {
+                self.status = Some(format!(
+                    "已移入隔离区（thin quarantine restore {}）",
+                    journal.session
+                ));
+                let dir = self.cwd().to_path_buf();
+                self.cache.remove(&dir);
+                self.load();
+            }
+            Err(e) => self.status = Some(format!("清理失败: {e:#}")),
+        }
+    }
+
     fn on_key(&mut self, code: KeyCode) {
+        if self.confirm {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    self.confirm = false;
+                    self.clean_current();
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.confirm = false,
+                _ => {}
+            }
+            return;
+        }
+        if self.filtering {
+            match code {
+                KeyCode::Enter => self.filtering = false,
+                KeyCode::Esc => {
+                    self.filter.clear();
+                    self.filtering = false;
+                    self.rebuild_visible();
+                }
+                KeyCode::Backspace => {
+                    self.filter.pop();
+                    self.rebuild_visible();
+                }
+                KeyCode::Char(c) => {
+                    self.filter.push(c);
+                    self.rebuild_visible();
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.help && !matches!(code, KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q')) {
             self.help = false;
             return;
@@ -226,6 +317,17 @@ impl App {
             KeyCode::Char('.') => {
                 self.show_hidden = !self.show_hidden;
                 self.rebuild_visible();
+            }
+            KeyCode::Char('/') => self.filtering = true,
+            KeyCode::Char('t') => self.show_treemap = !self.show_treemap,
+            KeyCode::Char('c') => {
+                if let Some(row) = self.current() {
+                    if row.rec.cleanable && !row.rec.protected {
+                        self.confirm = true;
+                    } else {
+                        self.status = Some("该项不可清理（未被规则命中或受保护）".into());
+                    }
+                }
             }
             KeyCode::Char('?') => self.help = !self.help,
             _ => {}
@@ -266,6 +368,7 @@ pub fn run(args: BrowseArgs) -> Result<()> {
         // 非 TTY：退化为只读一层列表
         return crate::ls::run(crate::ls::LsArgs {
             path: args.path,
+            depth: 1,
             all: false,
             long: true,
             json: false,
@@ -327,6 +430,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
     if app.help {
         render_help(frame, frame.area());
     }
+    if app.confirm {
+        render_confirm(frame, app);
+    }
 }
 
 fn render_header(frame: &mut Frame, app: &App, area: Rect) {
@@ -360,12 +466,48 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     if let Some(loader) = &app.loader {
-        let title = format!("{}", app.cwd().display());
+        let title = app.cwd().display().to_string();
         render_loading(frame, chunks[0], Some(&loader.progress), app.tick, &title);
     } else {
         render_list(frame, app, chunks[0]);
     }
-    render_detail(frame, app, chunks[1]);
+    if app.show_treemap {
+        render_treemap(frame, app, chunks[1]);
+    } else {
+        render_detail(frame, app, chunks[1]);
+    }
+}
+
+/// 当前层占用图（按体积切分矩形）
+fn render_treemap(frame: &mut Frame, app: &App, area: Rect) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("占用图 (t 切换)");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows: Vec<&Row> = app.visible.iter().map(|&i| &app.rows[i]).collect();
+    if rows.is_empty() {
+        return;
+    }
+    let values: Vec<u64> = rows.iter().map(|r| r.child.size.max(1)).collect();
+    for (rect, idx) in treemap::layout(inner, &values) {
+        let row = rows[idx];
+        let color = status_color(&row.rec);
+        frame.render_widget(Block::default().style(Style::default().bg(color)), rect);
+        if rect.width >= 6 && rect.height >= 1 {
+            let name = row
+                .child
+                .path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            frame.render_widget(
+                Paragraph::new(truncate(&name, rect.width.saturating_sub(1) as usize))
+                    .style(Style::default().fg(Color::Black)),
+                rect,
+            );
+        }
+    }
 }
 
 fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
@@ -496,12 +638,17 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
-    let text = if let Some(s) = &app.status {
+    let text = if app.confirm {
+        "移入隔离区？ y 确认 / n 取消".into()
+    } else if app.filtering {
+        format!("过滤: {}▏  Enter 确认 · Esc 清除", app.filter)
+    } else if let Some(s) = &app.status {
         s.clone()
     } else if app.loader.is_some() {
         "加载中…  Esc 取消".into()
     } else {
-        " ↑↓ 移动 · Enter 进入 · Backspace 上级 · r 重载 · . 隐藏文件 · ? 帮助 · q 退出".into()
+        " ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · t 占用图 · c 清理 · r 重载 · . 隐藏 · ? 帮助 · q 退出"
+            .into()
     };
     frame.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
@@ -547,6 +694,38 @@ fn render_loading(
     }
 }
 
+fn render_confirm(frame: &mut Frame, app: &App) {
+    let Some(row) = app.current() else {
+        return;
+    };
+    let a = centered_rect(64, 25, frame.area());
+    frame.render_widget(Clear, a);
+    let text = vec![
+        Line::from(Span::styled(
+            "移入隔离区？",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(row.child.path.display().to_string()),
+        Line::from(format!(
+            "用途: {}  大小: {}",
+            row.rec.title,
+            human(row.child.size)
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "y 确认   n / Esc 取消",
+            Style::default().fg(Color::Yellow),
+        )),
+    ];
+    frame.render_widget(
+        Paragraph::new(text)
+            .wrap(Wrap { trim: true })
+            .block(Block::default().borders(Borders::ALL)),
+        a,
+    );
+}
+
 fn render_help(frame: &mut Frame, area: Rect) {
     let a = centered_rect(64, 50, area);
     frame.render_widget(Clear, a);
@@ -560,13 +739,16 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::from("  Enter / →    进入目录"),
         Line::from("  Backspace / ← 返回上级"),
         Line::from("  g / G        跳到顶部 / 底部"),
+        Line::from("  /            过滤（按名称/用途）"),
+        Line::from("  t            占用图切换"),
+        Line::from("  c            把当前可清理项移入隔离区（需确认）"),
         Line::from("  r            重新计算当前目录"),
         Line::from("  .            显示/隐藏 . 开头项"),
         Line::from("  Esc          取消加载 / 退出"),
         Line::from("  q            退出"),
         Line::from(""),
         Line::from(Span::styled(
-            "只读浏览：不会移动或删除任何文件。",
+            "浏览只读；只有显式按 c 并确认才会移入隔离区（可恢复）。",
             Style::default().fg(Color::DarkGray),
         )),
     ];
@@ -602,6 +784,17 @@ fn is_hidden(path: &Path) -> bool {
         .and_then(|n| n.to_str())
         .map(|n| n.starts_with('.'))
         .unwrap_or(false)
+}
+
+/// 过滤匹配：名称或用途标题包含关键字（均已小写）
+fn row_matches(r: &Row, needle: &str) -> bool {
+    let name = r
+        .child
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    name.contains(needle) || r.rec.title.to_lowercase().contains(needle)
 }
 
 fn size_cell(child: &fsutil::ChildEntry) -> String {

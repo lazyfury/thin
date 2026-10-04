@@ -108,9 +108,10 @@ thin discover --json              # 机器可读
 # 浏览与学习：给目录标注用途（这是什么 / 能不能删）
 thin ls /                         # 根目录：每个 Unix 风格目录的用途
 thin ls ~/Library -l              # -l 显示说明与参考(如 man hier)
+thin ls /private --depth 2        # 递归两层
 thin ls /System/Volumes --json    # 机器可读
 thin browse                       # 交互式浏览：进入目录才算大小，逐步下钻
-thin browse /System/Volumes       # 指定起点
+thin browse /System/Volumes       # 指定起点（↑↓ 移动 · Enter 进入 · / 过滤 · t 占用图 · c 清理）
 
 thin                              # 无参数：进入交互式 TUI
 thin tui                          # 显式进入 TUI
