@@ -16,7 +16,7 @@ thin discover [ROOT] [--json]  # 找出「未被规则覆盖」的大目录
 thin top [ROOT]                # 某目录下最大子项
 thin ls [PATH] [--depth N] [--long] [--all] [--json]  # 浏览并标注用途（学习向，只读）
 thin rules [list|path]         # 规则列表 / 用户规则文件路径
-thin rules add ...             # 新增规则（agent 入口，--dir 写 rules.d/<id>.json）
+thin rules add ...             # 新增规则（agent 入口，统一写入 rules.d/<id>.json）
 thin rules remove <id>         # 删除用户规则
 thin rules export [--new]      # 导出用户规则，便于并入内置 default.json
 thin clean [--apply] [--json] [--preset P] [--root DIR] [--quarantine]  # 清理（默认 dry-run；默认入系统废纸篓，--quarantine 入隔离区）
@@ -131,9 +131,11 @@ echo '{
 }
 ```
 
-写入位置（加载顺序：内置 → `rules.json` → `rules.d/*.json` 按文件名，同名 id 后者覆盖）：
-- `~/.thin/rules.json`（`thin rules add` 默认）
-- `~/.thin/rules.d/*.json`（每个文件可为单条规则或规则数组；`thin rules add --dir` 写 `rules.d/<id>.json`）
+写入位置（**统一**：`thin rules add` 只写 `rules.d/<id>.json`，一规则一文件，避免读改写竞态）：
+- `~/.thin/rules.d/<id>.json` —— 唯一写入点
+- `~/.thin/rules.json` —— 旧格式，仅兼容读取；若存在与 `rules.d` 同 id 的条目会被自动清除
+
+加载顺序：内置 → `rules.json`（旧）→ `rules.d/*.json` 按文件名，同名 id 后者覆盖。
 
 提升到内置：`thin rules export --new` 输出未进内置的规则 JSON，合入 `crates/thin-core/rules/default.json`
 后重新构建即可；用户规则按 id 覆盖内置，提升后可从 `~/.thin` 删除。

@@ -12,7 +12,7 @@ pub fn builtin() -> Result<Vec<Rule>> {
     serde_json::from_str(DEFAULT_RULES).context("内置规则解析失败")
 }
 
-/// 用户规则文件（可热更新，agent 可写入）
+/// 旧版用户规则文件（单文件数组）。`thin rules add` **不再写入**，仅兼容读取。
 pub fn user_rules_path() -> PathBuf {
     user_rules_path_in(&clean::thin_home())
 }
@@ -21,8 +21,8 @@ pub fn user_rules_path_in(home: &Path) -> PathBuf {
     home.join("rules.json")
 }
 
-/// 用户规则目录：可放多个 `*.json`（每个为单条规则或规则数组），便于逐步添加。
-/// 加载顺序：内置 → `rules.json` → `rules.d/*.json`（按文件名），同名 id 后者覆盖。
+/// 用户规则目录（**唯一写入点**）：`rules.d/<id>.json`，每个文件为单条规则。
+/// 加载顺序：内置 →（兼容读取的旧 `rules.json`）→ `rules.d/*.json`（按文件名），同名 id 后者覆盖。
 pub fn user_rules_dir() -> PathBuf {
     user_rules_dir_in(&clean::thin_home())
 }
@@ -129,21 +129,22 @@ pub fn save_dir_rule_in(home: &Path, rule: &Rule) -> Result<PathBuf> {
 
 /// 新增/覆盖一条用户规则（按 id），返回写入的文件路径。
 ///
-/// 默认写入 `rules.json`，并**清理同 id 的 `rules.d/<id>.json`**——否则
-/// `rules.d` 在加载顺序上会覆盖 `rules.json`，本次更新会静默失效。
+/// **唯一写入点**：`rules.d/<id>.json`（一规则一文件）。好处：
+/// - 避免读改写整个 `rules.json` 的竞态，适合 agent 逐步增删；
+/// - 加载顺序简单：内置 →（兼容读取的旧 `rules.json`）→ `rules.d`。
+///
+/// 若旧的 `rules.json` 里存在同 id 的陈旧条目，会一并清除，避免两份不一致。
 pub fn upsert_user_rule(rule: Rule) -> Result<PathBuf> {
     upsert_user_rule_in(&clean::thin_home(), rule)
 }
 
 pub fn upsert_user_rule_in(home: &Path, rule: Rule) -> Result<PathBuf> {
-    let mut rules = load_user_rules_in(home)?;
-    rules.retain(|r| r.id != rule.id);
-    rules.push(rule.clone());
-    let saved = save_user_rules_in(home, &rules)?;
-    let dir_file = user_rules_dir_in(home).join(format!("{}.json", rule.id));
-    if dir_file.exists() {
-        std::fs::remove_file(&dir_file)
-            .with_context(|| format!("清理 rules.d 旧规则失败: {}", dir_file.display()))?;
+    let saved = save_dir_rule_in(home, &rule)?;
+    let mut legacy = load_user_rules_in(home)?;
+    let before = legacy.len();
+    legacy.retain(|r| r.id != rule.id);
+    if legacy.len() != before {
+        save_user_rules_in(home, &legacy)?;
     }
     Ok(saved)
 }
@@ -409,7 +410,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_removes_stale_rules_d_override() {
+    fn upsert_writes_rules_d_and_clears_legacy_rules_json() {
         let base = std::env::temp_dir().join(format!("thin-upsert-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         std::fs::create_dir_all(&base).unwrap();
@@ -426,14 +427,18 @@ mod tests {
             "c".into(),
             "r".into(),
         );
-        save_dir_rule_in(&base, &r).unwrap();
-        assert!(user_rules_dir_in(&base).join("dup.json").exists());
+        // 旧格式：rules.json 里已有同 id 的旧规则
+        save_user_rules_in(&base, &[r.clone()]).unwrap();
 
         r.name = "新".into();
-        upsert_user_rule_in(&base, r).unwrap();
+        let saved = upsert_user_rule_in(&base, r).unwrap();
 
-        // rules.d 覆盖文件应被清理，加载到的是更新后的 rules.json
-        assert!(!user_rules_dir_in(&base).join("dup.json").exists());
+        // 统一写入 rules.d/<id>.json，且旧 rules.json 条目被清理（不残留两份）
+        assert!(saved.ends_with("rules.d/dup.json"), "{}", saved.display());
+        assert!(
+            load_user_rules_in(&base).unwrap().is_empty(),
+            "旧 rules.json 条目应被清理"
+        );
         let all = load_all_user_rules_in(&base).unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].name, "新");

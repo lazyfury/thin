@@ -313,14 +313,17 @@ thin schedule uninstall
 
 用 `THIN_RULES=/path/to/rules.json thin scan` 可覆盖内置规则。
 
-**用户规则（可热更新）** —— 与内置规则按 id 合并、用户优先。加载顺序：内置 → `rules.json` → `rules.d/*.json`（按文件名）。
+**用户规则（可热更新）** —— 与内置规则按 id 合并、用户优先。
 
-- `~/.thin/rules.json` —— 主文件（`thin rules add` 默认写这里）
-- `~/.thin/rules.d/*.json` —— 每个文件为单条规则或规则数组，适合逐步添加；`thin rules add --dir` 写 `rules.d/<id>.json`
+- **写入点只有一个**：`~/.thin/rules.d/<id>.json`（一规则一文件，`thin rules add` 写这里）。
+  避免读改写整个文件的竞态，便于 agent 逐步增删。
+- `~/.thin/rules.json` 为旧格式，仍**兼容读取**（可手写批量规则），但 `thin rules add` 不再写它；
+  若其中存在与 `rules.d` 同 id 的条目，会被自动清除以避免两份不一致。
+- 加载顺序：内置 → `rules.json`（旧）→ `rules.d/*.json`（按文件名），同名 id 后者覆盖。
 
 ```bash
 thin rules path                             # 显示两个位置
-thin rules add --path "~/Library/.../SomeApp/Cache" --risk safe --regenerable --dir
+thin rules add --path "~/Library/.../SomeApp/Cache" --risk safe --regenerable
 cat rule.json | thin rules add --json -     # 或用完整 JSON
 thin scan --detail custom-someapp           # 验证命中
 thin rules export --new                     # 导出未并入内置的规则，合进 default.json 后重新构建

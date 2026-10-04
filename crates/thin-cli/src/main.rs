@@ -257,9 +257,6 @@ struct RuleAddArgs {
     cost: Option<String>,
     #[arg(long)]
     recover: Option<String>,
-    /// 写入 rules.d/<id>.json（一规则一文件），而不是 rules.json
-    #[arg(long)]
-    dir: bool,
 }
 
 #[derive(clap::Args)]
@@ -702,8 +699,14 @@ fn cmd_rules(args: RulesArgs) -> Result<()> {
     match args.cmd {
         None | Some(RulesCmd::List) => list_rules()?,
         Some(RulesCmd::Path) => {
-            println!("用户规则文件: {}", rules::user_rules_path().display());
-            println!("用户规则目录: {}", rules::user_rules_dir().display());
+            println!(
+                "用户规则目录（写入点）: {}",
+                rules::user_rules_dir().display()
+            );
+            println!(
+                "旧格式规则文件（仅兼容读取）: {}",
+                rules::user_rules_path().display()
+            );
         }
         Some(RulesCmd::Add(a)) => cmd_rule_add(a)?,
         Some(RulesCmd::Export(e)) => cmd_rules_export(e)?,
@@ -813,8 +816,9 @@ fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
         });
         let category = rules::parse_category(&args.category).unwrap_or(Category::Other);
         let risk = rules::parse_risk(&args.risk).unwrap_or(Risk::Confirm);
+        let mode = clean::default_mode();
         let reclaim = if args.reclaim.is_empty() {
-            "移入隔离区".to_string()
+            format!("移入{}", mode.label())
         } else {
             args.reclaim
         };
@@ -827,9 +831,12 @@ fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
             args.regenerable,
             reclaim,
             args.what.unwrap_or_else(|| "自定义清理项".into()),
-            args.cost.unwrap_or_else(|| "移入隔离区，可恢复".into()),
-            args.recover
-                .unwrap_or_else(|| "thin quarantine restore".into()),
+            args.cost
+                .unwrap_or_else(|| format!("移入{}，可恢复", mode.label())),
+            args.recover.unwrap_or_else(|| match mode {
+                clean::Mode::Trash => "从 Finder 废纸篓恢复".into(),
+                clean::Mode::Quarantine => "thin quarantine restore".into(),
+            }),
         )
     };
 
@@ -844,11 +851,8 @@ fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
         );
     }
 
-    let saved = if args.dir {
-        rules::save_dir_rule(&rule)?
-    } else {
-        rules::upsert_user_rule(rule.clone())?
-    };
+    // 统一写入 `rules.d/<id>.json`（一规则一文件）
+    let saved = rules::upsert_user_rule(rule.clone())?;
     println!(
         "已写入规则 \x1b[1m{}\x1b[0m  →  {}",
         rule.id,

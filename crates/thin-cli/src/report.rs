@@ -179,7 +179,10 @@ pub fn print_detail(it: &CleanItem) {
     println!("  删了会怎样: {}", it.explain.cost);
     println!("  能否恢复: {}", it.explain.recover);
     println!("  官方方式: {}", it.reclaim);
-    println!("  thin 动作: 移入隔离区（可恢复）");
+    println!(
+        "  thin 动作: 移入{}（可恢复）",
+        thin_core::clean::default_mode().label()
+    );
     if let Some(reason) = &it.protected_reason {
         println!("  \x1b[33m受保护: {reason}（不会清理）\x1b[0m");
     }

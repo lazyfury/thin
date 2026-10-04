@@ -290,29 +290,43 @@ impl BrowseState {
             protected: rec.protected,
             protected_reason: None,
         };
-        match clean::quarantine(&[item], false) {
-            Ok(journal) if journal.entries.is_empty() => {
-                let reason = journal
-                    .skipped
-                    .first()
-                    .map(|s| s.reason.clone())
-                    .unwrap_or_default();
+        let mode = clean::default_mode();
+        match clean::apply(&[item], mode) {
+            Ok(applied) if applied.moved() == 0 => {
+                let reason = match &applied {
+                    clean::Applied::Trash(r) => r
+                        .skipped
+                        .first()
+                        .map(|s| s.reason.clone())
+                        .unwrap_or_default(),
+                    clean::Applied::Quarantine(j) => j
+                        .skipped
+                        .first()
+                        .map(|s| s.reason.clone())
+                        .unwrap_or_default(),
+                };
                 self.warn(format!("未清理：{reason}"));
             }
-            Ok(journal) => {
+            Ok(applied) => {
                 // 与 CLI 一致：记录历史
-                let mut rec = history::Record::new("browse");
+                let mut rec = history::Record::new(match mode {
+                    clean::Mode::Trash => "browse-trash",
+                    clean::Mode::Quarantine => "browse",
+                });
                 rec.scanned = 1;
-                rec.approved = journal.entries.len();
-                rec.session = Some(journal.session.clone());
-                rec.moved = journal.entries.len();
-                rec.moved_bytes = journal.total_size();
-                rec.skipped = journal.skipped.len();
+                rec.approved = applied.moved();
+                rec.session = applied.session().map(str::to_string);
+                rec.moved = applied.moved();
+                rec.moved_bytes = applied.moved_bytes();
+                rec.skipped = applied.skipped() + applied.failed();
                 let _ = history::append(&rec);
-                self.info(format!(
-                    "已移入隔离区；可恢复：thin quarantine restore {}",
-                    journal.session
-                ));
+                self.info(match mode {
+                    clean::Mode::Trash => "已移入系统废纸篓（可在 Finder 恢复）".to_string(),
+                    clean::Mode::Quarantine => format!(
+                        "已移入隔离区；可恢复：thin quarantine restore {}",
+                        applied.session().unwrap_or("")
+                    ),
+                });
                 let dir = self.cwd().to_path_buf();
                 self.cache.remove(&dir);
                 self.load();
@@ -645,7 +659,10 @@ fn render_detail(frame: &mut Frame, app: &BrowseState, area: Rect) {
 fn render_footer(frame: &mut Frame, app: &BrowseState, area: Rect) {
     let (text, style) = if app.confirm {
         (
-            " 移入隔离区？ y 确认 · n/Esc 取消".to_string(),
+            format!(
+                " 移入{}？ y 确认 · n/Esc 取消",
+                clean::default_mode().label()
+            ),
             toast::style(toast::Kind::Warn),
         )
     } else if app.filtering {
@@ -716,7 +733,7 @@ fn render_confirm(frame: &mut Frame, app: &BrowseState) {
     frame.render_widget(Clear, a);
     let text = vec![
         Line::from(Span::styled(
-            "移入隔离区？",
+            format!("移入{}？", clean::default_mode().label()),
             Style::default().add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
@@ -756,15 +773,21 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::from("  /            过滤（按名称/用途）"),
         Line::from("  s            切换排序（大小/名称/类型）"),
         Line::from("  t            占用图切换"),
-        Line::from("  c            把当前可清理项移入隔离区（需确认）"),
+        Line::from(format!(
+            "  c            把当前可清理项移入{}（需确认）",
+            clean::default_mode().label()
+        )),
         Line::from("  r            重新计算当前目录"),
         Line::from("  .            显示/隐藏 . 开头项"),
         Line::from("  Esc          关提示/取消加载；无提示时退出"),
         Line::from("  q            退出"),
-        Line::from("  Tab / 1-5    切换标签页"),
+        Line::from("  Tab / 1-4    切换标签页"),
         Line::from(""),
         Line::from(Span::styled(
-            "浏览只读；只有显式按 c 并确认才会移入隔离区（可恢复）。",
+            format!(
+                "浏览只读；只有显式按 c 并确认才会移入{}（可恢复）。",
+                clean::default_mode().label()
+            ),
             Style::default().fg(Color::DarkGray),
         )),
     ];
