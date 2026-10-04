@@ -109,6 +109,9 @@ pub struct CleanItem {
     pub size: u64,
     pub reclaim: String,
     pub explain: Explain,
+    /// 命中 `thin protect` 保护名单：展示但绝不清除、不计入可回收
+    #[serde(default)]
+    pub protected: bool,
 }
 
 impl CleanItem {
@@ -129,6 +132,7 @@ impl CleanItem {
                 cost: "移入隔离区，可随时恢复".to_string(),
                 recover: "quarantine restore".to_string(),
             },
+            protected: false,
         }
     }
 }
@@ -141,6 +145,9 @@ pub struct ReclaimSummary {
     pub destructive: u64,
     /// 需 sudo、thin 会自动跳过、只能手动处理的体积（不计入可回收）
     pub manual: u64,
+    /// 命中 `thin protect` 保护名单、不参与清理的体积（不计入可回收）
+    #[serde(default)]
+    pub protected: u64,
 }
 
 impl ReclaimSummary {

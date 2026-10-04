@@ -16,6 +16,7 @@ pub mod preset;
 pub mod probe;
 pub mod proc;
 pub mod progress;
+pub mod protect;
 pub mod rules;
 pub mod scan;
 pub mod schedule;

@@ -74,6 +74,11 @@ thin clean --apply --yes            # 跳过确认
 thin clean --apply --all            # 连「需确认」项一起处理
 thin clean --apply --id rust-target --id chrome-optguide-model
 
+# 保护名单：正在开发的项目的构建产物不被清理（含所有子目录）
+thin protect add .                  # 在项目根执行即可保护整个项目（target/、node_modules/…）
+thin protect list                   # 查看
+thin protect remove .               # 解除保护
+
 # 隔离区管理
 thin quarantine list                # 查看所有会话
 thin quarantine restore             # 恢复最近一次
@@ -99,7 +104,8 @@ thin history --limit 20                        # 清理历史
 thin schedule install --preset nightly --weekly --hour 3 --dry-run   # 安全预览 plist
 thin schedule install --preset nightly --weekly --hour 3             # 安装 launchd 任务
 thin schedule status                           # 查看状态
-thin schedule run --preset nightly             # 立即按预设跑一次
+thin schedule run --preset nightly --dry-run   # 预览将清理的项（不 purge/不隔离）
+thin schedule run --preset nightly             # 立即按预设跑一次（真实清理）
 thin schedule uninstall                        # 卸载
 ```
 

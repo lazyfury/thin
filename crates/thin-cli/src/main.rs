@@ -10,8 +10,8 @@ use std::path::PathBuf;
 use thin_core::fmt::human;
 use thin_core::model::{Category, Matcher, Risk};
 use thin_core::{
-    CleanItem, Rule, apps, clean, discover, finder, fsutil, history, preset, probe, rules, scan,
-    schedule,
+    CleanItem, Rule, apps, clean, discover, finder, fsutil, history, preset, probe, protect, rules,
+    scan, schedule,
 };
 
 #[derive(Parser)]
@@ -71,6 +71,9 @@ enum Cmd {
 
     /// 定时任务：安装 / 卸载 / 状态 / 立即运行（launchd）
     Schedule(ScheduleArgs),
+
+    /// 保护名单：被标记的路径及其子目录永不清理
+    Protect(ProtectArgs),
 }
 
 #[derive(clap::Args)]
@@ -238,6 +241,29 @@ struct DiscoverArgs {
     /// 输出 JSON
     #[arg(long)]
     json: bool,
+}
+
+#[derive(clap::Args)]
+struct ProtectArgs {
+    #[command(subcommand)]
+    cmd: ProtectCmd,
+}
+
+#[derive(Subcommand)]
+enum ProtectCmd {
+    /// 列出保护名单
+    List,
+    /// 加入保护名单（默认保护该目录及其所有子目录）
+    Add {
+        /// 路径，支持 ~；在项目根用 . 即可保护整个项目
+        #[arg(default_value = ".")]
+        path: String,
+    },
+    /// 从保护名单移除
+    Remove {
+        #[arg(default_value = ".")]
+        path: String,
+    },
 }
 
 #[derive(clap::Args)]
@@ -433,6 +459,7 @@ fn main() -> Result<()> {
         Cmd::Preset(args) => cmd_preset(args)?,
         Cmd::History(args) => cmd_history(args)?,
         Cmd::Schedule(args) => cmd_schedule(args)?,
+        Cmd::Protect(args) => cmd_protect(args)?,
     }
     Ok(())
 }
@@ -731,10 +758,13 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
         .iter()
         .filter(|f| matches!(f.coverage, discover::Coverage::None))
         .collect();
-    // 绝不建议把受保护 / 个人目录（如 ~/Documents、iCloud、~/.thin）建成清理规则
-    let (suggestible, protected): (Vec<_>, Vec<_>) = none
-        .into_iter()
-        .partition(|f| clean::static_protection_reason(&f.path).is_none());
+    // 绝不建议把受保护 / 个人目录（如 ~/Documents、iCloud、~/.thin）或
+    // 已加入保护名单的目录建成清理规则
+    let protect_list = protect::load();
+    let (suggestible, protected): (Vec<_>, Vec<_>) = none.into_iter().partition(|f| {
+        clean::static_protection_reason(&f.path).is_none()
+            && !protect::matches(&protect_list, &f.path)
+    });
     let partial: Vec<_> = report
         .findings
         .iter()
@@ -757,7 +787,7 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
             .map(|f| format!("{}（{}）", shorten(&f.path), human(f.size)))
             .collect();
         println!(
-            "\n\x1b[90m已跳过 {} 个受保护/个人目录的建议: {}\x1b[0m",
+            "\n\x1b[90m已跳过 {} 个受保护目录的建议（个人目录 / thin protect）: {}\x1b[0m",
             protected.len(),
             list.join("、")
         );
@@ -840,6 +870,44 @@ fn print_plan(plan: &clean::Plan) {
             println!("  - {}：{}", shorten(&s.path), s.reason);
         }
     }
+}
+
+fn cmd_protect(args: ProtectArgs) -> Result<()> {
+    match args.cmd {
+        ProtectCmd::List => {
+            let list = protect::load();
+            if list.is_empty() {
+                println!("保护名单为空。");
+                println!(
+                    "提示: 在项目根执行 `thin protect add .`，可保护该项目（含 target/）不被 clean 清理。"
+                );
+                return Ok(());
+            }
+            println!("保护名单（共 {} 项，含各自子目录）:\n", list.len());
+            for p in &list {
+                println!("  {}", p.display());
+            }
+            println!("\n这些路径及其子目录不会被 clean 清理，也不计入可回收。");
+        }
+        ProtectCmd::Add { path } => {
+            let p = fsutil::expand(&path).ok_or_else(|| anyhow!("无法展开路径 {path}"))?;
+            let canon = protect::add(&p)?;
+            println!("已保护 \x1b[1m{}\x1b[0m（含其所有子目录）", canon.display());
+            println!(
+                "查看: thin protect list    移除: thin protect remove \"{}\"",
+                canon.display()
+            );
+        }
+        ProtectCmd::Remove { path } => {
+            let p = fsutil::expand(&path).ok_or_else(|| anyhow!("无法展开路径 {path}"))?;
+            if protect::remove(&p)? {
+                println!("已移除保护 {}", p.display());
+            } else {
+                println!("未在保护名单中找到 {}", p.display());
+            }
+        }
+    }
+    Ok(())
 }
 
 fn cmd_clean(args: CleanArgs) -> Result<()> {

@@ -405,6 +405,13 @@ pub fn plan_in(home: &Path, items: &[CleanItem]) -> Plan {
             });
             continue;
         }
+        if crate::protect::is_protected_in(home, &it.path) {
+            p.skipped.push(SkippedItem {
+                path: it.path.clone(),
+                reason: "已在保护名单（thin protect）".into(),
+            });
+            continue;
+        }
         if let Some(reason) = protection_reason_in(&it.path, Some(home)) {
             p.skipped.push(SkippedItem {
                 path: it.path.clone(),
@@ -630,6 +637,7 @@ mod tests {
                 cost: "无".into(),
                 recover: "重新生成".into(),
             },
+            protected: false,
         }
     }
 

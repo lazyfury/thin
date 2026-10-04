@@ -26,7 +26,12 @@ pub fn print_table(items: &[CleanItem]) {
         } else {
             path
         };
-        let risk_cell = pad_colored(it.risk.label(), it.risk.color(), 8);
+        let (label, color) = if it.protected {
+            ("已保护", "\x1b[90m")
+        } else {
+            (it.risk.label(), it.risk.color())
+        };
+        let risk_cell = pad_colored(label, color, 8);
         let cat_cell = format!("{:<8}", it.category.label());
         println!(
             "{:>10}  {} {} {:<26} {}",
@@ -54,13 +59,19 @@ pub fn print_summary(items: &[CleanItem]) {
     let s = thin_core::scan::summarize(items);
     let nested = thin_core::scan::nested_count(items);
     println!();
+    let protected = if s.protected > 0 {
+        format!(" / 已保护 {}", human(s.protected))
+    } else {
+        String::new()
+    };
     println!(
-        "\x1b[1m可回收总计: {}\x1b[0m  （安全 {} / 需确认 {} / 不可再生 {} / 需手动 {})",
+        "\x1b[1m可回收总计: {}\x1b[0m  （安全 {} / 需确认 {} / 不可再生 {} / 需手动 {}{}）",
         human(s.total_reclaimable()),
         human(s.safe),
         human(s.confirm),
         human(s.destructive),
-        human(s.manual)
+        human(s.manual),
+        protected
     );
     let extra = if nested > 0 {
         format!("，已排除 {nested} 个嵌套重复项")
@@ -71,6 +82,9 @@ pub fn print_summary(items: &[CleanItem]) {
         "共 {} 项{extra}。默认仅「安全+需确认」计入可回收；需 sudo 项需手动处理。",
         items.len()
     );
+    if s.protected > 0 {
+        println!("\x1b[90m标记「已保护」的项不会清理；用 thin protect list 查看/移除。\x1b[0m");
+    }
 }
 
 /// 打印单项详细解释

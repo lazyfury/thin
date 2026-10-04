@@ -189,7 +189,10 @@ impl App {
         self.apps.poll();
         if let Load::Ready(items) = &self.clean {
             if self.selected.len() != items.len() {
-                self.selected = items.iter().map(|i| i.risk == Risk::Safe).collect();
+                self.selected = items
+                    .iter()
+                    .map(|i| i.risk == Risk::Safe && !i.protected)
+                    .collect();
             }
         }
     }
@@ -273,7 +276,7 @@ impl App {
         if let Load::Ready(items) = &self.clean {
             if safe_only {
                 for (i, it) in items.iter().enumerate() {
-                    self.selected[i] = value && it.risk == Risk::Safe;
+                    self.selected[i] = value && it.risk == Risk::Safe && !it.protected;
                 }
             } else {
                 self.selected.iter_mut().for_each(|s| *s = value);
@@ -284,6 +287,13 @@ impl App {
     fn toggle(&mut self) {
         let i = self.cursor();
         if i < self.selected.len() {
+            // 保护名单项不可勾选
+            if let Load::Ready(items) = &self.clean {
+                if items.get(i).map(|it| it.protected).unwrap_or(false) {
+                    self.status = Some("该项已在保护名单，thin protect remove 后可清理".into());
+                    return;
+                }
+            }
             self.selected[i] = !self.selected[i];
         }
     }
@@ -685,8 +695,19 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
                             Style::default().fg(Color::White),
                         ),
                         Span::styled(
-                            format!("{:<5} ", it.risk.label()),
-                            Style::default().fg(risk_color(it.risk)),
+                            format!(
+                                "{:<5} ",
+                                if it.protected {
+                                    "已保护"
+                                } else {
+                                    it.risk.label()
+                                }
+                            ),
+                            Style::default().fg(if it.protected {
+                                Color::DarkGray
+                            } else {
+                                risk_color(it.risk)
+                            }),
                         ),
                         Span::raw(it.name.clone()),
                         Span::styled(format!("  {shown}"), Style::default().fg(Color::DarkGray)),
@@ -717,8 +738,17 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
                     Line::from(vec![
                         Span::raw("风险: "),
                         Span::styled(
-                            it.risk.label().to_string(),
-                            Style::default().fg(risk_color(it.risk)),
+                            if it.protected {
+                                "已保护（thin protect）"
+                            } else {
+                                it.risk.label()
+                            }
+                            .to_string(),
+                            Style::default().fg(if it.protected {
+                                Color::DarkGray
+                            } else {
+                                risk_color(it.risk)
+                            }),
                         ),
                         Span::raw(format!(
                             "  可再生: {}",

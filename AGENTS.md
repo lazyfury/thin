@@ -19,6 +19,7 @@ thin rules remove <id>         # 删除用户规则
 thin rules export [--new]      # 导出用户规则，便于并入内置 default.json
 thin clean [--apply]           # 清理（默认 dry-run）
 thin preset list|add|remove    # 清理预设（定时任务只执行用户预设）
+thin protect add|list|remove   # 保护名单：路径及其子目录永不清理（保护在研项目的 target/ 等）
 thin history [--limit N]       # 清理历史记录
 thin schedule install|status|run|uninstall   # 定时任务（launchd）
 thin schedule run --preset <id> --dry-run    # 预览一次预设清理，不 purge/不隔离/不写历史
@@ -134,6 +135,19 @@ echo '{
 后重新构建即可；用户规则按 id 覆盖内置，提升后可从 `~/.thin` 删除。
 
 ---
+
+### 保护在研项目（可选）
+
+正在开发的项目，其 `target/`、`node_modules/` 等会被规则命中；每次清理后都要重新编译。
+在项目根执行一次即可将其加入保护名单，`scan` 会标为「已保护」且不计入可回收，`clean` 直接跳过：
+
+```bash
+thin protect add .        # 保护当前项目（含所有子目录）
+thin protect list         # 查看
+thin protect remove .     # 解除
+```
+
+保护是运行期名单（`~/.thin/protected.json`），不会修改或删除规则；显式 `clean --id` 也无法绕过。
 
 ## 3. 验证与清理
 

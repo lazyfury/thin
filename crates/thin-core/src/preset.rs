@@ -194,6 +194,7 @@ mod tests {
                 cost: String::new(),
                 recover: String::new(),
             },
+            protected: false,
         }
     }
 

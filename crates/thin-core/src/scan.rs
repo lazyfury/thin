@@ -40,6 +40,7 @@ pub fn scan_progress(
                         size,
                         reclaim: rule.reclaim.clone(),
                         explain: rule.explain.clone(),
+                        protected: false,
                     }
                 })
                 .filter(|item| item.size >= min_size)
@@ -52,6 +53,13 @@ pub fn scan_progress(
     let mut items: Vec<CleanItem> = per_rule.into_iter().flatten().collect();
     if !include_destructive {
         items.retain(|i| i.risk != Risk::Destructive);
+    }
+    // 标注保护名单：展示但不清除、不计入可回收（load 一次，批量匹配）
+    let protect_list = crate::protect::load();
+    if !protect_list.is_empty() {
+        for it in &mut items {
+            it.protected = crate::protect::matches(&protect_list, &it.path);
+        }
     }
     items.sort_by(|a, b| b.size.cmp(&a.size));
     items
@@ -77,9 +85,16 @@ fn is_nested<'a>(path: &std::path::Path, all: &'a [CleanItem]) -> Option<&'a Cle
 pub fn summarize(items: &[CleanItem]) -> ReclaimSummary {
     let mut s = ReclaimSummary::default();
 
+    // 保护名单项单独计一档，且不参与可回收核算
+    let active: Vec<CleanItem> = items.iter().filter(|i| !i.protected).cloned().collect();
+    let protected: Vec<CleanItem> = items.iter().filter(|i| i.protected).cloned().collect();
+    s.protected = top_level(&protected)
+        .iter()
+        .fold(0u64, |acc, i| acc.saturating_add(i.size));
+
     // 某风险档及以下的「顶层非 sudo」体积
     let top_bytes = |max: Risk| -> u64 {
-        let subset: Vec<CleanItem> = items.iter().filter(|i| i.risk <= max).cloned().collect();
+        let subset: Vec<CleanItem> = active.iter().filter(|i| i.risk <= max).cloned().collect();
         top_level(&subset)
             .iter()
             .filter(|i| !i.sudo)
@@ -92,8 +107,8 @@ pub fn summarize(items: &[CleanItem]) -> ReclaimSummary {
         .saturating_sub(s.safe)
         .saturating_sub(s.confirm);
 
-    // 需 sudo 的项：只在「全量顶层」中统计，被父项覆盖的 sudo 子项不重复计入
-    s.manual = top_level(items)
+    // 需 sudo 的项：只在「非保护项的顶层」中统计，被父项覆盖的子项不重复计入
+    s.manual = top_level(&active)
         .iter()
         .filter(|i| i.sudo)
         .fold(0u64, |acc, i| acc.saturating_add(i.size));
@@ -166,6 +181,7 @@ mod tests {
                 cost: "无".into(),
                 recover: "重新生成".into(),
             },
+            protected: false,
         }
     }
 
