@@ -186,14 +186,37 @@ thin schedule uninstall                        # 卸载
 
 ### 用户规则（可热更新）
 
-内置规则之外，可把自己的发现写入**用户规则文件**（`thin rules path`，默认 `~/.thin/rules.json`），
-与内置规则按 id 合并、用户优先：
+内置规则之外，可把自己的发现写入用户规则，与内置规则按 id 合并、**用户优先**。
+两个来源（加载顺序：内置 → `rules.json` → `rules.d/*.json` 按文件名）：
+
+- `~/.thin/rules.json` —— 主文件（`thin rules add` 默认写这里）
+- `~/.thin/rules.d/*.json` —— 可放多个文件，**每个文件为单条规则或规则数组**，适合逐步添加/管理；
+  `thin rules add --dir` 会写成一规则一文件 `rules.d/<id>.json`
 
 ```bash
-thin rules add --path "~/Library/Application Support/SomeApp/Cache" --risk safe --regenerable
+thin rules path                             # 显示两个位置
+thin rules add --path "~/Library/.../SomeApp/Cache" --risk safe --regenerable --dir
 cat rule.json | thin rules add --json -     # 或用完整 JSON
-thin rules remove custom-someapp
+thin rules list                             # 带【内置/用户】来源列
+thin rules remove custom-someapp            # 同时清理 rules.json 与 rules.d/<id>.json
 ```
+
+**先打包，再逐步增规则，最后提升到代码**（持续演进的推荐流程）：
+
+```bash
+# 1. 先发布，用户/自己在 ~/.thin 里逐步加规则验证效果
+thin rules add --path "~/Library/.../SomeApp/Cache" --id custom-someapp --dir
+
+# 2. 验证命中
+thin scan --detail custom-someapp
+
+# 3. 规则稳定后，导出为 JSON 并入内置 default.json，随版本发布
+thin rules export --new            # 只导出内置里没有的规则，方便直接合并
+```
+
+`thin rules export` 输出的是一个 JSON 数组，合进
+[`crates/thin-core/rules/default.json`](./crates/thin-core/rules/default.json) 后重新构建即可；
+因为用户规则按 id 覆盖内置，提升后可从 `~/.thin` 删除对应规则。
 
 `thin discover` 会标注每个大目录的归因（已归类 / 部分 / 未归类）并直接给出补规则的命令。
 完整 agent 流程见 [AGENTS.md](./AGENTS.md)。

@@ -14,8 +14,9 @@ thin scan [--all] [--json]     # 扫描已知可清理项
 thin discover [ROOT] [--json]  # 找出「未被规则覆盖」的大目录
 thin top [ROOT]                # 某目录下最大子项
 thin rules [list|path]         # 规则列表 / 用户规则文件路径
-thin rules add ...             # 新增规则（agent 入口）
+thin rules add ...             # 新增规则（agent 入口，--dir 写 rules.d/<id>.json）
 thin rules remove <id>         # 删除用户规则
+thin rules export [--new]      # 导出用户规则，便于并入内置 default.json
 thin clean [--apply]           # 清理（默认 dry-run）
 thin preset list|add|remove    # 清理预设（定时任务只执行用户预设）
 thin history [--limit N]       # 清理历史记录
@@ -122,7 +123,12 @@ echo '{
 }
 ```
 
-写入位置：`thin rules path`（默认 `~/.thin/rules.json`），与内置规则**按 id 合并**（用户规则优先）。
+写入位置（加载顺序：内置 → `rules.json` → `rules.d/*.json` 按文件名，同名 id 后者覆盖）：
+- `~/.thin/rules.json`（`thin rules add` 默认）
+- `~/.thin/rules.d/*.json`（每个文件可为单条规则或规则数组；`thin rules add --dir` 写 `rules.d/<id>.json`）
+
+提升到内置：`thin rules export --new` 输出未进内置的规则 JSON，合入 `crates/thin-core/rules/default.json`
+后重新构建即可；用户规则按 id 覆盖内置，提升后可从 `~/.thin` 删除。
 
 ---
 

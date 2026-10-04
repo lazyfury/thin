@@ -10,7 +10,8 @@ use std::path::PathBuf;
 use thin_core::fmt::human;
 use thin_core::model::{Category, Risk};
 use thin_core::{
-    CleanItem, apps, clean, discover, finder, fsutil, history, preset, probe, rules, scan, schedule,
+    CleanItem, Rule, apps, clean, discover, finder, fsutil, history, preset, probe, rules, scan,
+    schedule,
 };
 
 #[derive(Parser)]
@@ -176,6 +177,8 @@ enum RulesCmd {
     Add(RuleAddArgs),
     /// 删除一条用户规则
     Remove(RuleRemoveArgs),
+    /// 导出用户规则（便于并入内置 default.json）
+    Export(ExportArgs),
 }
 
 #[derive(clap::Args)]
@@ -204,6 +207,19 @@ struct RuleAddArgs {
     cost: Option<String>,
     #[arg(long)]
     recover: Option<String>,
+    /// 写入 rules.d/<id>.json（一规则一文件），而不是 rules.json
+    #[arg(long)]
+    dir: bool,
+}
+
+#[derive(clap::Args)]
+struct ExportArgs {
+    /// 只导出内置里不存在的规则 id
+    #[arg(long = "new")]
+    new_only: bool,
+    /// 只导出指定 id
+    #[arg(long)]
+    id: Option<String>,
 }
 
 #[derive(clap::Args)]
@@ -494,8 +510,12 @@ fn cmd_tui(args: TuiArgs) -> Result<()> {
 fn cmd_rules(args: RulesArgs) -> Result<()> {
     match args.cmd {
         None | Some(RulesCmd::List) => list_rules()?,
-        Some(RulesCmd::Path) => println!("{}", rules::user_rules_path().display()),
+        Some(RulesCmd::Path) => {
+            println!("用户规则文件: {}", rules::user_rules_path().display());
+            println!("用户规则目录: {}", rules::user_rules_dir().display());
+        }
         Some(RulesCmd::Add(a)) => cmd_rule_add(a)?,
+        Some(RulesCmd::Export(e)) => cmd_rules_export(e)?,
         Some(RulesCmd::Remove(r)) => {
             if rules::remove_user_rule(&r.id)? {
                 println!("已删除用户规则 {}", r.id);
@@ -512,25 +532,64 @@ fn cmd_rules(args: RulesArgs) -> Result<()> {
 
 fn list_rules() -> Result<()> {
     let catalog = rules::load()?;
+    let user_ids: std::collections::HashSet<String> = rules::load_all_user_rules()?
+        .into_iter()
+        .map(|r| r.id)
+        .collect();
     println!(
-        "{:>8}  {:<10} {:<12} {}",
-        "风险", "类别", "可再生", "名称 / 规则 id"
+        "{:>8}  {:<10} {:<12} {:<6} {}",
+        "风险", "类别", "可再生", "来源", "名称 / 规则 id"
     );
-    println!("{}", "-".repeat(80));
+    println!("{}", "-".repeat(88));
     for r in &catalog {
+        let src = if user_ids.contains(&r.id) {
+            "用户"
+        } else {
+            "内置"
+        };
         println!(
-            "  {:<6} {:<10} {:<12} {}  \x1b[90m({})\x1b[0m",
+            "  {:<6} {:<10} {:<12} {:<6} {}  \x1b[90m({})\x1b[0m",
             r.risk.label(),
             r.category.label(),
             if r.regenerable { "是" } else { "否" },
+            src,
             r.name,
             r.id
         );
     }
     println!(
-        "\n共 {} 条规则。用户规则文件: {}",
+        "\n共 {} 条规则（内置 {}）。\n用户规则文件: {}\n用户规则目录: {}",
         catalog.len(),
-        rules::user_rules_path().display()
+        rules::builtin()?.len(),
+        rules::user_rules_path().display(),
+        rules::user_rules_dir().display()
+    );
+    Ok(())
+}
+
+/// 导出用户来源的规则为 JSON（可直接并入内置 default.json）
+fn cmd_rules_export(args: ExportArgs) -> Result<()> {
+    let user = rules::load_all_user_rules()?;
+    let builtin_ids: std::collections::HashSet<String> =
+        rules::builtin()?.into_iter().map(|r| r.id).collect();
+    let selected: Vec<Rule> = user
+        .into_iter()
+        .filter(|r| {
+            if let Some(id) = &args.id {
+                return &r.id == id;
+            }
+            if args.new_only {
+                !builtin_ids.contains(&r.id)
+            } else {
+                true
+            }
+        })
+        .collect();
+    println!("{}", serde_json::to_string_pretty(&selected)?);
+    eprintln!(
+        "# 共 {} 条用户规则（内置 {} 条）。\n# 并入内置: 将上面内容合进 crates/thin-core/rules/default.json 后重新构建；\n# 用户规则会按 id 覆盖内置，所以已提升的规则可从 ~/.thin 删除。",
+        selected.len(),
+        builtin_ids.len()
     );
     Ok(())
 }
@@ -583,7 +642,11 @@ fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
         )
     };
 
-    let saved = rules::upsert_user_rule(rule.clone())?;
+    let saved = if args.dir {
+        rules::save_dir_rule(&rule)?
+    } else {
+        rules::upsert_user_rule(rule.clone())?
+    };
     println!(
         "已写入规则 \x1b[1m{}\x1b[0m  →  {}",
         rule.id,
