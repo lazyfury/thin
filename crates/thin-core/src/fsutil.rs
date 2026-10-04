@@ -1,3 +1,4 @@
+use rayon::prelude::*;
 use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
@@ -68,6 +69,26 @@ pub fn size_of(path: &Path) -> u64 {
         Ok(_) => dir_size(path),
         Err(_) => 0,
     }
+}
+
+/// 列出目录下各直接子项的大小（降序，并行统计）
+pub fn children_sizes(root: &Path) -> Vec<(PathBuf, u64)> {
+    let mut paths = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            paths.push(e.path());
+        }
+    }
+    let mut v: Vec<(PathBuf, u64)> = paths
+        .into_par_iter()
+        .map(|p| {
+            let s = size_of(&p);
+            (p, s)
+        })
+        .filter(|(_, s)| *s > 0)
+        .collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v
 }
 
 /// 在 roots 下查找名为 dir_name 的目录（限定深度），可选要求同级存在某个文件。

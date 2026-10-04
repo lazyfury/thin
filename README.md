@@ -24,7 +24,7 @@ crates/
     src/{lib,model,fsutil,probe,rules,scan,clean,finder,apps,discover,fmt}.rs
     rules/default.json
   thin-cli/      前端：CLI (clap) + TUI (ratatui)
-    src/{main,report,top,tui}.rs
+    src/{main,report,top,tui,treemap}.rs
 ```
 
 分层目的：核心逻辑可被 CLI、TUI、未来的 SwiftUI GUI 或测试复用。
@@ -52,9 +52,10 @@ thin scan --detail rust-target   # 查看某规则详细解释
 # 列出某目录下最大的子项（类似 du -sh PATH/* | sort -rh）
 thin top ~/Library --limit 20
 
-# 交互式 TUI：浏览、勾选、按 c 移入隔离区
+# 交互式 TUI（首页=清理；1-5 / Tab 切换标签）
 thin tui
 thin tui --min 100MB
+# 标签: 清理 / 概览(硬盘占用图) / 大文件 / 重复 / 应用
 
 # 规则 / 归因 / agent 入口
 thin rules                          # 列出所有规则
@@ -146,8 +147,9 @@ thin rules remove custom-someapp
 - **M0** CLI 只读扫描 + 诚实核算 + dry-run ✅
 - **M1** 安全清理：隔离区 + Journal + 恢复/永久删除 + TUI 交互 ✅
 - **M2** 大文件查找 / 重复文件检测 / App 卸载（均复用隔离区）✅
-- **M3（当前）** 规则热更新（用户规则文件）+ 异常大目录归因 + **agent 规则写入入口** ✅
-- M4 TUI 多标签页 / SwiftUI 前端
+- **M3** 规则热更新（用户规则文件）+ 异常大目录归因 + **agent 规则写入入口** ✅
+- **M4（当前）** TUI 多标签页（清理/概览占用图/大文件/重复/应用，懒加载）✅
+- M5 SwiftUI 前端
 
 ## 测试
 

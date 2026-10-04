@@ -1,5 +1,6 @@
 mod report;
 mod top;
+mod treemap;
 mod tui;
 
 use anyhow::{Result, anyhow};
@@ -12,7 +13,7 @@ use thin_core::{CleanItem, apps, clean, discover, finder, fsutil, probe, rules, 
 #[derive(Parser)]
 #[command(
     name = "thin",
-    about = "macOS 系统空间扫描与安全清理 (M3 · 规则可扩展)",
+    about = "macOS 系统空间扫描与安全清理 (M4 · 多标签 TUI)",
     version
 )]
 struct Cli {
@@ -324,10 +325,10 @@ fn cmd_scan(args: ScanArgs) -> Result<()> {
 
 fn cmd_tui(args: TuiArgs) -> Result<()> {
     let min = parse_size(&args.min).unwrap_or(1_048_576);
-    let catalog = rules::load()?;
-    eprintln!("扫描中…");
-    let items = scan::scan(&catalog, true, min);
-    tui::run(items)?;
+    let root = std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."));
+    tui::run(root, min)?;
     Ok(())
 }
 
