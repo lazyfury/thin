@@ -165,6 +165,7 @@ thin clean --apply --all          # 连「需确认」项一起处理
 thin clean --apply --id rust-target --id chrome-optguide-model
 thin clean --preset dev --root .  # 定向清理：只清当前项目的开发产物
 thin clean --tree                 # dry-run 预览按文件夹合并成树形
+thin clean --trash --apply        # 用系统废纸篓替代 thin 隔离区（Finder 可恢复）
 thin clean --json                 # 机器可读计划：approved / skipped / approvedBytes / protectedBytes
 thin clean --apply --json --yes   # 执行并输出账本 JSON
 

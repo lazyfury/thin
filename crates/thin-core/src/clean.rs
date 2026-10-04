@@ -524,6 +524,53 @@ pub fn plan_in(home: &Path, items: &[CleanItem]) -> Plan {
 }
 
 // ---------------------------------------------------------------------------
+// 系统废纸篓（可选模式）
+// ---------------------------------------------------------------------------
+
+/// 移入系统废纸篓的结果
+#[derive(Debug, Default, Clone)]
+pub struct TrashReport {
+    pub trashed: Vec<PathBuf>,
+    pub trashed_bytes: u64,
+    pub failed: Vec<(PathBuf, String)>,
+    pub skipped: Vec<SkippedItem>,
+}
+
+/// 把候选项移入系统废纸篓（Finder 可恢复）。
+///
+/// 与隔离区共用同一安全门（[`plan`]）；需要 Swift 后端（`FileManager.trashItem`），
+/// 后端不可用时整体报错，**绝不回退到直接 `rm`**。
+pub fn trash(items: &[CleanItem]) -> Result<TrashReport> {
+    trash_with(crate::platform::platform(), items)
+}
+
+/// 内部实现：注入 [`crate::platform::Platform`]，便于测试。
+pub fn trash_with(
+    platform: &dyn crate::platform::Platform,
+    items: &[CleanItem],
+) -> Result<TrashReport> {
+    let plan = plan(items);
+    let mut report = TrashReport {
+        skipped: plan.skipped,
+        ..Default::default()
+    };
+    for it in &plan.approved {
+        match platform.trash_item(&it.path) {
+            Some(true) => {
+                report.trashed_bytes = report.trashed_bytes.saturating_add(it.size);
+                report.trashed.push(it.path.clone());
+            }
+            Some(false) => report.failed.push((
+                it.path.clone(),
+                "移入废纸篓失败（权限或路径问题）".to_string(),
+            )),
+            None => anyhow::bail!("Swift 后端不可用，无法使用系统废纸篓；请改用默认隔离区模式"),
+        }
+    }
+    Ok(report)
+}
+
+// ---------------------------------------------------------------------------
 // 隔离（quarantine）
 // ---------------------------------------------------------------------------
 

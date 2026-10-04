@@ -10,6 +10,15 @@ use crate::fsutil::Usage;
 use crate::probe::{Capacity, CapacitySource};
 use std::path::Path;
 
+/// App 沙盒信息（来自代码签名 entitlements）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SandboxInfo {
+    pub bundle_id: Option<String>,
+    pub sandboxed: bool,
+    /// `com.apple.security.application-groups` 声明的 group id
+    pub groups: Vec<String>,
+}
+
 /// macOS 底层能力抽象。所有方法都允许「无法判断」时返回 `None`。
 pub trait Platform: Send + Sync {
     /// 卷容量；Swift 后端含 purgeable，回退仅 `statfs`。
@@ -26,6 +35,12 @@ pub trait Platform: Send + Sync {
 
     /// 路径用量（实际占用 / 逻辑 / iCloud 占位）；`None` 表示无法统计。
     fn dir_usage(&self, path: &Path) -> Option<Usage>;
+
+    /// 读取 .app 的沙盒信息；`None` 表示无法读取。
+    fn app_sandbox_info(&self, app: &Path) -> Option<SandboxInfo>;
+
+    /// 移入系统废纸篓；`None` 表示后端不可用。
+    fn trash_item(&self, path: &Path) -> Option<bool>;
 }
 
 /// 纯 Rust 回退实现：卷容量用 `statfs`，其余能力不可用。
@@ -61,6 +76,14 @@ impl Platform for LibcPlatform {
             dataless: 0,
             files: 0,
         })
+    }
+
+    fn app_sandbox_info(&self, _app: &Path) -> Option<SandboxInfo> {
+        None
+    }
+
+    fn trash_item(&self, _path: &Path) -> Option<bool> {
+        None
     }
 }
 
@@ -105,6 +128,19 @@ impl Platform for SwiftPlatform {
             });
         }
         LibcPlatform.dir_usage(path)
+    }
+
+    fn app_sandbox_info(&self, app: &Path) -> Option<SandboxInfo> {
+        let info = thin_sys::app_sandbox_info(app)?;
+        Some(SandboxInfo {
+            bundle_id: info.bundle_id,
+            sandboxed: info.sandboxed,
+            groups: info.groups,
+        })
+    }
+
+    fn trash_item(&self, path: &Path) -> Option<bool> {
+        thin_sys::trash_item(path)
     }
 }
 

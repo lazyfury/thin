@@ -348,6 +348,10 @@ struct CleanArgs {
     /// 以「按文件夹合并」的树形预览清理项
     #[arg(long)]
     tree: bool,
+
+    /// 用系统废纸篓替代 thin 隔离区（Finder 可恢复；需 Swift 后端）
+    #[arg(long)]
+    trash: bool,
 }
 
 #[derive(clap::Args)]
@@ -1239,6 +1243,24 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&out)?);
                 return Ok(());
             }
+            if args.trash {
+                let report = clean::trash(&selected)?;
+                record_history_trash(
+                    args.preset.as_deref(),
+                    selected.len(),
+                    plan.approved.len(),
+                    &report,
+                );
+                let out = serde_json::json!({
+                    "mode": "trash",
+                    "trashed": report.trashed,
+                    "trashedBytes": report.trashed_bytes,
+                    "failed": report.failed,
+                    "skipped": report.skipped,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+                return Ok(());
+            }
             let journal = clean::quarantine(&selected, false)?;
             record_history(
                 "manual",
@@ -1299,12 +1321,44 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
 
     if !apply {
         print_plan(&shown_plan, args.tree);
-        println!("\n（dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）");
+        if args.trash {
+            println!("\n（dry-run，未执行任何操作。加 --apply 移入系统废纸篓）");
+        } else {
+            println!("\n（dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）");
+        }
         return Ok(());
     }
 
-    if !args.yes && !confirm(&format!("将 {} 项移入隔离区？", plan.approved.len()))? {
+    let target = if args.trash {
+        "系统废纸篓"
+    } else {
+        "隔离区"
+    };
+    if !args.yes && !confirm(&format!("将 {} 项移入{target}？", plan.approved.len()))? {
         println!("已取消。");
+        return Ok(());
+    }
+
+    if args.trash {
+        let report = clean::trash(&selected)?;
+        println!(
+            "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
+            report.trashed.len(),
+            human(report.trashed_bytes)
+        );
+        for (p, why) in &report.failed {
+            println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
+        }
+        if !report.skipped.is_empty() {
+            println!("  安全门跳过 {} 项", report.skipped.len());
+        }
+        println!("\x1b[90m可在 Finder 废纸篓中恢复。\x1b[0m");
+        record_history_trash(
+            args.preset.as_deref(),
+            selected.len(),
+            plan.approved.len(),
+            &report,
+        );
         return Ok(());
     }
 
@@ -2183,6 +2237,25 @@ fn record_history(
         r.moved_bytes = j.total_size();
         r.skipped = j.skipped.len();
     }
+    if let Err(e) = history::append(&r) {
+        eprintln!("\x1b[33m写入历史失败: {e:#}\x1b[0m");
+    }
+}
+
+/// 记录一次「移入系统废纸篓」到历史（无隔离会话）。
+fn record_history_trash(
+    preset: Option<&str>,
+    scanned: usize,
+    approved: usize,
+    report: &clean::TrashReport,
+) {
+    let mut r = history::Record::new("manual-trash");
+    r.preset = preset.map(str::to_string);
+    r.scanned = scanned;
+    r.approved = approved;
+    r.moved = report.trashed.len();
+    r.moved_bytes = report.trashed_bytes;
+    r.skipped = report.skipped.len() + report.failed.len();
     if let Err(e) = history::append(&r) {
         eprintln!("\x1b[33m写入历史失败: {e:#}\x1b[0m");
     }

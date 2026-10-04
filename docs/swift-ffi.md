@@ -1,8 +1,10 @@
 # Swift FFI 落地计划（方向 A：Swift 提供 macOS 底层能力给 Rust CLI）
 
-> 状态：**M0 / M1 / M2 已落地**（`swift/ThinKit` + `crates/thin-sys` + `thin-core/src/platform.rs`）。
+> 状态：**M0 / M1 / M2 / M3 已落地**（`swift/ThinKit` + `crates/thin-sys` + `thin-core/src/platform.rs`）。
 > `thin probe` 显示 purgeable 与 FDA 状态；App 状态/bundle id 接入 NSWorkspace/Bundle；
-> `thin discover` 用批量目录用量显示实际占用与 iCloud 云占位。POC 回归样例保留在 `experiments/swift-ffi/`。
+> `thin discover` 用批量目录用量显示实际占用与 iCloud 云占位；
+> `thin uninstall` 用代码签名 entitlements 精确定位沙盒/group 容器；`thin clean --trash` 走系统废纸篓。
+> POC 回归样例保留在 `experiments/swift-ffi/`。
 
 ## 0. 目标
 
@@ -159,11 +161,18 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
   iCloud/逻辑体积的场景（discover、未来面板）。ABI 升至 3。
 - objc2 备选：`getattrlistbulk` 可直接用 Rust syscall，未必需要 Swift；iCloud 状态仍需 Foundation。
 
-### M3 · 卸载与删除语义
-- 沙盒容器残留：`~/Library/Containers/<bundle-id>`、`Group Containers`、`Saved Application State`。
-- `FileManager.trashItem` 作为「移到废纸篓」模式；`NSFileCoordinator` 协调占用中文件（减少 `clean.rs` 里 `deny delete` ACL 退化）。
-- 验收：卸载覆盖更全；系统废纸篓模式可用；在用的文件不再直接失败。
-- objc2 备选：`objc2-foundation` 覆盖 `NSFileCoordinator`。
+### M3 · 卸载与删除语义 ✅（NSFileCoordinator 暂缓）
+- ✅ `thin_app_sandbox_info_json`（Security 框架读代码签名 entitlements）：返回
+  `{bundleId, sandboxed, groups}`；`find_leftovers` 据此精确补充
+  `~/Library/Containers/<bundle-id>` 与 `~/Library/Group Containers/<group-id>`，
+  不再只靠名称猜测（group id 常与 bundle id 无关）。
+- ✅ `thin_trash_item`（`FileManager.trashItem`）+ `clean::trash()`：`thin clean --trash`
+  用系统废纸篓替代内置隔离区，与隔离区**共用同一安全门**；后端不可用时整体报错，绝不回退 `rm`。
+- 实测：`iShot Pro` 预览正确列出 `Group Containers/4K6FWZU8C4.group.cn.better365`；
+  `thin clean --trash --apply` 成功移动并写入历史（`manual-trash`）。ABI 升至 4。
+- `NSFileCoordinator` 暂缓：缓存/残留目录极少被其他进程持续持有，收益低于复杂度；
+  现有 `clean.rs` 的 `deny delete` ACL 退化路径已能处理占用场景。
+- objc2 备选：`objc2-foundation` 覆盖 `trashItem`/`NSFileCoordinator`；entitlements 需 Security。
 
 ### M4（可选，大工程） · 调度与特权
 - `SMAppService` 替代手写 launchd plist（`schedule.rs`）——注意需 bundle/已批准的 plist，纯 CLI 受限，可能保留 launchd。
@@ -185,19 +194,20 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
 
 策略：**批量、复杂、易变的系统交互用 Swift；单次薄 shim 若 objc2 已足够则不必引入 Swift**。两者都在 `Platform` trait 后面，可逐项切换。
 
-## 7. 提升步骤（POC → 正式，M0 已完成）
+## 7. 提升步骤（POC → 正式，M0–M3 已完成）
 
 1. ✅ `git mv experiments/swift-ffi/ThinKit swift/ThinKit`；gitignore 加 `swift/**/.build`。
 2. ✅ 新建 `crates/thin-sys`（workspace member），无 Swift / 非 macOS 自动降级为空实现。
-3. ⏳ 暂用 `thin-core` 的 `probe::capacity()` + feature `swift`；后续抽 `platform.rs` trait 时再收敛。
+3. ✅ `thin-core/src/platform.rs`（`Platform` trait + `LibcPlatform`/`SwiftPlatform`），
+   能力均收进 trait；`probe::capacity`、`fsutil::usage`、`apps`、`clean::trash` 均经此入口。
 4. ✅ `thin probe` 接入 `capacity()`，实测显示 purgeable。
 5. ✅ POC 保留为 `experiments/swift-ffi/thin-sys-demo` 回归样例；`thin-sys` 内另有 `#[test]`。
 6. ✅ `README.md` 增加构建前置说明（Swift 可选、缺失自动降级）。
 
-### 后续 M3 预备
-- 沙盒容器残留：`~/Library/Containers/<bundle-id>`、`Group Containers`、`Saved Application State`。
-- `FileManager.trashItem` 作为「移到废纸篓」模式；`NSFileCoordinator` 协调占用中文件。
-- 列表类接口继续走整批 JSON（M2 的 `thin_dir_usage_json` 已示范该模式）。
+### 后续 M4（可选）预备
+- `SMAppService` 替代手写 launchd plist（注意纯 CLI 的 bundle 限制）。
+- 特权 helper 清理 `/Library` 缓存，免反复 sudo。
+- `FSEvents` 做 `thin watch` / TUI 实时体积。
 
 ## 8. 风险与回退
 

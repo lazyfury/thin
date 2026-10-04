@@ -351,6 +351,20 @@ pub fn find_leftovers(name: &str, bundle_id: Option<&str>, app_path: &Path) -> V
     let tokens = name_tokens(name, bundle_id);
     let mut candidates = candidate_paths(&home, &tokens);
 
+    // 代码签名 entitlements：精确补充沙盒容器与 group 容器，
+    // 不再只靠名称猜测（group id 常与 bundle id 无关）。
+    if let Some(info) = crate::platform::platform().app_sandbox_info(app_path) {
+        let lib = home.join("Library");
+        if info.sandboxed
+            && let Some(b) = bundle_id.or(info.bundle_id.as_deref())
+        {
+            candidates.push((lib.join("Containers").join(b), false));
+        }
+        for g in &info.groups {
+            candidates.push((lib.join("Group Containers").join(g), false));
+        }
+    }
+
     // ByHost 偏好：<bundle>.<uuid>.plist
     if let Some(b) = bundle_id {
         let byhost = home.join("Library/Preferences/ByHost");

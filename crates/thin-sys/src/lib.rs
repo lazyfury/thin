@@ -10,7 +10,7 @@
 use std::path::Path;
 
 /// FFI ABI 版本；与 Swift 端 `thin_abi_version` 对齐，不一致即视为后端不可用。
-pub const ABI_VERSION: u32 = 3;
+pub const ABI_VERSION: u32 = 4;
 
 /// 卷容量（含 purgeable 信息）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +39,18 @@ pub struct DirUsage {
     /// 未下载占位文件数
     #[serde(rename = "datalessCount", default)]
     pub dataless_count: u64,
+}
+
+/// App 沙盒信息（来自代码签名 entitlements）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSandboxInfo {
+    #[serde(default)]
+    pub bundle_id: Option<String>,
+    #[serde(default)]
+    pub sandboxed: bool,
+    #[serde(default)]
+    pub groups: Vec<String>,
 }
 
 /// 是否已连上可用的 Swift 后端（目标为 macOS 且 ABI 匹配）。
@@ -76,9 +88,19 @@ pub fn dir_usage(path: &Path) -> Option<DirUsage> {
     imp::dir_usage(path)
 }
 
+/// 读取 .app 的沙盒信息（bundle id / 是否沙盒 / group id 列表）。
+pub fn app_sandbox_info(app: &Path) -> Option<AppSandboxInfo> {
+    imp::app_sandbox_info(app)
+}
+
+/// 把路径移入系统废纸篓；`Some(true)` 成功、`Some(false)` 失败、`None` 后端不可用。
+pub fn trash_item(path: &Path) -> Option<bool> {
+    imp::trash_item(path)
+}
+
 #[cfg(all(target_os = "macos", thin_sys_swift))]
 mod imp {
-    use super::{ABI_VERSION, DirUsage, VolumeCapacity};
+    use super::{ABI_VERSION, AppSandboxInfo, DirUsage, VolumeCapacity};
     use std::ffi::{CStr, CString};
     use std::os::raw::c_char;
     use std::path::Path;
@@ -98,6 +120,8 @@ mod imp {
         fn thin_bundle_id(path: *const c_char) -> *mut c_char;
         fn thin_full_disk_access() -> i32;
         fn thin_dir_usage_json(path: *const c_char) -> *mut c_char;
+        fn thin_app_sandbox_info_json(path: *const c_char) -> *mut c_char;
+        fn thin_trash_item(path: *const c_char) -> i32;
     }
 
     pub fn backend_available() -> bool {
@@ -200,6 +224,32 @@ mod imp {
             serde_json::from_str(&s).ok()
         }
     }
+
+    pub fn app_sandbox_info(app: &Path) -> Option<AppSandboxInfo> {
+        if !backend_available() {
+            return None;
+        }
+        let c = CString::new(app.to_string_lossy().as_bytes()).ok()?;
+        // SAFETY: 返回 `strdup` 的 JSON C 字符串或 NULL，所有权随后归还。
+        unsafe {
+            let p = thin_app_sandbox_info_json(c.as_ptr());
+            if p.is_null() {
+                return None;
+            }
+            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+            thin_string_free(p);
+            serde_json::from_str(&s).ok()
+        }
+    }
+
+    pub fn trash_item(path: &Path) -> Option<bool> {
+        if !backend_available() {
+            return None;
+        }
+        let c = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+        // SAFETY: `c` 是有效 C 字符串。
+        Some(unsafe { thin_trash_item(c.as_ptr()) } == 0)
+    }
 }
 
 #[cfg(not(all(target_os = "macos", thin_sys_swift)))]
@@ -232,6 +282,14 @@ mod imp {
     }
 
     pub fn dir_usage(_path: &Path) -> Option<DirUsage> {
+        None
+    }
+
+    pub fn app_sandbox_info(_app: &Path) -> Option<AppSandboxInfo> {
+        None
+    }
+
+    pub fn trash_item(_path: &Path) -> Option<bool> {
         None
     }
 }
@@ -295,6 +353,30 @@ mod tests {
         assert!(u.allocated > 0);
         assert_eq!(u.dataless, 0, "本地文件不应算作云占位");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn reads_sandbox_entitlements() {
+        if !backend_available() {
+            return;
+        }
+        let safari = Path::new("/Applications/Safari.app");
+        if safari.exists() {
+            let info = app_sandbox_info(safari).expect("Safari 沙盒信息应可读");
+            assert_eq!(info.bundle_id.as_deref(), Some("com.apple.Safari"));
+            assert!(info.sandboxed, "Safari 应为沙盒 App");
+        }
+    }
+
+    #[test]
+    fn trash_missing_path_fails_gracefully() {
+        if !backend_available() {
+            return;
+        }
+        assert_eq!(
+            trash_item(Path::new("/nonexistent/thin-xyz-404")),
+            Some(false)
+        );
     }
 
     #[test]
