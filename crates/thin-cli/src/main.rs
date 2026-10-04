@@ -1798,18 +1798,19 @@ fn cmd_apps(args: AppsArgs) -> Result<()> {
     let min = parse_size_arg(&args.min)?;
     let apps = apps::list_apps();
     println!(
-        "{:<6} {:>10}  {:<12} {:<28} Bundle ID",
-        "等级", "总占用", "关联残留", "App"
+        "{:<6} {:>10}  {:<12} {:<8} {:<28} Bundle ID",
+        "等级", "总占用", "关联残留", "状态", "App"
     );
-    println!("{}", "-".repeat(96));
+    println!("{}", "-".repeat(104));
     for a in apps.into_iter().filter(|a| a.total() >= min) {
         let t = apps::tier(a.total());
         println!(
-            "  {}{}\x1b[0m   {:>10}  {:<12} {:<28} {}",
+            "  {}{}\x1b[0m   {:>10}  {:<12} {:<8} {:<28} {}",
             tier_ansi(t),
             t.label(),
             human(a.total()),
             human(a.leftovers_size()),
+            if a.running { "● 运行中" } else { "" },
             truncate(&a.name, 28),
             a.bundle_id.unwrap_or_default()
         );

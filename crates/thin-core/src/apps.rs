@@ -10,6 +10,8 @@ pub struct AppInfo {
     pub path: PathBuf,
     pub bundle_id: Option<String>,
     pub size: u64,
+    /// 当前是否在运行（运行中的 App 不允许卸载）
+    pub running: bool,
     /// 关联残留
     pub leftovers: Vec<Leftover>,
 }
@@ -99,12 +101,14 @@ pub fn list_apps() -> Vec<AppInfo> {
                 .unwrap_or_default();
             let size = crate::fsutil::dir_size(&path);
             let bundle_id = bundle_id(&path);
+            let running = is_running(&path);
             let leftovers = find_leftovers(&name, bundle_id.as_deref(), &path);
             AppInfo {
                 name,
                 path,
                 bundle_id,
                 size,
+                running,
                 leftovers,
             }
         })

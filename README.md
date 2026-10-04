@@ -206,7 +206,7 @@ thin large ~/Documents --min 100MB --json      # 机器可读（含 protected �
 thin dupes ~/Downloads --min 10MB              # 只读报告（受保护副本标 [已保护]，不计入可回收）
 thin dupes ~/Downloads --min 10MB --json       # 机器可读报告
 thin dupes ~/Downloads --min 10MB --apply      # 每组保留首个，其余移入隔离区（预览=执行）
-thin apps                                      # 列出全部 App（含关联残留），带体积分级
+thin apps                                      # 列出全部 App（含关联残留），带体积分级与「● 运行中」标记
 thin apps --min 500MB                          # 只看大件
 thin uninstall <名称>                           # 预览卸载计划
 thin uninstall <名称> --apply                   # 卸载并移入隔离区

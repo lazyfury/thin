@@ -1543,7 +1543,11 @@ fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
                             format!("{:<4} ", t.label()),
                             Style::default().fg(tier_color(t)),
                         ),
-                        Span::raw(truncate(&a.name, 26)),
+                        Span::styled(
+                            if a.running { "● " } else { "  " },
+                            Style::default().fg(Color::Green),
+                        ),
+                        Span::raw(truncate(&a.name, 24)),
                         Span::styled(
                             format!("  {}", a.bundle_id.clone().unwrap_or_default()),
                             Style::default().fg(Color::DarkGray),
@@ -1575,6 +1579,17 @@ fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
                 if let Some(bid) = &a.bundle_id {
                     text.push(Line::from(format!("Bundle ID: {bid}")));
                 }
+                text.push(Line::from(vec![
+                    Span::raw("状态: "),
+                    Span::styled(
+                        if a.running { "运行中" } else { "未运行" },
+                        Style::default().fg(if a.running {
+                            Color::Green
+                        } else {
+                            Color::DarkGray
+                        }),
+                    ),
+                ]));
                 text.push(Line::from(""));
                 for l in &a.leftovers {
                     let sp = l.path.display().to_string();
@@ -1825,6 +1840,7 @@ mod tests {
             path: PathBuf::from(format!("/Applications/{name}.app")),
             bundle_id: bundle.map(str::to_string),
             size: 1024,
+            running: false,
             leftovers: vec![],
         }
     }
@@ -1883,6 +1899,18 @@ mod tests {
         let text = render(&mut app, 100, 30);
         assert!(!text.contains("m 显示需 sudo"), "{text}");
         assert!(!text.contains("b 显示 protect"), "{text}");
+    }
+
+    #[test]
+    fn apps_tab_shows_running_status() {
+        let mut app = test_app();
+        app.tab = APPS_TAB;
+        let mut running = app_info("Running", Some("com.example.run"));
+        running.running = true;
+        app.apps = Load::Ready(vec![running, app_info("Idle", Some("com.example.idle"))]);
+        let text = render(&mut app, 120, 30);
+        assert!(text.contains('●'), "列表应有运行标记: {text}");
+        assert!(text.contains("状态: 运行中"), "详情应显示运行状态: {text}");
     }
 
     #[test]
