@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -184,7 +184,9 @@ impl App {
             }
             6 => {
                 if self.browse.is_none() {
-                    self.browse = Some(BrowseState::new(root));
+                    let mut b = BrowseState::new(root);
+                    b.set_embedded();
+                    self.browse = Some(b);
                 }
             }
             _ => {}
@@ -408,7 +410,18 @@ impl App {
         }
     }
 
-    fn on_key(&mut self, code: KeyCode) {
+    fn on_key(&mut self, key: KeyEvent) {
+        let code = key.code;
+        // Ctrl+C 退出；带修饰键的其它按键不触发动作（避免把 Ctrl+C 当成 'c' 清理）
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            if matches!(code, KeyCode::Char('c')) {
+                self.quit = true;
+            }
+            return;
+        }
+        if !key.modifiers.is_empty() {
+            return;
+        }
         if self.confirm {
             match code {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => self.apply(),
@@ -509,7 +522,7 @@ fn event_loop(
         if event::poll(Duration::from_millis(80))? {
             if let Event::Key(key) = event::read()? {
                 if key.kind == KeyEventKind::Press {
-                    app.on_key(key.code);
+                    app.on_key(key);
                 }
             }
         }
@@ -1187,6 +1200,11 @@ fn field(label: &str, value: &str) -> Line<'static> {
 }
 
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+    // 「浏览」页有自己的页脚（上下文提示/状态），此处留空避免重复
+    if app.tab == BROWSE_TAB {
+        frame.render_widget(Paragraph::new(""), area);
+        return;
+    }
     let text = if let Some(s) = &app.status {
         s.clone()
     } else if app.help {

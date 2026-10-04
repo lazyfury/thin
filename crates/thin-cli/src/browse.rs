@@ -5,7 +5,7 @@
 
 use anyhow::Result;
 use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind},
+    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -100,6 +100,9 @@ pub struct BrowseState {
     help: bool,
     tick: usize,
     status: Option<String>,
+    status_at: usize,
+    /// 是否嵌入在主 TUI 标签页（影响页脚文案）
+    embedded: bool,
 }
 
 impl BrowseState {
@@ -125,6 +128,8 @@ impl BrowseState {
             help: false,
             tick: 0,
             status: None,
+            status_at: 0,
+            embedded: false,
         };
         app.load();
         app
@@ -167,20 +172,35 @@ impl BrowseState {
             }
             Ok(Err(e)) => {
                 if loader.generation == self.generation {
-                    self.status = Some(format!("加载失败: {e}"));
+                    self.set_status(format!("加载失败: {e}"));
                 }
             }
             Err(TryRecvError::Empty) => self.loader = Some(loader),
             Err(TryRecvError::Disconnected) => {
                 if loader.generation == self.generation {
-                    self.status = Some("加载中断".into());
+                    self.set_status("加载中断");
                 }
             }
         }
     }
 
+    /// 标记为嵌入模式（主 TUI 标签页）
+    pub fn set_embedded(&mut self) {
+        self.embedded = true;
+    }
+
     pub fn tick(&mut self) {
         self.tick = self.tick.wrapping_add(1);
+        // 瞬时提示几秒后自动消失，恢复底部快捷键提示
+        if self.status.is_some() && self.tick.wrapping_sub(self.status_at) > 45 {
+            self.status = None;
+        }
+    }
+
+    /// 设置底部瞬时提示（带自动消失计时）
+    fn set_status(&mut self, s: impl Into<String>) {
+        self.status = Some(s.into());
+        self.status_at = self.tick;
     }
 
     fn rebuild_visible(&mut self) {
@@ -239,7 +259,7 @@ impl BrowseState {
             self.stack.push(dir);
             self.load();
         } else {
-            self.status = Some("只能进入目录".into());
+            self.set_status("只能进入目录");
         }
     }
 
@@ -248,7 +268,7 @@ impl BrowseState {
             self.stack.pop();
             self.load();
         } else {
-            self.status = Some("已在起点".into());
+            self.set_status("已在起点");
         }
     }
 
@@ -288,10 +308,10 @@ impl BrowseState {
                     .first()
                     .map(|s| s.reason.clone())
                     .unwrap_or_default();
-                self.status = Some(format!("未清理：{reason}"));
+                self.set_status(format!("未清理：{reason}"));
             }
             Ok(journal) => {
-                self.status = Some(format!(
+                self.set_status(format!(
                     "已移入隔离区（thin quarantine restore {}）",
                     journal.session
                 ));
@@ -299,7 +319,7 @@ impl BrowseState {
                 self.cache.remove(&dir);
                 self.load();
             }
-            Err(e) => self.status = Some(format!("清理失败: {e:#}")),
+            Err(e) => self.set_status(format!("清理失败: {e:#}")),
         }
     }
 
@@ -376,7 +396,7 @@ impl BrowseState {
         if matches!(code, KeyCode::Esc) && self.loader.is_some() {
             // 取消正在进行的加载
             self.loader = None;
-            self.status = Some("已取消加载".into());
+            self.set_status("已取消加载");
             return false;
         }
         match code {
@@ -405,16 +425,16 @@ impl BrowseState {
             KeyCode::Char('s') => {
                 self.sort = self.sort.next();
                 self.rebuild_visible();
-                self.status = Some(format!("排序: {}", self.sort.label()));
+                self.set_status(format!("排序: {}", self.sort.label()));
             }
             KeyCode::Char('b') => {
                 let dir = self.cwd().to_path_buf();
                 if let Some(pos) = self.bookmarks.iter().position(|p| *p == dir) {
                     self.bookmarks.remove(pos);
-                    self.status = Some("已取消书签".into());
+                    self.set_status("已取消书签");
                 } else {
                     self.bookmarks.push(dir);
-                    self.status = Some("已加书签（B 打开列表）".into());
+                    self.set_status("已加书签（B 打开列表）");
                 }
                 let _ = save_bookmarks(&self.bookmarks);
             }
@@ -427,7 +447,7 @@ impl BrowseState {
                     if row.rec.cleanable && !row.rec.protected {
                         self.confirm = true;
                     } else {
-                        self.status = Some("该项不可清理（未被规则命中或受保护）".into());
+                        self.set_status("该项不可清理（未被规则命中或受保护）");
                     }
                 }
             }
@@ -504,8 +524,14 @@ fn event_loop(
         terminal.draw(|f| state.render(f, f.area()))?;
         if event::poll(Duration::from_millis(80))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press && state.on_key(key.code) {
-                    quit = true;
+                if key.kind == KeyEventKind::Press {
+                    if key.modifiers.contains(KeyModifiers::CONTROL)
+                        && matches!(key.code, KeyCode::Char('c'))
+                    {
+                        quit = true;
+                    } else if key.modifiers.is_empty() && state.on_key(key.code) {
+                        quit = true;
+                    }
                 }
             }
         }
@@ -668,8 +694,7 @@ fn render_list(frame: &mut Frame, app: &mut BrowseState, area: Rect) {
         .collect();
 
     let title = format!(
-        "{}  ·  {} 项 · 排序:{}{}",
-        app.cwd().display(),
+        "{} 项 · 排序:{}{}",
         app.visible.len(),
         app.sort.label(),
         if app.show_hidden { " · 含隐藏" } else { "" }
@@ -760,8 +785,10 @@ fn render_footer(frame: &mut Frame, app: &BrowseState, area: Rect) {
         s.clone()
     } else if app.loader.is_some() {
         "加载中…  Esc 取消".into()
+    } else if app.embedded {
+        " ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · s 排序 · t 占用图 · b 书签 · c 清理 · q 返回".into()
     } else {
-        " ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · t 占用图 · c 清理 · r 重载 · . 隐藏 · ? 帮助 · q 退出"
+        " ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · s 排序 · t 占用图 · b 书签 · c 清理 · ? 帮助 · q 退出"
             .into()
     };
     frame.render_widget(
