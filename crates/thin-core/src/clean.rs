@@ -151,6 +151,21 @@ const BARE_ROOTS: &[&str] = &[
     "/var",
 ];
 
+/// 用户个人目录「顶层」：绝不整体搬走，但其内部的具体缓存/项目产物仍可清理。
+///
+/// 与 [`DENY_SUBTREES`] 不同，这里只保护目录**本身**（精确匹配），不保护其子树，
+/// 因此`~/Documents/proj/target` 这类仍可被规则命中，而 `~/Documents` 本身不会被清空。
+const HOME_BARE_ROOTS: &[&str] = &[
+    "Desktop",
+    "Documents",
+    "Downloads",
+    "Library",
+    "Movies",
+    "Music",
+    "Pictures",
+    "Public",
+];
+
 /// 解析路径所在卷的设备号；路径不存在时向上找到最近的已存在祖先。
 fn volume_device(path: &Path) -> Option<u64> {
     let mut cur = Some(path);
@@ -169,6 +184,29 @@ fn volume_device(path: &Path) -> Option<u64> {
 /// `ref_vol` 为隔离区所在卷的参考路径：与它不处于同一卷的目标（外接盘、其他挂载）
 /// 一律拒绝，避免跨卷复制带来的双倍空间占用与半成品数据。
 pub fn protection_reason_in(path: &Path, ref_vol: Option<&Path>) -> Option<String> {
+    if let Some(reason) = static_protection_reason(path) {
+        return Some(reason);
+    }
+
+    // 卷隔离：目标必须与隔离区同卷，否则拒绝（外接盘 / 其他挂载）
+    // 注：静态校验不涉及卷，故这里单独判断，避免 discover 在任意卷上误报。
+    if let Some(vol) = ref_vol {
+        let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if let (Some(a), Some(b)) = (volume_device(&canon), volume_device(vol)) {
+            if a != b {
+                return Some(format!(
+                    "位于不同卷（外接盘/其他挂载），不在隔离区所在卷 {}",
+                    vol.display()
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// 与卷/挂载无关的静态保护判断：根目录、主目录、隐私目录、个人目录顶层、
+/// 拒绝子树与裸顶层根、挂载点。供清理安全门与「归因 / 建规则预检」共用。
+pub fn static_protection_reason(path: &Path) -> Option<String> {
     // 基础校验：空路径 / 控制字符 / `..` 组件
     if path.as_os_str().is_empty() {
         return Some("空路径".into());
@@ -206,6 +244,12 @@ pub fn protection_reason_in(path: &Path, ref_vol: Option<&Path>) -> Option<Strin
                 return Some(format!("受保护路径 {}", p.display()));
             }
         }
+        // 个人目录顶层：只保护目录本身，允许清理其内部的具体缓存/项目产物
+        for sub in HOME_BARE_ROOTS {
+            if canon == h.join(sub) {
+                return Some(format!("个人目录顶层，禁止整体清理 {}", canon.display()));
+            }
+        }
     }
 
     // 其他用户主目录（/Users/<name> 本身）
@@ -240,18 +284,6 @@ pub fn protection_reason_in(path: &Path, ref_vol: Option<&Path>) -> Option<Strin
             use std::os::unix::fs::MetadataExt;
             if a.dev() != b.dev() {
                 return Some("是挂载点".into());
-            }
-        }
-    }
-
-    // 卷隔离：目标必须与隔离区同卷，否则拒绝（外接盘 / 其他挂载）
-    if let Some(vol) = ref_vol {
-        if let (Some(a), Some(b)) = (volume_device(&canon), volume_device(vol)) {
-            if a != b {
-                return Some(format!(
-                    "位于不同卷（外接盘/其他挂载），不在隔离区所在卷 {}",
-                    vol.display()
-                ));
             }
         }
     }
@@ -422,7 +454,7 @@ pub fn quarantine_into(home: &Path, items: &[CleanItem], dry_run: bool) -> Resul
             if let Err(e) = move_path(&it.path, &stored) {
                 journal.skipped.push(SkippedItem {
                     path: it.path.clone(),
-                    reason: format!("{e:#}"),
+                    reason: describe_move_error(&e),
                 });
                 continue;
             }
@@ -446,6 +478,26 @@ pub fn quarantine_into(home: &Path, items: &[CleanItem], dry_run: bool) -> Resul
         std::fs::write(&path, json).context("写入账本失败")?;
     }
     Ok(journal)
+}
+
+/// 把移动失败转成可操作的建议。
+///
+/// macOS 上 `~/Library/Caches` 等目录整体搬迁常因 TCC（隐私保护）返回
+/// `EPERM: Operation not permitted`，底层 errno 对用户毫无指引，这里补上。
+fn describe_move_error(e: &anyhow::Error) -> String {
+    let is_eperm = e.chain().any(|c| {
+        c.downcast_ref::<std::io::Error>()
+            .and_then(|io| io.raw_os_error())
+            == Some(libc::EPERM)
+    });
+    let msg = format!("{e:#}");
+    if is_eperm {
+        format!(
+            "{msg}\n    提示：该目录受 macOS 隐私保护（TCC）。请在 系统设置 → 隐私与安全 → 完全磁盘访问权限 中授权 thin，或改清其内部的具体子项。"
+        )
+    } else {
+        msg
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -594,6 +646,11 @@ mod tests {
         assert!(protection_reason(Path::new("/Library")).is_some());
         assert!(protection_reason(Path::new("/private/var")).is_some());
         assert!(protection_reason(Path::new("/usr")).is_some());
+        // 个人目录顶层：整体不可清，但其内部具体缓存/产物允许
+        assert!(protection_reason(&home.join("Documents")).is_some());
+        assert!(protection_reason(&home.join("Downloads")).is_some());
+        assert!(protection_reason(&home.join("Library")).is_some());
+        assert!(protection_reason(&home.join("Documents/proj/node_modules")).is_none());
         // 普通文件不受保护
         assert!(protection_reason(Path::new("/tmp/thin-test-nonexistent")).is_none());
     }

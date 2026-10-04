@@ -8,7 +8,7 @@ use clap::{CommandFactory, Parser, Subcommand};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use thin_core::fmt::human;
-use thin_core::model::{Category, Risk};
+use thin_core::model::{Category, Matcher, Risk};
 use thin_core::{
     CleanItem, Rule, apps, clean, discover, finder, fsutil, history, preset, probe, rules, scan,
     schedule,
@@ -642,6 +642,24 @@ fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
         )
     };
 
+    // 预检：受保护 / 个人目录顶层不得建成清理规则（与 clean 安全门共用同一判断）。
+    // 这样 `discover` 之类的建议即使被直接照做，也会在写盘前被拦下，
+    // 而不是等到 clean 才发现「整份 ~/Documents 会被搬走」。
+    if let Matcher::Path { paths } = &rule.matcher {
+        for raw in paths {
+            if let Some(p) = fsutil::expand(raw) {
+                if let Some(reason) = clean::static_protection_reason(&p) {
+                    anyhow::bail!(
+                        "拒绝写入规则 {}：目标 {} 受保护（{}）\n提示：个人目录本身不可整体清理；如需清理其内部的具体缓存，请指向子路径。",
+                        rule.id,
+                        p.display(),
+                        reason
+                    );
+                }
+            }
+        }
+    }
+
     let saved = if args.dir {
         rules::save_dir_rule(&rule)?
     } else {
@@ -710,21 +728,36 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
         .iter()
         .filter(|f| matches!(f.coverage, discover::Coverage::None))
         .collect();
+    // 绝不建议把受保护 / 个人目录（如 ~/Documents、iCloud、~/.thin）建成清理规则
+    let (suggestible, protected): (Vec<_>, Vec<_>) = none
+        .into_iter()
+        .partition(|f| clean::static_protection_reason(&f.path).is_none());
     let partial: Vec<_> = report
         .findings
         .iter()
         .filter(|f| matches!(f.coverage, discover::Coverage::Partial(_)))
         .collect();
-    if !none.is_empty() {
-        println!("\n\x1b[1m未归类大目录 —— 可用 thin rule add 补规则:\x1b[0m");
-        for f in none {
+    if !suggestible.is_empty() {
+        println!("\n\x1b[1m未归类大目录 —— 可用 thin rules add 补规则:\x1b[0m");
+        for f in &suggestible {
             let p = f.path.display().to_string();
             println!(
-                "  thin rule add --path \"{}\" --id {}",
+                "  thin rules add --path \"{}\" --id {}",
                 p,
                 rules::slug_for(&p)
             );
         }
+    }
+    if !protected.is_empty() {
+        let list: Vec<String> = protected
+            .iter()
+            .map(|f| format!("{}（{}）", shorten(&f.path), human(f.size)))
+            .collect();
+        println!(
+            "\n\x1b[90m已跳过 {} 个受保护/个人目录的建议: {}\x1b[0m",
+            protected.len(),
+            list.join("、")
+        );
     }
     if !partial.is_empty() {
         println!("\n\x1b[1m部分覆盖 —— 可继续下钻:\x1b[0m");

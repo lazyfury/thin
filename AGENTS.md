@@ -57,9 +57,11 @@ thin large ~/Library --min 500MB --limit 30
 - `部分(<规则id>)` —— 目录内有规则，但本身还有未归类数据
 - `未归类` —— 完全没有规则
 
-`discover` 文本输出末尾会直接给出下一步可执行的 `thin rule add ...` 命令，并附**覆盖率自检**
-（直接子项合计 / 已归类 / 部分覆盖 / 未归类）。`--json` 输出对象：
-`{ root, total, covered, partial, uncovered, coverageRatio, findings: [...] }`。
+`discover` 文本输出末尾会直接给出下一步可执行的 `thin rules add ...` 命令，并附**覆盖率自检**
+（直接子项合计 / 已归类 / 部分覆盖 / 未归类）。受保护/个人目录（`~/Documents`、`~/Library`、
+iCloud、`~/.thin` 等）只会被归因，**不会**出现在建议里（会以「已跳过 N 个受保护/个人目录」提示）。
+`--json` 输出对象：`{ root, total, covered, partial, uncovered, coverageRatio, findings: [...] }`。
+注意：`rules add` 会在写盘前用与清理相同的安全门预检，个人目录顶层会被直接拒绝。
 
 `scan --json` 额外返回 `accountedBytes`（规则命中总量，含嵌套去重）与 `volume`（主卷 total/used/avail），
 用于说明「已知可清理项」占已用的比例（**不等于「未归类」**，后者用 `discover`）。

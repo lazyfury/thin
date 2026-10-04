@@ -63,24 +63,41 @@ fn is_nested<'a>(path: &std::path::Path, all: &'a [CleanItem]) -> Option<&'a Cle
         .find(|o| o.path != path && path.starts_with(&o.path))
 }
 
-/// 汇总可回收空间（排除嵌套重复项与需 sudo 的项，避免虚高与不可执行）
+/// 汇总可回收空间（排除嵌套重复项与需 sudo 的项，避免虚高与不可执行）。
+///
+/// 关键点：**按风险分层去重**。低风险项在默认清理时会被独立选中，
+/// 若它恰好嵌在一个高风险父项内（如 `~/Library/Caches/Google` 嵌在
+/// `~/Library/Caches` 内），按全量去重会把它的体积吞进父项，导致
+/// `scan` 报「安全 0 B」而 `clean` 默认实际又能安全清理，口径自相矛盾。
+///
+/// 因此每一档只对「该档及更低风险的项」做顶层去重，再取增量：
+/// - `safe`       = 只选安全项时的可释放量
+/// - `confirm`    = 加上需确认项后**新增**的可释放量
+/// - `destructive`= 再加上不可再生项后**新增**的量（仅 `--id` 会用到）
 pub fn summarize(items: &[CleanItem]) -> ReclaimSummary {
     let mut s = ReclaimSummary::default();
-    for it in items {
-        if is_nested(&it.path, items).is_some() {
-            continue;
-        }
-        // 需 sudo 的项清理时会被安全门跳过，不能算作可回收
-        if it.sudo {
-            s.manual = s.manual.saturating_add(it.size);
-            continue;
-        }
-        match it.risk {
-            Risk::Safe => s.safe = s.safe.saturating_add(it.size),
-            Risk::Confirm => s.confirm = s.confirm.saturating_add(it.size),
-            Risk::Destructive => s.destructive = s.destructive.saturating_add(it.size),
-        }
-    }
+
+    // 某风险档及以下的「顶层非 sudo」体积
+    let top_bytes = |max: Risk| -> u64 {
+        let subset: Vec<CleanItem> = items.iter().filter(|i| i.risk <= max).cloned().collect();
+        top_level(&subset)
+            .iter()
+            .filter(|i| !i.sudo)
+            .fold(0u64, |acc, i| acc.saturating_add(i.size))
+    };
+
+    s.safe = top_bytes(Risk::Safe);
+    s.confirm = top_bytes(Risk::Confirm).saturating_sub(s.safe);
+    s.destructive = top_bytes(Risk::Destructive)
+        .saturating_sub(s.safe)
+        .saturating_sub(s.confirm);
+
+    // 需 sudo 的项：只在「全量顶层」中统计，被父项覆盖的 sudo 子项不重复计入
+    s.manual = top_level(items)
+        .iter()
+        .filter(|i| i.sudo)
+        .fold(0u64, |acc, i| acc.saturating_add(i.size));
+
     s
 }
 
@@ -164,6 +181,24 @@ mod tests {
         assert_eq!(nested_count(&items), 1);
         assert_eq!(top_level(&items).len(), 1);
         assert_eq!(planned_bytes(&items), 1000);
+    }
+
+    #[test]
+    fn summarize_keeps_safe_child_under_confirm_parent() {
+        // `~/Library/Caches`(confirm) 里嵌着 `.../homebrew`(safe)：默认清理只选 safe，
+        // 所以 safe 档必须报出 400（否则就是「scan 说安全 0 B，clean 却能清」的矛盾）。
+        let items = vec![
+            item("/a/caches", 1000, Risk::Confirm, false),
+            item("/a/caches/homebrew", 400, Risk::Safe, false),
+        ];
+        let s = summarize(&items);
+        assert_eq!(s.safe, 400);
+        assert_eq!(
+            s.confirm, 600,
+            "confirm 增量 = 父项 1000 - 已计入的 safe 400"
+        );
+        assert_eq!(s.total_reclaimable(), 1000);
+        assert_eq!(s.manual, 0);
     }
 
     #[test]
