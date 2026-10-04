@@ -2,7 +2,38 @@ use rayon::prelude::*;
 use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use walkdir::WalkDir;
+
+/// 系统挂载点集合（进程内缓存，只取一次）。
+///
+/// 注意：APFS 各卷共享同一个 `st_dev`，因此**不能用设备号区分卷**，必须靠挂载点，
+/// 否则 `/System` 会把 `/System/Volumes/Data`（数据卷）整个算进去、与 `/Users` 重复。
+fn mount_points() -> &'static HashSet<PathBuf> {
+    static MOUNTS: OnceLock<HashSet<PathBuf>> = OnceLock::new();
+    MOUNTS.get_or_init(|| {
+        let mut set = HashSet::new();
+        unsafe {
+            let mut buf: *mut libc::statfs = std::ptr::null_mut();
+            let n = libc::getmntinfo(&mut buf, libc::MNT_NOWAIT);
+            if n > 0 && !buf.is_null() {
+                for i in 0..n as isize {
+                    let fs = &*buf.offset(i);
+                    let mp = std::ffi::CStr::from_ptr(fs.f_mntonname.as_ptr());
+                    if let Ok(s) = mp.to_str() {
+                        set.insert(PathBuf::from(s));
+                    }
+                }
+            }
+        }
+        set
+    })
+}
+
+/// 路径是否是挂载点（另一卷的挂载根）。用于避免跨卷统计/遍历。
+pub fn is_mount_point(path: &Path) -> bool {
+    mount_points().contains(path)
+}
 
 /// 展开开头的 ~ 为用户主目录
 pub fn expand(path: &str) -> Option<PathBuf> {
@@ -49,8 +80,8 @@ pub fn dir_size(path: &Path) -> u64 {
             Err(_) => continue,
         };
         if md.is_dir() {
-            // 遇到别的设备（挂载点）则不下钻
-            if md.dev() != root_dev {
+            // 遇到别的设备或挂载点（APFS 各卷共享 st_dev，故必须查挂载点）则不下钻
+            if md.dev() != root_dev || is_mount_point(entry.path()) {
                 it.skip_current_dir();
             }
             continue;
@@ -97,7 +128,7 @@ pub fn logical_size(path: &Path) -> u64 {
             Err(_) => continue,
         };
         if md.is_dir() {
-            if root_dev.is_some() && Some(md.dev()) != root_dev {
+            if (root_dev.is_some() && Some(md.dev()) != root_dev) || is_mount_point(entry.path()) {
                 it.skip_current_dir();
             }
             continue;
@@ -140,6 +171,107 @@ pub fn children_sizes_progress(
     v
 }
 
+/// 目录条目的类型（用于文件浏览/`thin ls`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EntryKind {
+    Dir,
+    File,
+    /// 符号链接（不跟随）
+    Symlink,
+    /// 挂载点（设备号与父目录不同，不跨卷统计）
+    Mount,
+    /// 无权限读取（如 macOS TCC 保护目录）
+    Inaccessible,
+}
+
+impl EntryKind {
+    pub fn label(&self) -> &'static str {
+        match self {
+            EntryKind::Dir => "目录",
+            EntryKind::File => "文件",
+            EntryKind::Symlink => "链接",
+            EntryKind::Mount => "挂载",
+            EntryKind::Inaccessible => "无权",
+        }
+    }
+}
+
+/// 一层目录里的一个子项（保留类型与符号链接目标，供浏览使用）。
+#[derive(Debug, Clone)]
+pub struct ChildEntry {
+    pub path: PathBuf,
+    pub kind: EntryKind,
+    /// 递归实占；符号链接/挂载点/无权限为 0
+    pub size: u64,
+    pub target: Option<PathBuf>,
+}
+
+/// 列出目录的直接子项（含类型），按大小降序。与 [`children_sizes`] 不同：
+/// 不过滤 0 字节、区分文件/链接/挂载/无权限，适合文件浏览。
+pub fn children_entries(root: &Path) -> Vec<ChildEntry> {
+    children_entries_progress(root, &crate::progress::Progress::new())
+}
+
+pub fn children_entries_progress(
+    root: &Path,
+    progress: &crate::progress::Progress,
+) -> Vec<ChildEntry> {
+    let mut paths = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(root) {
+        for e in entries.flatten() {
+            paths.push(e.path());
+        }
+    }
+    progress.set_label("统计目录占用");
+    progress.set_total(paths.len() as u64);
+    let root_dev = device_of(root);
+    let mut v: Vec<ChildEntry> = paths
+        .into_par_iter()
+        .map(|p| {
+            let entry = match std::fs::symlink_metadata(&p) {
+                Ok(m) if m.file_type().is_symlink() => ChildEntry {
+                    target: std::fs::read_link(&p).ok(),
+                    path: p,
+                    kind: EntryKind::Symlink,
+                    size: 0,
+                },
+                Ok(m) if m.is_dir() => {
+                    let kind = if Some(m.dev()) != root_dev || is_mount_point(&p) {
+                        EntryKind::Mount
+                    } else if std::fs::read_dir(&p).is_err() {
+                        EntryKind::Inaccessible
+                    } else {
+                        EntryKind::Dir
+                    };
+                    let size = size_of(&p);
+                    ChildEntry {
+                        path: p,
+                        kind,
+                        size,
+                        target: None,
+                    }
+                }
+                Ok(_) => ChildEntry {
+                    size: size_of(&p),
+                    path: p,
+                    kind: EntryKind::File,
+                    target: None,
+                },
+                Err(_) => ChildEntry {
+                    path: p,
+                    kind: EntryKind::Inaccessible,
+                    size: 0,
+                    target: None,
+                },
+            };
+            progress.inc();
+            entry
+        })
+        .collect();
+    v.sort_by(|a, b| b.size.cmp(&a.size));
+    v
+}
+
 /// 在 roots 下查找名为 dir_name 的目录（限定深度），可选要求同级存在某个文件。
 pub fn find_dirs(
     roots: &[PathBuf],
@@ -165,6 +297,11 @@ pub fn find_dirs(
                 Err(_) => continue,
             };
             if entry.depth() == 0 || !entry.file_type().is_dir() {
+                continue;
+            }
+            // 不跨卷查找（挂载点/其他 APFS 卷）
+            if is_mount_point(entry.path()) {
+                it.skip_current_dir();
                 continue;
             }
             if entry.file_name() != dir_name {

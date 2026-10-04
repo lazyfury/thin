@@ -105,6 +105,11 @@ thin top ~/Library --limit 20     # 某目录下最大的子项（类似 du -sh 
 thin discover --min 1G            # 找出「未被规则覆盖」的大目录
 thin discover --json              # 机器可读
 
+# 浏览与学习：给目录标注用途（这是什么 / 能不能删）
+thin ls /                         # 根目录：每个 Unix 风格目录的用途
+thin ls ~/Library -l              # -l 显示说明与参考(如 man hier)
+thin ls /System/Volumes --json    # 机器可读
+
 thin                              # 无参数：进入交互式 TUI
 thin tui                          # 显式进入 TUI
 thin tui --min 100MB
@@ -214,6 +219,7 @@ thin schedule uninstall
 | 稀疏文件（如 `Docker.raw` 逻辑 228GB / 实占 74MB） | 按实际分配块统计 ✅ |
 | 硬链接（如 Rust `.a` 文件） | 按 (dev, inode) 去重 ✅ |
 | 跨挂载点 / 外接盘 | 不跨越文件系统边界，外接卷单独标注 ✅ |
+| APFS 多卷 / firmlink | APFS 各卷**共享同一个 `st_dev`**，按**挂载点**(`getmntinfo`)而非设备号识别卷边界，避免 `/System` 重复计入数据卷 ✅ |
 | 父子路径重复（`~/Library/Caches` 与其子目录） | 汇总时按风险分层去重，safe 子项不被 confirm 父项吞掉 ✅ |
 | APFS 克隆共享块 | 已知局限，暂无法在此层面拆分 ⚠️ |
 

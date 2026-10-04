@@ -1,3 +1,4 @@
+mod ls;
 mod report;
 mod top;
 mod treemap;
@@ -35,6 +36,9 @@ enum Cmd {
 
     /// 列出某目录下最大的子项（类似 du -sh PATH/* | sort -rh）
     Top(TopArgs),
+
+    /// 浏览目录：列出子项并标注用途（学习向，只读）
+    Ls(ls::LsArgs),
 
     /// 交互式 TUI（浏览、勾选、移入隔离区）
     Tui(TuiArgs),
@@ -461,6 +465,7 @@ fn main() -> Result<()> {
             top::run(path, args.limit);
         }
         Cmd::Tui(args) => cmd_tui(args)?,
+        Cmd::Ls(args) => ls::run(args)?,
         Cmd::Rules(args) => cmd_rules(args)?,
         Cmd::Discover(args) => cmd_discover(args)?,
         Cmd::Clean(args) => cmd_clean(args)?,

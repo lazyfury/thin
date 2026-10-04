@@ -70,7 +70,7 @@ fn walk_files(roots: &[PathBuf], min_size: u64, progress: Option<&Progress>) -> 
                     it.skip_current_dir();
                     continue;
                 }
-                if Some(md.dev()) != root_dev {
+                if Some(md.dev()) != root_dev || crate::fsutil::is_mount_point(entry.path()) {
                     it.skip_current_dir();
                 }
                 continue;

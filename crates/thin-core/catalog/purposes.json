@@ -1,0 +1,619 @@
+{
+  "entries": [
+    {
+      "paths": ["/"],
+      "title": "根目录",
+      "kind": "system",
+      "safety": "protected",
+      "note": "文件系统的起点。macOS 自 Catalina 起把系统与数据分成两个卷：/ 是只读系统卷，用户数据在 /System/Volumes/Data，再通过 firmlink 让 /Users、/Library 等出现在根下。",
+      "reference": "man hier"
+    },
+    {
+      "paths": ["/bin", "/sbin"],
+      "title": "Unix 基础命令",
+      "kind": "system",
+      "safety": "protected",
+      "note": "单用户模式与系统引导所依赖的基础命令。/bin 放 ls、cp、sh 等通用命令，/sbin 放 mount、fsck、shutdown 等管理命令。属于只读系统卷，永不清理。",
+      "reference": "man hier"
+    },
+    {
+      "paths": ["/usr"],
+      "title": "Unix 系统资源",
+      "kind": "system",
+      "safety": "protected",
+      "note": "Unix 层级里的系统资源：/usr/bin、/usr/lib、/usr/sbin、/usr/share、/usr/standalone(固件)。macOS 上属于只读系统卷。",
+      "reference": "man hier"
+    },
+    {
+      "paths": ["/usr/local"],
+      "title": "本地安装的软件",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "第三方手动/包管理器安装的软件前缀，历史上是 Homebrew(Intel) 的位置。属于用户安装，不是系统本体，但仍不该随手删。",
+      "reference": "man hier"
+    },
+    {
+      "paths": ["/opt"],
+      "title": "可选软件前缀",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Unix 约定里放「可选」第三方软件。/opt/homebrew 是 Apple Silicon 上的 Homebrew 前缀。",
+      "reference": "man hier"
+    },
+    {
+      "paths": ["/opt/homebrew"],
+      "title": "Homebrew (Apple Silicon)",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Apple Silicon 上的 Homebrew 安装前缀，包含 Cellar、Caskroom 与各类包。/opt/homebrew/Cellar 里旧版本可用 brew cleanup 清理。"
+    },
+    {
+      "paths": ["/etc", "/private/etc"],
+      "title": "系统配置",
+      "kind": "config",
+      "safety": "protected",
+      "note": "Unix 系统配置文件目录(hosts、fstab、ssh、paths 等)。/etc 是指向 /private/etc 的符号链接。修改需谨慎，永不清理。",
+      "reference": "man 5 hosts"
+    },
+    {
+      "paths": ["/tmp", "/private/tmp"],
+      "title": "临时文件",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "进程共享的临时目录(/tmp 指向 /private/tmp)，重启后内容不保证保留。可清理，但可能影响正在运行的程序。",
+      "reference": "man hier"
+    },
+    {
+      "paths": ["/var"],
+      "title": "可变数据入口",
+      "kind": "system-data",
+      "safety": "protected",
+      "note": "/var 是指向 /private/var 的符号链接。真正的日志、缓存、数据库、邮件、spool 都在 /private/var 下。",
+      "reference": "man hier"
+    },
+    {
+      "paths": ["/private"],
+      "title": "Unix 目录的真实位置",
+      "kind": "system-data",
+      "safety": "protected",
+      "note": "macOS 把 /etc、/tmp、/var 的真实内容集中放在 /private 下，根目录里留下同名符号链接。属于系统数据。",
+      "reference": "man hier"
+    },
+    {
+      "paths": ["/private/var"],
+      "title": "可变系统数据",
+      "kind": "system-data",
+      "safety": "precious",
+      "note": "运行期会变化的数据：/var/log 日志、/var/db 数据库、/var/folders 每用户缓存、/var/vm 交换与休眠镜像、/var/spool 队列。整体不可删，只能针对性清理日志/缓存。",
+      "reference": "man hier"
+    },
+    {
+      "paths": ["/private/var/log"],
+      "title": "系统日志",
+      "kind": "log",
+      "safety": "regenerable",
+      "note": "系统与服务的日志文件。可由系统重新生成，thin 内置规则可清理(需 sudo)。",
+      "reference": "man newsyslog"
+    },
+    {
+      "paths": ["/private/var/db"],
+      "title": "系统数据库",
+      "kind": "system-data",
+      "safety": "protected",
+      "note": "系统级数据库与状态：Spotlight 索引、Keychain、诊断(uuidtext/diagnostics)、证书等。受保护，永不整体清理(diagnostics/uuidtext 例外，thin 会单独评估)。"
+    },
+    {
+      "paths": ["/private/var/vm"],
+      "title": "虚拟内存(交换/休眠)",
+      "kind": "vm",
+      "safety": "protected",
+      "note": "swapfile 与 sleepimage：内存交换文件与休眠镜像。大小随内存/使用量波动，手动删除无意义且危险，受保护。"
+    },
+    {
+      "paths": ["/private/var/folders"],
+      "title": "每用户临时/缓存",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "系统为每个用户分配的临时与缓存空间，$TMPDIR 就指向这里。可再生成，重启/登出会回收。"
+    },
+    {
+      "paths": ["/private/var/tmp"],
+      "title": "跨重启临时文件",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "与 /tmp 类似，但设计为跨重启保留。清理前确认没有程序依赖其中内容。"
+    },
+    {
+      "paths": ["/private/tftpboot"],
+      "title": "网络启动目录",
+      "kind": "system",
+      "safety": "precious",
+      "note": "TFTP/NetBoot 相关，默认通常为空。系统级，不建议手动处理。"
+    },
+    {
+      "paths": ["/dev"],
+      "title": "设备文件",
+      "kind": "device",
+      "safety": "protected",
+      "note": "特殊文件系统 devfs：/dev/null、/dev/disk*、/dev/tty* 等，由内核动态维护。不是真实磁盘占用，永不清理。",
+      "reference": "man 4 devfs"
+    },
+    {
+      "paths": ["/System"],
+      "title": "只读系统卷(macOS 本体)",
+      "kind": "system",
+      "safety": "protected",
+      "note": "macOS 系统本体：/System/Library、/System/Applications(系统 App)、/System/Volumes(数据/Preboot/VM 等卷)。受 SIP 保护、只读挂载，永不可清理。",
+      "reference": "man 1 csrutil"
+    },
+    {
+      "paths": ["/System/Library"],
+      "title": "系统资源库",
+      "kind": "system",
+      "safety": "protected",
+      "note": "系统框架、内核扩展、字体、私有框架、系统级缓存等，属于密封系统卷。永不可动。"
+    },
+    {
+      "paths": ["/System/Applications"],
+      "title": "系统自带应用",
+      "kind": "app",
+      "safety": "protected",
+      "note": "macOS 随系统提供的 App(如 Safari、Finder、系统设置)，位于只读系统卷，不能删除。",
+      "reference": "man 1 csrutil"
+    },
+    {
+      "paths": ["/System/Volumes"],
+      "title": "系统卷挂载点",
+      "kind": "mount",
+      "safety": "protected",
+      "note": "macOS 各 APFS 卷的挂载点：Data(用户数据)、Preboot(引导)、VM(虚拟内存)、Update(更新暂存)、xarts/iSCPreboot/Hardware(辅助) 等。它们与系统卷共享同一容器，浏览时不应重复统计。",
+      "reference": "man 8 mount_apfs"
+    },
+    {
+      "paths": ["/System/Volumes/Recovery"],
+      "title": "恢复系统",
+      "kind": "boot",
+      "safety": "protected",
+      "note": "macOS 恢复模式(Recovery)所在的卷。受保护，永不可动。"
+    },
+    {
+      "paths": ["/System/Volumes/BaseSystem"],
+      "title": "基础系统镜像",
+      "kind": "boot",
+      "safety": "protected",
+      "note": "启动时使用的基础系统(BaseSystem)镜像，供恢复/首次启动。受保护。"
+    },
+    {
+      "paths": ["/System/Volumes/FieldServiceDiagnostic", "/System/Volumes/FieldService", "/System/Volumes/FieldServiceRepair"],
+      "title": "诊断/维修工具",
+      "kind": "system",
+      "safety": "protected",
+      "note": "Apple 授权维修/诊断用的系统分区，平时不使用。受保护。"
+    },
+    {
+      "paths": ["/System/Volumes/Data"],
+      "title": "用户数据卷",
+      "kind": "system-data",
+      "safety": "precious",
+      "note": "Catalina 起的独立「数据」卷，/Users、/Applications、/Library 等通过 firmlink 出现在根下。它是这些目录的物理归属，不要与 / 下的 firmlink 重复统计/清理。"
+    },
+    {
+      "paths": ["/System/Volumes/VM"],
+      "title": "虚拟内存卷",
+      "kind": "vm",
+      "safety": "protected",
+      "note": "存放 swapfile、sleepimage 等虚拟内存文件，与内存使用量相关。受保护。"
+    },
+    {
+      "paths": ["/System/Volumes/Preboot"],
+      "title": "预引导卷",
+      "kind": "boot",
+      "safety": "protected",
+      "note": "存放引导所需数据(含恢复分区相关信息)。受保护，永不可动。"
+    },
+    {
+      "paths": ["/System/Volumes/Update"],
+      "title": "系统更新暂存",
+      "kind": "system-data",
+      "safety": "protected",
+      "note": "系统更新过程的暂存卷。不要手动清理，交给系统。"
+    },
+    {
+      "paths": ["/System/Volumes/xarts", "/System/Volumes/iSCPreboot", "/System/Volumes/Hardware"],
+      "title": "系统辅助卷",
+      "kind": "system",
+      "safety": "protected",
+      "note": "xarts(系统组件)、iSCPreboot(Intel 启动)、Hardware 等辅助卷，供固件/恢复使用。受保护。"
+    },
+    {
+      "paths": ["/Library"],
+      "title": "系统级资源库",
+      "kind": "system-data",
+      "safety": "precious",
+      "note": "所有用户共享，但由用户/第三方安装：Application Support、Preferences、LaunchDaemons/LaunchAgents、Fonts、Frameworks、Keychains 等。整体不可删，卸载软件时按其安装内容定向清理。"
+    },
+    {
+      "paths": ["/Library/Application Support"],
+      "title": "系统级应用数据",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "软件在所有用户间共享的支持数据与配置。通常是重要数据，删除会丢配置，需按 App 逐个确认。"
+    },
+    {
+      "paths": ["/Library/Caches"],
+      "title": "系统级缓存",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "系统与第三方在所有用户间共享的缓存。可再生成，安全清理(部分需 sudo)。",
+      "reference": "man 5 caches"
+    },
+    {
+      "paths": ["/Library/Logs"],
+      "title": "系统级日志",
+      "kind": "log",
+      "safety": "regenerable",
+      "note": "所有用户共享的日志。可由系统/程序重建，thin 内置规则可清理(需 sudo)。"
+    },
+    {
+      "paths": ["/Library/Preferences"],
+      "title": "系统级偏好设置",
+      "kind": "config",
+      "safety": "precious",
+      "note": "系统与软件的全局偏好 plist。包含真实设置，删除会丢配置，不是缓存。"
+    },
+    {
+      "paths": ["/Library/LaunchDaemons", "/Library/LaunchAgents"],
+      "title": "系统级启动项",
+      "kind": "config",
+      "safety": "precious",
+      "note": "管理员安装的后台服务(LaunchDaemons)与登录代理(LaunchAgents)。禁用/删除会影响自启动服务，需明确意图。"
+    },
+    {
+      "paths": ["/Library/Keychains"],
+      "title": "系统钥匙串目录",
+      "kind": "config",
+      "safety": "protected",
+      "note": "系统钥匙串位置，存放证书与密钥。受保护，永不清理。"
+    },
+    {
+      "paths": ["/Library/Fonts"],
+      "title": "系统字体",
+      "kind": "system-data",
+      "safety": "precious",
+      "note": "所有用户可用的字体。删除会影响显示/排版，不是缓存。"
+    },
+    {
+      "paths": ["/Library/Frameworks"],
+      "title": "系统级框架",
+      "kind": "system-data",
+      "safety": "precious",
+      "note": "第三方安装的共享框架/库，供多个 App 使用。删除会破坏依赖它的软件。"
+    },
+    {
+      "paths": ["/Library/Extensions"],
+      "title": "系统扩展(内核扩展)",
+      "kind": "system",
+      "safety": "protected",
+      "note": "第三方内核扩展 kext 的位置，受系统安全策略保护。永不可手动清理。"
+    },
+    {
+      "paths": ["/Library/Apple"],
+      "title": "Apple 专用资源",
+      "kind": "system",
+      "safety": "protected",
+      "note": "Apple 放在 /Library 下的系统资源。受保护。"
+    },
+    {
+      "paths": ["/Applications"],
+      "title": "应用程序",
+      "kind": "app",
+      "safety": "precious",
+      "note": "用户与系统安装的 App(.app 目录)。卸载用 thin uninstall 或拖入废纸篓，不要整目录清理。"
+    },
+    {
+      "paths": ["/Users"],
+      "title": "用户主目录根",
+      "kind": "user-data",
+      "safety": "precious",
+      "note": "所有用户的家目录所在地(/Users/<名字>)。包含个人数据，绝不能整体清理。"
+    },
+    {
+      "paths": ["/Users/Shared"],
+      "title": "共享目录",
+      "kind": "user-data",
+      "safety": "precious",
+      "note": "所有用户可读写的共享空间。属于用户内容，需人工确认。"
+    },
+    {
+      "paths": ["~"],
+      "title": "用户主目录",
+      "kind": "user-data",
+      "safety": "precious",
+      "note": "当前用户的家目录（macOS 放在 /Users/<名字>）。包含文稿/桌面/下载等个人目录，以及 Library(应用数据与缓存)。绝不能整体清理。",
+      "reference": "man hier"
+    },
+    {
+      "paths": ["~/Documents"],
+      "title": "文稿",
+      "kind": "user-data",
+      "safety": "precious",
+      "note": "个人文档。除了其中项目自身的构建产物(target/、node_modules)可能可清，目录本身不可清理。"
+    },
+    {
+      "paths": ["~/Desktop"],
+      "title": "桌面",
+      "kind": "user-data",
+      "safety": "precious",
+      "note": "桌面文件。个人数据，不可清理。"
+    },
+    {
+      "paths": ["~/Downloads"],
+      "title": "下载",
+      "kind": "user-data",
+      "safety": "precious",
+      "note": "下载文件。常有大安装包，属于用户内容，需人工确认后处理。"
+    },
+    {
+      "paths": ["~/Pictures"],
+      "title": "图片",
+      "kind": "media",
+      "safety": "precious",
+      "note": "照片与图片(含照片图库)。个人媒体，不可清理。"
+    },
+    {
+      "paths": ["~/Movies"],
+      "title": "影片",
+      "kind": "media",
+      "safety": "precious",
+      "note": "视频文件。个人媒体，不可清理。"
+    },
+    {
+      "paths": ["~/Music"],
+      "title": "音乐",
+      "kind": "media",
+      "safety": "precious",
+      "note": "音乐库(含 Apple Music 资料库)。个人媒体，不可清理。"
+    },
+    {
+      "paths": ["~/Public"],
+      "title": "公共",
+      "kind": "user-data",
+      "safety": "precious",
+      "note": "同机其他用户可访问的共享目录。个人数据，不可清理。"
+    },
+    {
+      "paths": ["~/Applications"],
+      "title": "用户级应用",
+      "kind": "app",
+      "safety": "precious",
+      "note": "仅当前用户可用的 App。卸载用 thin uninstall，不要整目录清理。"
+    },
+    {
+      "paths": ["~/.ssh"],
+      "title": "SSH 密钥与配置",
+      "kind": "config",
+      "safety": "protected",
+      "note": "SSH 私钥、公钥与 config。泄露或删除都会造成严重后果，受保护。"
+    },
+    {
+      "paths": ["~/.config"],
+      "title": "XDG 配置",
+      "kind": "config",
+      "safety": "precious",
+      "note": "遵循 XDG 规范的应用配置(~/.config/<app>)。包含真实设置，不是缓存。"
+    },
+    {
+      "paths": ["~/.cache"],
+      "title": "XDG 缓存",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "遵循 XDG 规范的应用缓存(~/.cache/<app>)。可再生成，thin 内置规则可清理。"
+    },
+    {
+      "paths": ["~/.local"],
+      "title": "XDG 本地数据",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "XDG 规范的用户级数据与程序(~/.local/share、~/.local/bin、~/.local/state)。包含数据与可执行文件，不是缓存。"
+    },
+    {
+      "paths": ["~/Library"],
+      "title": "用户资源库",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "当前用户的应用数据与偏好总目录。Caches/Logs 可再生，Application Support/Containers/Preferences 是应用数据，Keychains/iCloud 受保护。整体不可删。",
+      "reference": "man 5 caches"
+    },
+    {
+      "paths": ["~/Library/Application Support"],
+      "title": "应用数据",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "应用的状态、数据库与配置(如 App 的账号、草稿)。删除会丢数据，需按 App 确认。"
+    },
+    {
+      "paths": ["~/Library/Caches"],
+      "title": "用户缓存",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "应用缓存(网络图片、索引等)。删后会自动重建，第一次打开略慢，可安全清理。"
+    },
+    {
+      "paths": ["~/Library/Containers"],
+      "title": "沙盒应用容器",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "沙盒 App 的私有数据(如文档、偏好、缓存)。可能含重要数据，需按 App 评估。"
+    },
+    {
+      "paths": ["~/Library/Group Containers"],
+      "title": "App 组共享容器",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "同一开发者多个 App 共享的数据容器(如 Office 文档缓存)。含真实数据，需确认。"
+    },
+    {
+      "paths": ["~/Library/Preferences"],
+      "title": "偏好设置",
+      "kind": "config",
+      "safety": "precious",
+      "note": "应用的 plist 设置文件。包含真实偏好，删除会丢设置，不是缓存。"
+    },
+    {
+      "paths": ["~/Library/Logs"],
+      "title": "用户日志",
+      "kind": "log",
+      "safety": "regenerable",
+      "note": "应用与崩溃日志。可再生成，thin 内置规则可清理。"
+    },
+    {
+      "paths": ["~/Library/Keychains"],
+      "title": "用户钥匙串",
+      "kind": "config",
+      "safety": "protected",
+      "note": "登录钥匙串，存放密码与证书。受保护，永不清理。"
+    },
+    {
+      "paths": ["~/Library/Mobile Documents"],
+      "title": "iCloud 云盘",
+      "kind": "user-data",
+      "safety": "protected",
+      "note": "iCloud Drive 的本地镜像。属于云端同步数据，受保护。"
+    },
+    {
+      "paths": ["~/Library/HTTPStorages"],
+      "title": "网络存储",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "App 的网络缓存(HTTP  cookie/响应等)。可再生成。"
+    },
+    {
+      "paths": ["~/Library/WebKit"],
+      "title": "WebKit 数据",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "内嵌网页(WKWebView)的缓存、本地存储与 IndexedDB。可再生成。"
+    },
+    {
+      "paths": ["~/Library/Saved Application State"],
+      "title": "应用状态快照",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "退出/崩溃时保存的窗口状态，用于下次恢复。可安全清理。"
+    },
+    {
+      "paths": ["~/Library/LaunchAgents"],
+      "title": "用户登录启动项",
+      "kind": "config",
+      "safety": "precious",
+      "note": "当前用户登录时自动启动的服务/程序。删除会关闭自启动，需明确意图。"
+    },
+    {
+      "paths": ["~/Library/Application Scripts"],
+      "title": "应用脚本",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "沙盒 App 的脚本/自动化内容(如 Finder 扩展脚本)。可能含用户内容。"
+    },
+    {
+      "paths": ["~/Library/Developer"],
+      "title": "开发者数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Xcode/CoreSimulator 等产生的数据：DerivedData、Archives、模拟器。构建缓存可再生，Archives(归档)可能需保留。"
+    },
+    {
+      "paths": ["~/Library/Android"],
+      "title": "Android SDK/AVD",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Android SDK、构建缓存与模拟器镜像。不做 Android 开发时才可整体删除。"
+    },
+    {
+      "paths": ["/Volumes"],
+      "title": "挂载的卷",
+      "kind": "mount",
+      "safety": "precious",
+      "note": "所有已挂载卷的挂载点：外接硬盘、DMG、网络卷、Time Machine 等。thin 会把跨卷目标视作挂载点并拒绝清理。"
+    },
+    {
+      "paths": ["/cores"],
+      "title": "核心转储",
+      "kind": "log",
+      "safety": "regenerable",
+      "note": "进程崩溃时生成的核心转储(core dump)，默认多为空。可安全清理。",
+      "reference": "man 5 core"
+    },
+    {
+      "paths": ["/home"],
+      "title": "Unix 家目录入口",
+      "kind": "user-data",
+      "safety": "protected",
+      "note": "传统 Unix 的家目录位置；macOS 上用 /Users，/home 默认空且由 automount 管理。受保护。",
+      "reference": "man auto_master"
+    },
+    {
+      "paths": ["/mnt", "/Network"],
+      "title": "传统挂载点",
+      "kind": "mount",
+      "safety": "protected",
+      "note": "Unix 传统约定(/mnt 临时挂载、/Network 网络目录)，现代 macOS 基本不用，通常为空。受保护。"
+    },
+    {
+      "paths": ["/.vol"],
+      "title": "APFS 卷编号入口",
+      "kind": "system",
+      "safety": "protected",
+      "note": "合成目录：/.vol/<卷号> 可按设备号直接访问任意 APFS 卷，用于底层工具。不是真实文件，别清理。"
+    },
+    {
+      "paths": ["/.resolve", "/.nofollow"],
+      "title": "APFS 路径解析内部目录",
+      "kind": "system",
+      "safety": "protected",
+      "note": "APFS/firmlink 的合成目录，供路径解析内部使用(如按 inode 打开)。不是真实存储。"
+    },
+    {
+      "paths": ["/.file"],
+      "title": "根目录占位文件",
+      "kind": "system",
+      "safety": "protected",
+      "note": "一个特殊标记文件，用于防止根目录被移动/删除。不要动。"
+    },
+    {
+      "names": ["node_modules"],
+      "title": "Node 依赖",
+      "kind": "dev",
+      "safety": "regenerable",
+      "note": "npm/yarn/pnpm 安装的项目依赖。可用包管理器重装，属于可再生开发缓存。"
+    },
+    {
+      "names": ["target"],
+      "title": "Rust 编译产物",
+      "kind": "dev",
+      "safety": "regenerable",
+      "note": "Cargo 的编译输出(target/)。可 cargo clean 重建；正在开发的工程建议用 thin protect 保护。"
+    },
+    {
+      "names": ["DerivedData"],
+      "title": "Xcode 派生数据",
+      "kind": "dev",
+      "safety": "regenerable",
+      "note": "Xcode 的索引、构建与调试缓存。可安全删除，Xcode 会重建。"
+    },
+    {
+      "names": [".git"],
+      "title": "Git 版本库",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "仓库的历史与对象数据库。删除会丢失版本历史，绝不可清理。"
+    },
+    {
+      "names": [".Trash", ".Trashes"],
+      "title": "废纸篓",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "用户回收站内容。确认无误后可清空。"
+    }
+  ]
+}
