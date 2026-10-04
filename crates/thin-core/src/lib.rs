@@ -13,6 +13,7 @@ pub mod fmt;
 pub mod fsutil;
 pub mod history;
 pub mod model;
+pub mod platform;
 pub mod preset;
 pub mod probe;
 pub mod proc;

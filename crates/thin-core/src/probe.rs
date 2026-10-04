@@ -75,25 +75,16 @@ impl Capacity {
     }
 }
 
-/// 查询卷容量：能用 Swift 后端就用（更准），否则回退到 `statfs`。
+/// 查询卷容量：走当前平台实现（Swift 后端更准，缺失时回退 `statfs`）。
 pub fn capacity(path: &str) -> Option<Capacity> {
-    #[cfg(feature = "swift")]
-    if let Some(c) = thin_sys::volume_capacity(std::path::Path::new(path)) {
-        return Some(Capacity {
-            total: c.total,
-            available: c.available,
-            important: c.important,
-            opportunistic: c.opportunistic,
-            source: CapacitySource::Swift,
-        });
-    }
-    statfs(path).map(|v| Capacity {
-        total: v.total,
-        available: v.avail,
-        important: v.avail,
-        opportunistic: v.avail,
-        source: CapacitySource::Statfs,
-    })
+    crate::platform::platform().capacity(path)
+}
+
+/// 完全磁盘访问权限自检；`None` 表示无法判断。
+///
+/// 未授权时部分受 TCC 保护的目录会被系统隐藏，扫描可能误显示为 0 B。
+pub fn full_disk_access() -> Option<bool> {
+    crate::platform::platform().full_disk_access()
 }
 
 #[derive(Debug, Clone)]
@@ -207,6 +198,18 @@ pub fn probe_summary() -> Result<()> {
                 );
             }
         }
+    }
+
+    match full_disk_access() {
+        Some(true) => println!("  完全磁盘访问权限  已授权"),
+        Some(false) => {
+            println!("  \x1b[33m完全磁盘访问权限  未授权\x1b[0m");
+            println!(
+                "  \x1b[90m（部分受保护目录会被系统隐藏，扫描可能显示 0 B；\
+                 系统设置 → 隐私与安全性 → 完全磁盘访问权限）\x1b[0m"
+            );
+        }
+        None => {}
     }
 
     let mounts = list_mounts();

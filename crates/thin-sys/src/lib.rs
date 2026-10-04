@@ -10,7 +10,7 @@
 use std::path::Path;
 
 /// FFI ABI 版本；与 Swift 端 `thin_abi_version` 对齐，不一致即视为后端不可用。
-pub const ABI_VERSION: u32 = 1;
+pub const ABI_VERSION: u32 = 2;
 
 /// 卷容量（含 purgeable 信息）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,6 +40,21 @@ pub fn volume_capacity(path: &Path) -> Option<VolumeCapacity> {
     imp::volume_capacity(path)
 }
 
+/// 某个 .app 是否在运行；后端不可用或无法判断时返回 `None`。
+pub fn is_app_running(app: &Path) -> Option<bool> {
+    imp::is_app_running(app)
+}
+
+/// 读取 .app 的 `CFBundleIdentifier`；后端不可用或读不到时返回 `None`。
+pub fn bundle_id(app: &Path) -> Option<String> {
+    imp::bundle_id(app)
+}
+
+/// 自检完全磁盘访问权限；`None` 表示无法判断（后端不可用或探测路径缺失）。
+pub fn full_disk_access() -> Option<bool> {
+    imp::full_disk_access()
+}
+
 #[cfg(all(target_os = "macos", thin_sys_swift))]
 mod imp {
     use super::{ABI_VERSION, VolumeCapacity};
@@ -58,6 +73,9 @@ mod imp {
             important: *mut u64,
             opportunistic: *mut u64,
         ) -> i32;
+        fn thin_is_app_running(path: *const c_char) -> i32;
+        fn thin_bundle_id(path: *const c_char) -> *mut c_char;
+        fn thin_full_disk_access() -> i32;
     }
 
     pub fn backend_available() -> bool {
@@ -101,6 +119,48 @@ mod imp {
             opportunistic,
         })
     }
+
+    pub fn is_app_running(app: &Path) -> Option<bool> {
+        if !backend_available() {
+            return None;
+        }
+        let c = CString::new(app.to_string_lossy().as_bytes()).ok()?;
+        // SAFETY: `c` 是有效 C 字符串。
+        match unsafe { thin_is_app_running(c.as_ptr()) } {
+            1 => Some(true),
+            0 => Some(false),
+            _ => None,
+        }
+    }
+
+    pub fn bundle_id(app: &Path) -> Option<String> {
+        if !backend_available() {
+            return None;
+        }
+        let c = CString::new(app.to_string_lossy().as_bytes()).ok()?;
+        // SAFETY: 返回 `strdup` 的 UTF-8 C 字符串或 NULL，所有权随后归还。
+        unsafe {
+            let p = thin_bundle_id(c.as_ptr());
+            if p.is_null() {
+                return None;
+            }
+            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+            thin_string_free(p);
+            (!s.is_empty()).then_some(s)
+        }
+    }
+
+    pub fn full_disk_access() -> Option<bool> {
+        if !backend_available() {
+            return None;
+        }
+        // SAFETY: 无参纯函数式入口。
+        match unsafe { thin_full_disk_access() } {
+            1 => Some(true),
+            0 => Some(false),
+            _ => None,
+        }
+    }
 }
 
 #[cfg(not(all(target_os = "macos", thin_sys_swift)))]
@@ -117,6 +177,18 @@ mod imp {
     }
 
     pub fn volume_capacity(_path: &Path) -> Option<VolumeCapacity> {
+        None
+    }
+
+    pub fn is_app_running(_app: &Path) -> Option<bool> {
+        None
+    }
+
+    pub fn bundle_id(_app: &Path) -> Option<String> {
+        None
+    }
+
+    pub fn full_disk_access() -> Option<bool> {
         None
     }
 }
@@ -142,5 +214,35 @@ mod tests {
     fn abi_guard_reports_bool() {
         // 只是确保入口可安全调用
         let _ = backend_available();
+    }
+
+    #[test]
+    fn fda_probe_is_safe() {
+        // 有后端时应能给出布尔结论；无后端为 None。不假设具体权限。
+        if backend_available() {
+            assert!(full_disk_access().is_some(), "有后端时 FDA 应可判断");
+        }
+    }
+
+    #[test]
+    fn bundle_id_matches_known_app() {
+        if !backend_available() {
+            return;
+        }
+        let calc = Path::new("/System/Applications/Calculator.app");
+        if calc.exists() {
+            assert_eq!(bundle_id(calc).as_deref(), Some("com.apple.calculator"));
+        }
+    }
+
+    #[test]
+    fn detects_running_finder() {
+        if !backend_available() {
+            return;
+        }
+        let finder = Path::new("/System/Library/CoreServices/Finder.app");
+        if finder.exists() {
+            assert_eq!(is_app_running(finder), Some(true), "Finder 应始终在运行");
+        }
     }
 }

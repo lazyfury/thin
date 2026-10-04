@@ -1,6 +1,7 @@
 # Swift FFI 落地计划（方向 A：Swift 提供 macOS 底层能力给 Rust CLI）
 
-> 状态：**M0 已落地**（`swift/ThinKit` + `crates/thin-sys`，`thin probe` 已显示 purgeable）。
+> 状态：**M0 / M1 已落地**（`swift/ThinKit` + `crates/thin-sys` + `thin-core/src/platform.rs`）。
+> `thin probe` 显示 purgeable 与 FDA 状态；App 运行判断/ bundle id 已接入 NSWorkspace/Bundle。
 > POC 回归样例保留在 `experiments/swift-ffi/`。
 
 ## 0. 目标
@@ -129,12 +130,18 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
   与「假 swift」环境均验证降级可编。
 - 回退：`LibcPlatform::volume_capacity`（`statfs`）。
 
-### M1 · App 状态与权限（高价值、低成本）
-- `NSWorkspace.runningApplications` 替换 `apps.rs::is_running` 的 `pgrep -f`；拿 `bundleIdentifier`、`activationPolicy`。
-- `Bundle(url:)?.bundleIdentifier` 替换 `plutil` 子进程。
-- **Full Disk Access 自检**：探测 `~/Library/Application Support/com.apple.TCC`、`~/Library/Safari` 可读性；缺失时明确提示并提供「打开系统设置」。
-- 验收：卸载前「是否运行」无误报；无 FDA 时提示而非把缓存显示成 0 B。
+### M1 · App 状态与权限 ✅
+- ✅ `thin-core/src/platform.rs`：`Platform` trait + `LibcPlatform` 回退 + `SwiftPlatform`；
+  `probe::capacity()` 收进 trait，`full_disk_access()` 对外暴露。
+- ✅ `NSWorkspace.runningApplications`：新增 `thin_is_app_running`；`apps::is_running` 以
+  **NSWorkspace ∪ pgrep** 判定（NSWorkspace 只认识注册 App，脚本直接 exec 的同路径进程由 pgrep 补充）。
+- ✅ `Bundle(url:).bundleIdentifier`：新增 `thin_bundle_id`；`apps::bundle_id` 优先 Swift，回退 `plutil`。
+- ✅ **Full Disk Access 自检**：新增 `thin_full_disk_access`（实际尝试打开 TCC.db / Safari / Messages）；
+  `thin probe` 打印授权状态，`thin scan` 在未授权时给出提示与路径。
+- 验收：`cargo test` 全绿（含 `bundle_id == com.apple.calculator`、Finder 运行中检测）；
+  实跑确认无 FDA 时 `thin probe`/`thin scan` 均提示，而非静默扫成 0 B。
 - objc2 备选：`objc2-app-kit` / `objc2-foundation` 可完全覆盖；FDA 纯 Rust 即可。
+- ABI 升至 2。
 
 ### M2 · 容量核算更诚实
 - `totalFileAllocatedSizeKey` / `getattrlistbulk` 取**实际占用**，感知 APFS 压缩、稀疏、clone。
@@ -178,10 +185,9 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
 5. ✅ POC 保留为 `experiments/swift-ffi/thin-sys-demo` 回归样例；`thin-sys` 内另有 `#[test]`。
 6. ✅ `README.md` 增加构建前置说明（Swift 可选、缺失自动降级）。
 
-### 后续 M1 预备
-- `thin-core` 抽 `Platform` trait，把 `capacity()` 等收进 trait，`LibcPlatform` 作为回退。
-- `NSWorkspace.runningApplications` 替换 `apps.rs::is_running` 的 `pgrep -f`；`Bundle` 替换 `plutil`。
-- Full Disk Access 自检。
+### 后续 M2 预备
+- 真实占用：`totalFileAllocatedSizeKey` / `getattrlistbulk`，感知 APFS 压缩、稀疏、clone。
+- iCloud：`isUbiquitousItem` + `ubiquitousItemDownloadingStatus`，dataless 占位不计入可回收。
 - 列表类接口按约定走整批 JSON，不逐文件跨 FFI。
 
 ## 8. 风险与回退

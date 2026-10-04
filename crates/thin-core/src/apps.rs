@@ -126,6 +126,12 @@ pub fn find_app(query: &str) -> Vec<AppInfo> {
 ///
 /// 探测失败或超时视为「无法确认」，保守地当作运行中（拒绝卸载）。
 pub fn is_running(app: &Path) -> bool {
+    // NSWorkspace 权威判断：真·App 进程会命中
+    if let Some(true) = crate::platform::platform().is_app_running(app) {
+        return true;
+    }
+    // 补充：NSWorkspace 只认识注册为 App 的进程；脚本直接 exec 的同路径进程
+    // 不在其中，用进程表再确认一次（保守地视为运行中）。
     let needle = app.join("Contents/MacOS");
     let pattern = format!("{}/", needle.to_string_lossy());
     crate::proc::output_with_timeout("pgrep", &["-f", &pattern], Duration::from_secs(2))
@@ -174,6 +180,10 @@ pub fn is_system_protected(bundle_id: Option<&str>) -> bool {
 
 /// 读取 .app 的 CFBundleIdentifier
 pub fn bundle_id(app: &Path) -> Option<String> {
+    // 优先 Swift `Bundle`，无后端/读不到时回退 `plutil`
+    if let Some(id) = crate::platform::platform().bundle_id(app) {
+        return Some(id);
+    }
     let plist = app.join("Contents/Info.plist");
     let plist_s = plist.to_string_lossy().into_owned();
     let out = crate::proc::output_with_timeout(

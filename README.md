@@ -76,6 +76,7 @@ $ thin probe
 磁盘容量
   APFS 容器    容量 228.3 GB  已用 57.9 GB  可用 170.4 GB  (25%)
   可回收空间(purgeable) 4.6 GB  ·  含 purgeable 可用 175.1 GB
+  完全磁盘访问权限  已授权
 
 $ thin scan
         大小  风险       类别      名称                        路径

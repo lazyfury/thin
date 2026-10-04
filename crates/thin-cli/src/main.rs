@@ -619,6 +619,16 @@ fn cmd_scan(args: ScanArgs) -> Result<()> {
         return Ok(());
     }
 
+    // 缺 FDA 时部分受保护目录会被系统隐藏（扫成 0 B），先明确提醒
+    if probe::full_disk_access() == Some(false) {
+        println!(
+            "\x1b[33m提示：未授予「完全磁盘访问权限」，部分目录可能被系统隐藏而显示为 0 B。\x1b[0m"
+        );
+        println!(
+            "\x1b[90m      系统设置 → 隐私与安全性 → 完全磁盘访问权限，勾选终端后重试。\x1b[0m\n"
+        );
+    }
+
     // 默认把「需 sudo / 受系统保护」的项整个藏起来：thin 本来就不会动它们，
     // 显示出来只会让人以为能清。--manual 才列出；JSON 与 --detail 仍基于全量 items。
     let visible: Vec<thin_core::CleanItem> = if args.manual {
