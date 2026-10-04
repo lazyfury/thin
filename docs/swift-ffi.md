@@ -1,6 +1,7 @@
 # Swift FFI 落地计划（方向 A：Swift 提供 macOS 底层能力给 Rust CLI）
 
-> 状态：POC 已验证（见 `experiments/swift-ffi/`）。本文是把它提升为正式能力的计划。
+> 状态：**M0 已落地**（`swift/ThinKit` + `crates/thin-sys`，`thin probe` 已显示 purgeable）。
+> POC 回归样例保留在 `experiments/swift-ffi/`。
 
 ## 0. 目标
 
@@ -19,9 +20,12 @@
 - 不引入 App Sandbox（会废掉全盘扫描能力）。
 - 不做 GUI（方向 B 另行讨论）。
 
-## 1. POC 实测结论（已完成）
+## 1. POC 与 M0 实测结论（已完成）
 
-目录：`experiments/swift-ffi/{ThinKit,thin-sys-demo}`
+- 正式结构：`swift/ThinKit`（Swift Package）+ `crates/thin-sys`（Rust 绑定，workspace 成员）。
+- POC 回归样例：`experiments/swift-ffi/thin-sys-demo`（独立 crate，直接链接 `swift/ThinKit`）。
+- 接线：`thin-core` 的 `probe::capacity()`（feature `swift`，默认开启）优先走 Swift，缺失时回退 `statfs`；
+  `thin probe` 已打印 purgeable。
 
 实现：`NSURL.volumeAvailableCapacityForImportantUsageKey` 等 4 个资源键 → `@_cdecl`
 → Rust `build.rs` 调 `swift build` 并链接静态库。
@@ -55,10 +59,10 @@ purgeable(important-available)≈4.6 GB
 cd experiments/swift-ffi/thin-sys-demo && cargo run --release
 ```
 
-## 2. 目标架构
+## 2. 目标架构（M0 已按此落地）
 
 ```
-swift/ThinKit/                     # 由 experiments 提升
+swift/ThinKit/                     # 已从 experiments 提升
   Package.swift                    # platforms: [.macOS(.v13)]
   Sources/ThinKit/
     FFI.swift                      # 所有 @_cdecl 入口集中于此
@@ -112,11 +116,18 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
 
 ## 5. 能力路线图与验收
 
-### M0 · FFI 骨架 + 卷容量（POC 已验证）
-- 动机：`probe.rs` 现用 `statfs`，看不到 purgeable。
+### M0 · FFI 骨架 + 卷容量 ✅
+- 动机：`probe.rs` 原用 `statfs`，看不到 purgeable。
 - API：`NSURL` 卷资源键。
-- 验收：`thin probe` / `scan` 显示「含 purgeable 的可用空间」，与 Finder 对齐；`cargo test` 含 FFI 用例。
-- 回退：`LibcPlatform::volume_capacity`。
+- 落地：`swift/ThinKit` + `crates/thin-sys`（`build.rs` 无 Swift 时自动降级）+ `thin-core`
+  `probe::capacity()`（feature `swift`）；`thin probe` 实测输出：
+  ```
+  APFS 容器    容量 228.3 GB  已用 57.9 GB  可用 170.4 GB  (25%)
+  可回收空间(purgeable) 4.6 GB  ·  含 purgeable 可用 175.1 GB
+  ```
+- 验收：`cargo test` 全绿（含 `thin-sys` FFI 用例）；`cargo build -p thin-core --no-default-features`
+  与「假 swift」环境均验证降级可编。
+- 回退：`LibcPlatform::volume_capacity`（`statfs`）。
 
 ### M1 · App 状态与权限（高价值、低成本）
 - `NSWorkspace.runningApplications` 替换 `apps.rs::is_running` 的 `pgrep -f`；拿 `bundleIdentifier`、`activationPolicy`。
@@ -158,14 +169,20 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
 
 策略：**批量、复杂、易变的系统交互用 Swift；单次薄 shim 若 objc2 已足够则不必引入 Swift**。两者都在 `Platform` trait 后面，可逐项切换。
 
-## 7. 提升步骤（POC → 正式）
+## 7. 提升步骤（POC → 正式，M0 已完成）
 
-1. `git mv experiments/swift-ffi/ThinKit swift/ThinKit`；加 `sources` gitignore 规则。
-2. 新建 `crates/thin-sys`（workspace member），`build.rs` 复用 POC 逻辑并加「无 Swift 降级」。
-3. `thin-core` 增加 `platform.rs`（trait + `LibcPlatform`）与 `platform-swift` feature。
-4. `thin-cli` 的 `probe` 先接 `volume_capacity`，跑通真实命令。
-5. 把 POC 保留为 `experiments/swift-ffi` 的回归样例，或删除并在 `thin-sys` 内写 `#[test]`。
-6. 更新 `README.md` / `AGENTS.md` 的构建前置说明（Xcode CLT）。
+1. ✅ `git mv experiments/swift-ffi/ThinKit swift/ThinKit`；gitignore 加 `swift/**/.build`。
+2. ✅ 新建 `crates/thin-sys`（workspace member），无 Swift / 非 macOS 自动降级为空实现。
+3. ⏳ 暂用 `thin-core` 的 `probe::capacity()` + feature `swift`；后续抽 `platform.rs` trait 时再收敛。
+4. ✅ `thin probe` 接入 `capacity()`，实测显示 purgeable。
+5. ✅ POC 保留为 `experiments/swift-ffi/thin-sys-demo` 回归样例；`thin-sys` 内另有 `#[test]`。
+6. ✅ `README.md` 增加构建前置说明（Swift 可选、缺失自动降级）。
+
+### 后续 M1 预备
+- `thin-core` 抽 `Platform` trait，把 `capacity()` 等收进 trait，`LibcPlatform` 作为回退。
+- `NSWorkspace.runningApplications` 替换 `apps.rs::is_running` 的 `pgrep -f`；`Bundle` 替换 `plutil`。
+- Full Disk Access 自检。
+- 列表类接口按约定走整批 JSON，不逐文件跨 FFI。
 
 ## 8. 风险与回退
 

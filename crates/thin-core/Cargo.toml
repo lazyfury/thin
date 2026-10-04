@@ -6,6 +6,12 @@ license.workspace = true
 repository.workspace = true
 description = "thin 核心：磁盘探测、规则扫描与诚实核算"
 
+[features]
+# 默认启用 Swift/ThinKit 底层能力；无 Swift 工具链或非 macOS 时 thin-sys 自动降级
+# 为纯 Rust 实现，因此默认开启不会破坏构建。
+default = ["swift"]
+swift = ["dep:thin-sys"]
+
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
@@ -14,3 +20,4 @@ rayon.workspace = true
 anyhow.workspace = true
 libc.workspace = true
 blake3.workspace = true
+thin-sys = { path = "../thin-sys", optional = true }

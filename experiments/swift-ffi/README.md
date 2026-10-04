@@ -5,10 +5,12 @@
 
 ## 目录
 
-- `ThinKit/` —— Swift Package，`@_cdecl` 导出 `thin_available_capacity` /
-  `thin_version` / `thin_string_free`。
+- `../swift/ThinKit/` —— Swift Package（已提升为正式结构），`@_cdecl` 导出
+  `thin_available_capacity` / `thin_version` / `thin_string_free` / `thin_abi_version`。
 - `thin-sys-demo/` —— 独立 Rust crate（不属于仓库根 workspace），`build.rs`
   调 `swift build` 并链接 `libThinKit.a`，`main.rs` 对比 `NSURL` 与 `statfs`。
+
+> 正式接入见 `crates/thin-sys` 与 `thin probe`；本目录只作独立回归样例。
 
 ## 运行
 

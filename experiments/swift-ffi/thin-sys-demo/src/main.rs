@@ -98,10 +98,10 @@ fn main() {
     println!("purgeable(important-available)≈{}", human(purgeable));
     println!(
         "\n结论: {}",
-        if swift.available != statfs {
-            "NSURL 与 statfs 不一致 —— 正是需要 Swift 底层能力的场景 ✅"
+        if purgeable > 0 {
+            "NSURL important 比 statfs 多出 purgeable —— 正是需要 Swift 底层能力的场景 ✅"
         } else {
-            "两者恰好一致（无 purgeable 或有权限差异时可能发生）"
+            "当前无 purgeable（或权限差异），两套数据一致"
         }
     );
 }

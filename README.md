@@ -49,6 +49,11 @@ git clone https://github.com/lazyfury/thin.git && cd thin
 cargo build --release        # 产物 target/release/thin
 ```
 
+> **可选：macOS 底层能力（Swift/ThinKit）** —— `thin probe` 的「可回收空间(purgeable) /
+> 含 purgeable 可用」由 `swift/ThinKit` 经 FFI 提供（需要 Xcode 或 Command Line Tools）。
+> 没有 Swift 工具链时会自动降级为纯 Rust `statfs`（该行显示「Swift 后端未启用」），
+> 构建照常成功。详见 [`docs/swift-ffi.md`](docs/swift-ffi.md)。
+
 ### 30 秒上手
 
 ```bash
@@ -67,6 +72,11 @@ thin                            # 无参数：进入交互式 TUI
 ## 演示
 
 ```text
+$ thin probe
+磁盘容量
+  APFS 容器    容量 228.3 GB  已用 57.9 GB  可用 170.4 GB  (25%)
+  可回收空间(purgeable) 4.6 GB  ·  含 purgeable 可用 175.1 GB
+
 $ thin scan
         大小  风险       类别      名称                        路径
     4.4 GB  需确认    应用缓存   Ollama 模型                 ~/.ollama/models

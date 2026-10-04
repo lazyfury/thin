@@ -11,7 +11,13 @@ use std::process::Command;
 
 fn main() {
     let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let pkg = manifest.parent().unwrap().join("ThinKit");
+    // experiments/swift-ffi/thin-sys-demo → experiments/swift-ffi → experiments → <repo>
+    let pkg = manifest
+        .parent()
+        .and_then(|p| p.parent())
+        .and_then(|p| p.parent())
+        .map(|repo| repo.join("swift/ThinKit"))
+        .expect("定位 swift/ThinKit 失败");
     let build = pkg.join(".build");
 
     // 1) 调 Swift 构建（release）

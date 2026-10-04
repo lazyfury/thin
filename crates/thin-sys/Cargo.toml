@@ -1,0 +1,11 @@
+[package]
+name = "thin-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "thin 的 macOS 底层能力 FFI 绑定（Swift/ThinKit；缺失工具链时优雅降级）"
+
+[dependencies]
+
+[build-dependencies]

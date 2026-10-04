@@ -43,6 +43,59 @@ pub fn statfs(path: &str) -> Option<VolumeStat> {
     }
 }
 
+/// 卷容量数据来源。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CapacitySource {
+    /// Swift/NSURL：`important` 含 purgeable，更接近 Finder 的「可用」
+    Swift,
+    /// 纯 Rust `statfs`：不含 purgeable
+    Statfs,
+}
+
+/// 统一的卷容量视图（优先 Swift 后端，缺失时回退 `statfs`）。
+#[derive(Debug, Clone, Copy)]
+pub struct Capacity {
+    pub total: u64,
+    /// `statfs` 口径可用
+    pub available: u64,
+    /// 含 purgeable 的可用；回退时等于 `available`
+    pub important: u64,
+    pub opportunistic: u64,
+    pub source: CapacitySource,
+}
+
+impl Capacity {
+    /// 可被系统回收的 purgeable 空间（仅 Swift 后端能给出，否则 0）。
+    pub fn purgeable(&self) -> u64 {
+        if self.source == CapacitySource::Swift {
+            self.important.saturating_sub(self.available)
+        } else {
+            0
+        }
+    }
+}
+
+/// 查询卷容量：能用 Swift 后端就用（更准），否则回退到 `statfs`。
+pub fn capacity(path: &str) -> Option<Capacity> {
+    #[cfg(feature = "swift")]
+    if let Some(c) = thin_sys::volume_capacity(std::path::Path::new(path)) {
+        return Some(Capacity {
+            total: c.total,
+            available: c.available,
+            important: c.important,
+            opportunistic: c.opportunistic,
+            source: CapacitySource::Swift,
+        });
+    }
+    statfs(path).map(|v| Capacity {
+        total: v.total,
+        available: v.avail,
+        important: v.avail,
+        opportunistic: v.avail,
+        source: CapacitySource::Statfs,
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct Mount {
     #[allow(dead_code)]
@@ -122,15 +175,38 @@ pub enum MountKind {
 pub fn probe_summary() -> Result<()> {
     use crate::fmt::human;
     println!("\x1b[1m磁盘容量\x1b[0m");
-    if let Some(v) = statfs("/System/Volumes/Data") {
+    if let Some(v) = capacity("/System/Volumes/Data") {
+        let used = v.total.saturating_sub(v.available);
+        let pct = if v.total == 0 {
+            0.0
+        } else {
+            used as f64 / v.total as f64 * 100.0
+        };
         println!(
             "  APFS 容器    容量 {}  已用 {}  可用 {}  ({:.0}%)",
             human(v.total),
-            human(v.used),
-            human(v.avail),
-            v.used_pct()
+            human(used),
+            human(v.available),
+            pct
         );
         println!("  \x1b[90m（APFS 各卷共享同一容器可用空间，故只显示一次）\x1b[0m");
+        match v.source {
+            CapacitySource::Swift => {
+                println!(
+                    "  可回收空间(purgeable) {}  ·  含 purgeable 可用 {}",
+                    human(v.purgeable()),
+                    human(v.important)
+                );
+                println!(
+                    "  \x1b[90m（可用空间来自 NSURL，含系统可回收的 purgeable；更接近 Finder）\x1b[0m"
+                );
+            }
+            CapacitySource::Statfs => {
+                println!(
+                    "  \x1b[90m（Swift 后端未启用，可用空间来自 statfs，不含 purgeable）\x1b[0m"
+                );
+            }
+        }
     }
 
     let mounts = list_mounts();

@@ -40,6 +40,12 @@ public func thin_available_capacity(
     }
 }
 
+/// FFI ABI 版本；Rust 侧 `thin-sys` 启动时校验，避免 Swift/Rust 版本错配。
+@_cdecl("thin_abi_version")
+public func thin_abi_version() -> UInt32 {
+    1
+}
+
 /// 库版本字符串，用于验证「Swift 分配内存 → Rust 读取 → Rust 释放」这条链路。
 @_cdecl("thin_version")
 public func thin_version() -> UnsafeMutablePointer<CChar>? {

@@ -4,5 +4,6 @@
 .DS_Store
 
 # Swift FFI 实验
+swift/**/.build
 experiments/**/.build
 experiments/**/target
