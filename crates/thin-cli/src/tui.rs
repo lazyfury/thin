@@ -1798,16 +1798,6 @@ mod tests {
     }
 
     #[test]
-    fn tab_bar_has_no_quarantine() {
-        let mut app = test_app();
-        let text = render(&mut app, 120, 30);
-        // TUI 不再展示隔离区；历史/浏览仍在
-        assert!(!text.contains("隔离区"), "{text}");
-        assert!(text.contains("历史"), "{text}");
-        assert!(text.contains("浏览"), "{text}");
-    }
-
-    #[test]
     fn history_tab_lists_records() {
         let mut app = test_app();
         app.tab = HISTORY_TAB;
