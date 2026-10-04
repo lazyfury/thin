@@ -7,8 +7,9 @@
 use crate::clean;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -63,7 +64,11 @@ impl Record {
 }
 
 pub fn history_path() -> PathBuf {
-    clean::thin_home().join("history.jsonl")
+    history_path_in(&clean::thin_home())
+}
+
+pub fn history_path_in(home: &Path) -> PathBuf {
+    home.join("history.jsonl")
 }
 
 /// 把 Unix 时间戳格式化为本地时间字符串
@@ -88,7 +93,11 @@ pub fn format_ts(ts: u64) -> String {
 
 /// 追加一条历史记录
 pub fn append(record: &Record) -> Result<()> {
-    let path = history_path();
+    append_in(&clean::thin_home(), record)
+}
+
+pub fn append_in(home: &Path, record: &Record) -> Result<()> {
+    let path = history_path_in(home);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -103,7 +112,11 @@ pub fn append(record: &Record) -> Result<()> {
 
 /// 读取历史记录（按时间倒序 = 文件行倒序）；`limit` 为 None 表示全部
 pub fn load(limit: Option<usize>) -> Result<Vec<Record>> {
-    let path = history_path();
+    load_in(&clean::thin_home(), limit)
+}
+
+pub fn load_in(home: &Path, limit: Option<usize>) -> Result<Vec<Record>> {
+    let path = history_path_in(home);
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -119,6 +132,45 @@ pub fn load(limit: Option<usize>) -> Result<Vec<Record>> {
         out.truncate(n);
     }
     Ok(out)
+}
+
+/// 隔离区中存在、但历史里没有记录的会话数（旧版本遗留）。
+pub fn unreconciled_count_in(home: &Path) -> Result<usize> {
+    let known: HashSet<String> = load_in(home, None)?
+        .into_iter()
+        .filter_map(|r| r.session)
+        .collect();
+    Ok(clean::list_journals_in(home)?
+        .into_iter()
+        .filter(|j| !known.contains(&j.session))
+        .count())
+}
+
+/// 回填隔离区中存在、但历史里缺失的会话。返回新增条数。
+pub fn reconcile_with_quarantine() -> Result<usize> {
+    reconcile_with_quarantine_in(&clean::thin_home())
+}
+
+pub fn reconcile_with_quarantine_in(home: &Path) -> Result<usize> {
+    let mut known: HashSet<String> = load_in(home, None)?
+        .into_iter()
+        .filter_map(|r| r.session)
+        .collect();
+    let mut added = 0;
+    for j in clean::list_journals_in(home)? {
+        if !known.insert(j.session.clone()) {
+            continue;
+        }
+        let mut r = Record::new("reconcile");
+        r.timestamp = j.created_at;
+        r.session = Some(j.session.clone());
+        r.moved = j.entries.len();
+        r.moved_bytes = j.total_size();
+        r.skipped = j.skipped.len();
+        append_in(home, &r)?;
+        added += 1;
+    }
+    Ok(added)
 }
 
 #[cfg(test)]
@@ -143,5 +195,33 @@ mod tests {
     fn format_ts_is_readable() {
         let s = format_ts(0);
         assert!(s.contains('-') && s.contains(':'), "got {s}");
+    }
+
+    #[test]
+    fn reconcile_fills_missing_sessions() {
+        let home = std::env::temp_dir().join(format!("thin-history-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let sess = home.join("quarantine/s1");
+        std::fs::create_dir_all(sess.join("payload")).unwrap();
+        let j = clean::Journal {
+            session: "s1".into(),
+            created_at: 123,
+            dry_run: false,
+            entries: Vec::new(),
+            skipped: Vec::new(),
+        };
+        std::fs::write(
+            sess.join("journal.json"),
+            serde_json::to_string(&j).unwrap(),
+        )
+        .unwrap();
+
+        assert_eq!(unreconciled_count_in(&home).unwrap(), 1);
+        assert_eq!(reconcile_with_quarantine_in(&home).unwrap(), 1);
+        assert_eq!(unreconciled_count_in(&home).unwrap(), 0);
+        // 幂等：再跑不新增
+        assert_eq!(reconcile_with_quarantine_in(&home).unwrap(), 0);
+
+        let _ = std::fs::remove_dir_all(&home);
     }
 }

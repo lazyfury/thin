@@ -73,6 +73,8 @@ thin clean --apply                  # 移入隔离区（会二次确认）
 thin clean --apply --yes            # 跳过确认
 thin clean --apply --all            # 连「需确认」项一起处理
 thin clean --apply --id rust-target --id chrome-optguide-model
+thin clean --json                    # 机器可读计划: approved / skipped / approvedBytes / protectedBytes
+thin clean --apply --json --yes      # 执行并输出账本 JSON
 
 # 保护名单：正在开发的项目的构建产物不被清理（含所有子目录）
 thin protect add .                  # 在项目根执行即可保护整个项目（target/、node_modules/…）
@@ -88,8 +90,10 @@ thin quarantine purge --older-than 7d
 
 # 大文件 / 重复文件 / App 管理
 thin large ~/Documents --min 100MB --limit 30
-thin dupes ~/Downloads --min 10MB              # 只读报告
-thin dupes ~/Downloads --min 10MB --apply      # 每组保留首个，其余移入隔离区
+thin large ~/Documents --min 100MB --json      # 机器可读（含 protected 标记）
+thin dupes ~/Downloads --min 10MB              # 只读报告（受保护副本标 [已保护]，不计入可回收）
+thin dupes ~/Downloads --min 10MB --json       # 机器可读报告
+thin dupes ~/Downloads --min 10MB --apply      # 每组保留首个，其余移入隔离区（预览=执行）
 thin apps                                      # 列出全部 App（含关联残留），带体积分级
 thin apps --min 500MB                          # 只看大件
 thin uninstall <名称>                           # 预览卸载计划
@@ -101,6 +105,8 @@ thin preset add nightly                        # 新建预设（默认只选 cac
 thin preset add big --category app-cache --category dev-cache --risk safe --purge-after-days 3
 thin clean --preset nightly                    # 按预设筛选（dry-run）
 thin history --limit 20                        # 清理历史
+thin history --json                            # 机器可读
+thin history --reconcile                       # 用隔离区账本回填旧版本遗漏的历史
 thin schedule install --preset nightly --weekly --hour 3 --dry-run   # 安全预览 plist
 thin schedule install --preset nightly --weekly --hour 3             # 安装 launchd 任务
 thin schedule status                           # 查看状态

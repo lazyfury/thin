@@ -46,8 +46,19 @@ pub fn is_protected_in(home: &Path, path: &Path) -> bool {
 
 /// 在已加载的名单上判断，避免逐项重复读盘（供 scan 批量使用）。
 pub fn matches(list: &[PathBuf], path: &Path) -> bool {
+    covering(list, path).is_some()
+}
+
+/// 返回覆盖该路径的名单条目（可能是它自己，也可能是它的某个父目录）。
+pub fn covering<'a>(list: &'a [PathBuf], path: &Path) -> Option<&'a PathBuf> {
     let canon = soft_canon(path);
-    list.iter().any(|p| canon == *p || canon.starts_with(p))
+    list.iter()
+        .find(|p| canon == **p || canon.starts_with(p.as_path()))
+}
+
+/// 读取名单并返回覆盖该路径的条目（用于「已被 X 覆盖」提示）。
+pub fn covering_in(home: &Path, path: &Path) -> Option<PathBuf> {
+    covering(&load_in(home), path).cloned()
 }
 
 /// 加入保护名单，返回规范化后的绝对路径。重复加入是幂等的。

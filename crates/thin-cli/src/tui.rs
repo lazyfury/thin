@@ -21,7 +21,7 @@ use thin_core::finder::{DupeGroup, LargeFile};
 use thin_core::fmt::human;
 use thin_core::model::{CleanItem, Risk};
 use thin_core::progress::Progress;
-use thin_core::{apps, clean, finder, fsutil, probe, rules, scan, status};
+use thin_core::{apps, clean, finder, fsutil, probe, protect, rules, scan, status};
 
 use crate::treemap;
 
@@ -298,6 +298,30 @@ impl App {
         }
     }
 
+    /// 把当前清理项加入保护名单（thin protect），并就地更新标记
+    fn protect_current(&mut self) {
+        let i = self.cursor();
+        let path = match &self.clean {
+            Load::Ready(items) => items.get(i).map(|it| it.path.clone()),
+            _ => None,
+        };
+        let Some(path) = path else { return };
+        match protect::add(&path) {
+            Ok(canon) => {
+                if let Load::Ready(items) = &mut self.clean {
+                    if let Some(it) = items.get_mut(i) {
+                        it.protected = true;
+                    }
+                }
+                if i < self.selected.len() {
+                    self.selected[i] = false;
+                }
+                self.status = Some(format!("已保护 {}（含子目录）", canon.display()));
+            }
+            Err(e) => self.status = Some(format!("保护失败: {e}")),
+        }
+    }
+
     fn reload_current(&mut self) {
         match self.tab {
             0 => {
@@ -398,6 +422,7 @@ impl App {
             KeyCode::Char('a') if self.tab == 0 => self.select_kind(true, true),
             KeyCode::Char('A') if self.tab == 0 => self.select_kind(false, true),
             KeyCode::Char('n') if self.tab == 0 => self.select_kind(false, false),
+            KeyCode::Char('p') if self.tab == 0 => self.protect_current(),
             KeyCode::Char('c') if self.tab == 0 => {
                 if self.selected_count() > 0 {
                     self.confirm = true;
@@ -1117,11 +1142,11 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let text = if let Some(s) = &app.status {
         s.clone()
     } else if app.help {
-        " 1-6/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · r 重载 · c 清理 · q 退出"
+        " 1-6/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · r 重载 · c 清理 · q 退出"
             .into()
     } else {
         match app.tab {
-            0 => " Tab 切页 · ↑↓ 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · c 移入隔离区 · r 重载 · ? 帮助 · q 退出",
+            0 => " Tab 切页 · ↑↓ 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护·不清理 · c 移入隔离区 · r 重载 · ? 帮助 · q 退出",
             _ => " 1-6/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
         }
         .into()

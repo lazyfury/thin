@@ -124,6 +124,9 @@ struct LargeArgs {
     /// 显示条数
     #[arg(short, long, default_value_t = 30)]
     limit: usize,
+    /// 输出 JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -143,6 +146,9 @@ struct DupesArgs {
     /// 跳过确认
     #[arg(long)]
     yes: bool,
+    /// 输出 JSON（只读报告；与 --apply 互斥）
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -291,6 +297,10 @@ struct CleanArgs {
     /// 按预设筛选清理项（见 thin preset list）
     #[arg(long)]
     preset: Option<String>,
+
+    /// 输出 JSON：dry-run 输出清理计划；--apply 输出账本（需配合 --yes）
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -343,6 +353,9 @@ struct HistoryArgs {
     limit: usize,
     #[arg(long)]
     json: bool,
+    /// 用隔离区账本回填缺失的历史记录
+    #[arg(long)]
+    reconcile: bool,
 }
 
 #[derive(clap::Args)]
@@ -478,7 +491,7 @@ fn default_entry() -> Result<()> {
 }
 
 fn cmd_scan(args: ScanArgs) -> Result<()> {
-    let min = parse_size(&args.min).unwrap_or(1_048_576);
+    let min = parse_size_arg(&args.min)?;
     let catalog = rules::load()?;
     let items = scan::scan(&catalog, args.all, min);
     let accounted = scan::accounted_bytes(&items);
@@ -529,7 +542,7 @@ fn cmd_scan(args: ScanArgs) -> Result<()> {
 }
 
 fn cmd_tui(args: TuiArgs) -> Result<()> {
-    let min = parse_size(&args.min).unwrap_or(1_048_576);
+    let min = parse_size_arg(&args.min)?;
     let root = std::env::var("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("."));
@@ -677,15 +690,16 @@ fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
     // 而不是等到 clean 才发现「整份 ~/Documents 会被搬走」。
     if let Matcher::Path { paths } = &rule.matcher {
         for raw in paths {
-            if let Some(p) = fsutil::expand(raw) {
-                if let Some(reason) = clean::static_protection_reason(&p) {
-                    anyhow::bail!(
-                        "拒绝写入规则 {}：目标 {} 受保护（{}）\n提示：个人目录本身不可整体清理；如需清理其内部的具体缓存，请指向子路径。",
-                        rule.id,
-                        p.display(),
-                        reason
-                    );
-                }
+            let Some(p) = fsutil::expand(raw) else {
+                continue;
+            };
+            if let Some(reason) = clean::static_protection_reason(&p) {
+                anyhow::bail!(
+                    "拒绝写入规则 {}：目标 {} 受保护（{}）\n提示：个人目录本身不可整体清理；如需清理其内部的具体缓存，请指向子路径。",
+                    rule.id,
+                    p.display(),
+                    reason
+                );
             }
         }
     }
@@ -706,7 +720,7 @@ fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
 
 fn cmd_discover(args: DiscoverArgs) -> Result<()> {
     let root = expand_root(&args.root);
-    let min = parse_size(&args.min).unwrap_or(500 * 1024 * 1024);
+    let min = parse_size_arg(&args.min)?;
     let catalog = rules::load()?;
     eprintln!("分析 {} …", root.display());
     let report = discover::analyze(&root, min, &catalog);
@@ -891,6 +905,20 @@ fn cmd_protect(args: ProtectArgs) -> Result<()> {
         }
         ProtectCmd::Add { path } => {
             let p = fsutil::expand(&path).ok_or_else(|| anyhow!("无法展开路径 {path}"))?;
+            let canon = p.canonicalize().unwrap_or_else(|_| p.clone());
+            let existing = protect::load();
+            if let Some(cover) = protect::covering(&existing, &p) {
+                if *cover == canon {
+                    println!("\x1b[1m{}\x1b[0m 已在保护名单中。", canon.display());
+                } else {
+                    println!(
+                        "{} 已被父目录 {} 覆盖，无需重复添加。",
+                        canon.display(),
+                        cover.display()
+                    );
+                }
+                return Ok(());
+            }
             let canon = protect::add(&p)?;
             println!("已保护 \x1b[1m{}\x1b[0m（含其所有子目录）", canon.display());
             println!(
@@ -901,7 +929,15 @@ fn cmd_protect(args: ProtectArgs) -> Result<()> {
         ProtectCmd::Remove { path } => {
             let p = fsutil::expand(&path).ok_or_else(|| anyhow!("无法展开路径 {path}"))?;
             if protect::remove(&p)? {
-                println!("已移除保护 {}", p.display());
+                let canon = p.canonicalize().unwrap_or_else(|_| p.clone());
+                println!("已移除保护 {}", canon.display());
+                if let Some(cover) = protect::covering_in(&clean::thin_home(), &canon) {
+                    println!(
+                        "\x1b[33m注意\x1b[0m：{} 仍受 {} 覆盖，实际仍不会被清理。",
+                        canon.display(),
+                        cover.display()
+                    );
+                }
             } else {
                 println!("未在保护名单中找到 {}", p.display());
             }
@@ -912,13 +948,58 @@ fn cmd_protect(args: ProtectArgs) -> Result<()> {
 
 fn cmd_clean(args: CleanArgs) -> Result<()> {
     let selected = select_items(&args)?;
+    // 预演与执行共用同一安全门，保证「预览即所得」
+    let plan = clean::plan(&selected);
+    let apply = args.apply && !args.dry_run;
+
+    // JSON 模式：供 agent 直接消费；dry-run 输出计划，--apply 输出账本
+    if args.json {
+        if apply {
+            if !args.yes {
+                return Err(anyhow!("--json --apply 会直接执行，请同时加 --yes"));
+            }
+            if plan.approved.is_empty() {
+                let out = serde_json::json!({
+                    "session": serde_json::Value::Null,
+                    "approvedBytes": 0,
+                    "approved": &plan.approved,
+                    "skipped": &plan.skipped,
+                });
+                println!("{}", serde_json::to_string_pretty(&out)?);
+                return Ok(());
+            }
+            let journal = clean::quarantine(&selected, false)?;
+            record_history(
+                "manual",
+                args.preset.as_deref(),
+                selected.len(),
+                plan.approved.len(),
+                (0, 0),
+                Some(&journal),
+            );
+            println!("{}", serde_json::to_string_pretty(&journal)?);
+            return Ok(());
+        }
+        let protected_bytes: u64 = selected
+            .iter()
+            .filter(|i| i.protected)
+            .map(|i| i.size)
+            .sum();
+        let out = serde_json::json!({
+            "selectedCount": selected.len(),
+            "approvedBytes": plan.approved_bytes(),
+            "protectedBytes": protected_bytes,
+            "approved": &plan.approved,
+            "skipped": &plan.skipped,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
     if selected.is_empty() {
         println!("没有符合条件的清理项。");
         return Ok(());
     }
-
-    // 预演与执行共用同一安全门，保证「预览即所得」
-    let plan = clean::plan(&selected);
     if plan.approved.is_empty() {
         println!("没有可通过安全门的清理项：");
         for s in &plan.skipped {
@@ -927,7 +1008,6 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
         return Ok(());
     }
 
-    let apply = args.apply && !args.dry_run;
     if !apply {
         print_plan(&plan);
         println!("\n（dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）");
@@ -1025,7 +1105,7 @@ fn cmd_quarantine(args: QuarantineArgs) -> Result<()> {
         }
         QuarantineCmd::Purge(p) => {
             if !p.older_than.is_empty() {
-                let days = parse_days(&p.older_than).unwrap_or(7);
+                let days = parse_days_arg(&p.older_than)?;
                 let (n, freed) = clean::purge_older_than(days)?;
                 println!("永久删除 {n} 个会话，释放 {}", human(freed));
             } else if p.all {
@@ -1087,9 +1167,28 @@ fn tier_ansi(t: apps::Tier) -> &'static str {
 
 fn cmd_large(args: LargeArgs) -> Result<()> {
     let root = expand_root(&args.root);
-    let min = parse_size(&args.min).unwrap_or(100 * 1024 * 1024);
+    let min = parse_size_arg(&args.min)?;
     eprintln!("扫描大文件…");
     let files = finder::find_large(&[root], min, args.limit);
+    let protect_list = protect::load();
+    let is_protected = |p: &PathBuf| protect::matches(&protect_list, p);
+    if args.json {
+        let out: Vec<_> = files
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "path": f.path,
+                    "size": f.size,
+                    "protected": is_protected(&f.path),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "min": min, "files": out }))?
+        );
+        return Ok(());
+    }
     if files.is_empty() {
         println!("未发现 >= {} 的文件。", human(min));
         return Ok(());
@@ -1097,32 +1196,101 @@ fn cmd_large(args: LargeArgs) -> Result<()> {
     println!("{:>10}  {}", "大小", "文件");
     println!("{}", "-".repeat(80));
     for f in &files {
-        println!("{:>10}  {}", human(f.size), shorten(&f.path));
+        let tag = if is_protected(&f.path) {
+            "  \x1b[90m[已保护]\x1b[0m"
+        } else {
+            ""
+        };
+        println!("{:>10}  {}{}", human(f.size), shorten(&f.path), tag);
     }
     Ok(())
 }
 
 fn cmd_dupes(args: DupesArgs) -> Result<()> {
     let root = expand_root(&args.root);
-    let min = parse_size(&args.min).unwrap_or(1024 * 1024);
+    let min = parse_size_arg(&args.min)?;
     eprintln!("扫描重复文件（需读取内容，可能较慢）…");
     let groups = finder::find_duplicates(&[root], min, args.limit);
     if groups.is_empty() {
         println!("未发现重复文件。");
         return Ok(());
     }
+    // 构建「将被移走」的候选（每组保留首个，其余为副本），并与 clean 共用安全门，
+    // 避免出现「报告可省 X，实际一个都移不走」的口径矛盾。
+    let protect_list = protect::load();
+    let mut items: Vec<CleanItem> = Vec::new();
+    for g in &groups {
+        for p in g.paths.iter().skip(1) {
+            let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(g.size);
+            let mut it =
+                CleanItem::synthetic(p.clone(), size, "dupes", "重复文件副本", Risk::Confirm);
+            it.protected = protect::matches(&protect_list, p);
+            items.push(it);
+        }
+    }
+    let plan = clean::plan(&items);
+
+    if args.json {
+        if args.apply {
+            return Err(anyhow!(
+                "--json 只用于只读报告；请先用 --json 预览，再用 --apply 执行"
+            ));
+        }
+        let groups_json: Vec<_> = groups
+            .iter()
+            .map(|g| {
+                let removable = g
+                    .paths
+                    .iter()
+                    .skip(1)
+                    .filter(|p| plan.approved.iter().any(|it| &it.path == *p))
+                    .count() as u64;
+                let protected: Vec<&PathBuf> = g
+                    .paths
+                    .iter()
+                    .skip(1)
+                    .filter(|p| protect::matches(&protect_list, p))
+                    .collect();
+                serde_json::json!({
+                    "size": g.size,
+                    "paths": g.paths,
+                    "reclaimableBytes": g.size.saturating_mul(removable),
+                    "protected": protected,
+                })
+            })
+            .collect();
+        let out = serde_json::json!({
+            "groups": groups_json,
+            "reclaimableBytes": plan.approved_bytes(),
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        return Ok(());
+    }
+
     let mut total = 0u64;
     for (i, g) in groups.iter().enumerate() {
-        total += g.wasted();
+        let removable = g
+            .paths
+            .iter()
+            .skip(1)
+            .filter(|p| plan.approved.iter().any(|it| &it.path == *p))
+            .count() as u64;
+        let wasted = g.size.saturating_mul(removable);
+        total += wasted;
         println!(
             "\x1b[1m组 {} · {} × {}  （可省 {}）\x1b[0m",
             i + 1,
             g.paths.len(),
             human(g.size),
-            human(g.wasted())
+            human(wasted)
         );
-        for p in &g.paths {
-            println!("   {}", shorten(p));
+        for (j, p) in g.paths.iter().enumerate() {
+            let tag = if j > 0 && protect::matches(&protect_list, p) {
+                "  \x1b[90m[已保护]\x1b[0m"
+            } else {
+                ""
+            };
+            println!("   {}{}", shorten(p), tag);
         }
     }
     println!("\n共 {} 组，可回收 {}", groups.len(), human(total));
@@ -1132,34 +1300,38 @@ fn cmd_dupes(args: DupesArgs) -> Result<()> {
         return Ok(());
     }
 
-    let mut items: Vec<CleanItem> = Vec::new();
-    for g in &groups {
-        for p in g.paths.iter().skip(1) {
-            let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(g.size);
-            items.push(CleanItem::synthetic(
-                p.clone(),
-                size,
-                "dupes",
-                "重复文件副本",
-                Risk::Confirm,
-            ));
+    if plan.approved.is_empty() {
+        println!("没有可通过安全门的清理项：");
+        for s in &plan.skipped {
+            println!("  - {}：{}", shorten(&s.path), s.reason);
         }
-    }
-    if items.is_empty() {
         return Ok(());
     }
-    if !args.yes && !confirm(&format!("将 {} 个重复副本移入隔离区？", items.len()))? {
+    if !args.yes
+        && !confirm(&format!(
+            "将 {} 个重复副本移入隔离区？",
+            plan.approved.len()
+        ))?
+    {
         println!("已取消。");
         return Ok(());
     }
     let journal = clean::quarantine(&items, false)?;
     print_journal(&journal);
+    record_history(
+        "dupes",
+        None,
+        items.len(),
+        plan.approved.len(),
+        (0, 0),
+        Some(&journal),
+    );
     warn_snapshots();
     Ok(())
 }
 
 fn cmd_apps(args: AppsArgs) -> Result<()> {
-    let min = parse_size(&args.min).unwrap_or(0);
+    let min = parse_size_arg(&args.min)?;
     let apps = apps::list_apps();
     println!(
         "{:<6} {:>10}  {:<12} {:<28} {}",
@@ -1234,14 +1406,21 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         };
         println!("• {:<44} {:>10}{}", shorten(&it.path), human(it.size), tag);
     }
-    let manual: Vec<&CleanItem> = items.iter().filter(|i| i.sudo).collect();
-    let removable: u64 = items.iter().filter(|i| !i.sudo).map(|i| i.size).sum();
+    // 与 clean 共用安全门：预览/计数即实际能移动的项
+    let plan = clean::plan(&items);
     println!(
-        "\n共 {} 项，可自动释放 \x1b[1m{}\x1b[0m（另有 {} 项需 sudo 手动处理）",
+        "\n共 {} 项，可自动释放 \x1b[1m{}\x1b[0m{}",
         items.len(),
-        human(removable),
-        manual.len()
+        human(plan.approved_bytes()),
+        if plan.skipped.is_empty() {
+            String::new()
+        } else {
+            format!("（另有 {} 项无法自动处理）", plan.skipped.len())
+        }
     );
+    for s in &plan.skipped {
+        println!("  \x1b[33m跳过\x1b[0m {}：{}", shorten(&s.path), s.reason);
+    }
 
     // 安装包记录（informational）
     let pkgs = apps::pkg_receipt_ids(app.bundle_id.as_deref(), &app.name);
@@ -1265,12 +1444,24 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         );
         return Ok(());
     }
+    if plan.approved.is_empty() {
+        println!("没有可通过安全门的项。");
+        return Ok(());
+    }
     if !args.yes && !confirm(&format!("卸载 {} 并移入隔离区？", app.name))? {
         println!("已取消。");
         return Ok(());
     }
     let journal = clean::quarantine(&items, false)?;
     print_journal(&journal);
+    record_history(
+        "uninstall",
+        None,
+        items.len(),
+        plan.approved.len(),
+        (0, 0),
+        Some(&journal),
+    );
     warn_snapshots();
     Ok(())
 }
@@ -1415,6 +1606,15 @@ fn cmd_preset(args: PresetArgs) -> Result<()> {
 }
 
 fn cmd_history(args: HistoryArgs) -> Result<()> {
+    if args.reconcile {
+        let n = history::reconcile_with_quarantine()?;
+        if args.json {
+            println!("{}", serde_json::json!({ "reconciled": n }));
+        } else {
+            println!("已从隔离区回填 {n} 条历史记录。");
+        }
+        return Ok(());
+    }
     let list = history::load(Some(args.limit))?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&list)?);
@@ -1422,24 +1622,31 @@ fn cmd_history(args: HistoryArgs) -> Result<()> {
     }
     if list.is_empty() {
         println!("暂无历史记录。");
-        return Ok(());
-    }
-    println!(
-        "{:<20} {:<10} {:<16} {:>6} {:>10} {:>6} {:>10}",
-        "时间", "触发", "预设", "项", "释放", "跳过", "purged"
-    );
-    println!("{}", "-".repeat(88));
-    for r in list {
+    } else {
         println!(
             "{:<20} {:<10} {:<16} {:>6} {:>10} {:>6} {:>10}",
-            history::format_ts(r.timestamp),
-            r.trigger,
-            r.preset.unwrap_or_else(|| "-".into()),
-            r.moved,
-            human(r.moved_bytes),
-            r.skipped,
-            human(r.purged_bytes)
+            "时间", "触发", "预设", "项", "释放", "跳过", "purged"
         );
+        println!("{}", "-".repeat(88));
+        for r in list {
+            println!(
+                "{:<20} {:<10} {:<16} {:>6} {:>10} {:>6} {:>10}",
+                history::format_ts(r.timestamp),
+                r.trigger,
+                r.preset.unwrap_or_else(|| "-".into()),
+                r.moved,
+                human(r.moved_bytes),
+                r.skipped,
+                human(r.purged_bytes)
+            );
+        }
+    }
+    if let Ok(n) = history::unreconciled_count_in(&clean::thin_home()) {
+        if n > 0 {
+            println!(
+                "\n\x1b[90m另有 {n} 个隔离会话未记录，可用 `thin history --reconcile` 回填。\x1b[0m"
+            );
+        }
     }
     Ok(())
 }
@@ -1678,6 +1885,16 @@ fn confirm(prompt: &str) -> Result<bool> {
 }
 
 /// 解析 1MB / 500KB / 2G 之类的大小
+/// 解析体积；非法输入直接报错，避免静默按默认值猜（如 --min abc）
+fn parse_size_arg(s: &str) -> Result<u64> {
+    parse_size(s).ok_or_else(|| anyhow!("无法解析体积 {s:?}（示例: 100MB / 1G / 500KB）"))
+}
+
+/// 解析天数；非法输入直接报错
+fn parse_days_arg(s: &str) -> Result<u64> {
+    parse_days(s).ok_or_else(|| anyhow!("无法解析天数 {s:?}（示例: 7d / 30）"))
+}
+
 fn parse_size(s: &str) -> Option<u64> {
     let s = s.trim();
     if s.is_empty() {

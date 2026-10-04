@@ -17,15 +17,15 @@ thin rules [list|path]         # 规则列表 / 用户规则文件路径
 thin rules add ...             # 新增规则（agent 入口，--dir 写 rules.d/<id>.json）
 thin rules remove <id>         # 删除用户规则
 thin rules export [--new]      # 导出用户规则，便于并入内置 default.json
-thin clean [--apply]           # 清理（默认 dry-run）
+thin clean [--apply] [--json]  # 清理（默认 dry-run；--json 输出 approved/skipped 供 agent 消费）
 thin preset list|add|remove    # 清理预设（定时任务只执行用户预设）
 thin protect add|list|remove   # 保护名单：路径及其子目录永不清理（保护在研项目的 target/ 等）
-thin history [--limit N]       # 清理历史记录
+thin history [--limit N] [--json] [--reconcile]  # 清理历史（--reconcile 回填隔离区遗漏记录）
 thin schedule install|status|run|uninstall   # 定时任务（launchd）
 thin schedule run --preset <id> --dry-run    # 预览一次预设清理，不 purge/不隔离/不写历史
 thin quarantine list|restore|purge
-thin large [ROOT] --min --limit
-thin dupes [ROOT] --min [--apply]
+thin large [ROOT] --min --limit [--json]
+thin dupes [ROOT] --min [--apply] [--json]   # 受保护副本标 [已保护] 且不计入可回收
 thin apps --min ; thin uninstall <名称> [--apply]
 ```
 

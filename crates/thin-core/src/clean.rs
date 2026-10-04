@@ -370,7 +370,7 @@ fn remove_path(path: &Path) -> Result<()> {
 // ---------------------------------------------------------------------------
 
 /// 清理计划：预演与执行使用**同一套**安全门，保证「预览即所得」。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Serialize)]
 pub struct Plan {
     pub approved: Vec<CleanItem>,
     pub skipped: Vec<SkippedItem>,
