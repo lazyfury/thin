@@ -1,9 +1,9 @@
 name: CI
 
+# 仅手动触发：避免频繁 push 时反复消耗 runner（公开仓库免费，但没必要跑得那么勤）。
+# 在 GitHub 仓库页 → Actions → CI → Run workflow 手动启动。
 on:
-  push:
-    branches: [main, master]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
