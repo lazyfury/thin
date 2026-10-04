@@ -1,6 +1,6 @@
 # thin
 
-macOS 系统空间扫描与安全清理 CLI + TUI（M1 · 隔离区可恢复）。
+macOS 系统空间扫描与安全清理 CLI + TUI（M2 · 隔离区可恢复）。
 
 > 设计文档见 [DESIGN.md](./DESIGN.md)。清理默认**不真正删除**，而是移入**隔离区**（`~/.thin/quarantine`），
 > 写入 Journal，可随时 `restore`；只有显式 `purge` 才永久删除。
@@ -19,8 +19,8 @@ macOS 的「系统数据 / 系统缓存」是个兜底分类，会把虚拟机�
 
 ```
 crates/
-  thin-core/     核心库：磁盘探测、规则、扫描、核算、安全清理（无 UI 依赖）
-    src/{lib,model,fsutil,probe,rules,scan,clean,fmt}.rs
+  thin-core/     核心库：磁盘探测、规则、扫描、核算、安全清理、查找（无 UI 依赖）
+    src/{lib,model,fsutil,probe,rules,scan,clean,finder,apps,fmt}.rs
     rules/default.json
   thin-cli/      前端：CLI (clap) + TUI (ratatui)
     src/{main,report,top,tui}.rs
@@ -71,6 +71,14 @@ thin quarantine restore             # 恢复最近一次
 thin quarantine restore --all       # 恢复全部
 thin quarantine purge <session>     # 永久删除
 thin quarantine purge --older-than 7d
+
+# 大文件 / 重复文件 / App 管理
+thin large ~/Documents --min 100MB --limit 30
+thin dupes ~/Downloads --min 10MB              # 只读报告
+thin dupes ~/Downloads --min 10MB --apply      # 每组保留首个，其余移入隔离区
+thin apps --min 500MB                          # 列出 App（含关联残留）
+thin uninstall <名称>                           # 预览卸载计划
+thin uninstall <名称> --apply                   # 卸载并移入隔离区
 ```
 
 ## 安全模型
@@ -116,8 +124,9 @@ thin quarantine purge --older-than 7d
 ## 路线图
 
 - **M0** CLI 只读扫描 + 诚实核算 + dry-run ✅
-- **M1（当前）** 安全清理：隔离区 + Journal + 恢复/永久删除 + TUI 交互 ✅
-- M2 大文件 / 重复文件 / App 卸载
+- **M1** 安全清理：隔离区 + Journal + 恢复/永久删除 + TUI 交互 ✅
+- **M2（当前）** 大文件查找 / 重复文件检测 / App 卸载（均复用隔离区）✅
+- M3 规则热更新、异常大目录归因、TUI 多标签页
 - M3 规则热更新、异常大目录归因
 
 ## 测试

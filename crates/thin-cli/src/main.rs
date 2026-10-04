@@ -4,15 +4,15 @@ mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 use thin_core::fmt::human;
 use thin_core::model::Risk;
-use thin_core::{clean, fsutil, probe, rules, scan};
-use std::path::PathBuf;
+use thin_core::{CleanItem, apps, clean, finder, fsutil, probe, rules, scan};
 
 #[derive(Parser)]
 #[command(
     name = "thin",
-    about = "macOS 系统空间扫描与安全清理 (M1 · 隔离区可恢复)",
+    about = "macOS 系统空间扫描与安全清理 (M2 · 隔离区可恢复)",
     version
 )]
 struct Cli {
@@ -42,6 +42,18 @@ enum Cmd {
 
     /// 管理隔离区：列出 / 恢复 / 永久删除
     Quarantine(QuarantineArgs),
+
+    /// 查找大文件
+    Large(LargeArgs),
+
+    /// 查找重复文件
+    Dupes(DupesArgs),
+
+    /// 列出已安装 App（含关联残留）
+    Apps(AppsArgs),
+
+    /// 卸载 App（App 及其残留一并移入隔离区）
+    Uninstall(UninstallArgs),
 }
 
 #[derive(clap::Args)]
@@ -79,6 +91,57 @@ struct TuiArgs {
     /// 最小体积过滤
     #[arg(long, default_value = "1MB")]
     min: String,
+}
+
+#[derive(clap::Args)]
+struct LargeArgs {
+    /// 搜索根目录
+    #[arg(default_value = "~")]
+    root: String,
+    /// 最小体积
+    #[arg(long, default_value = "100MB")]
+    min: String,
+    /// 显示条数
+    #[arg(short, long, default_value_t = 30)]
+    limit: usize,
+}
+
+#[derive(clap::Args)]
+struct DupesArgs {
+    /// 搜索根目录
+    #[arg(default_value = "~")]
+    root: String,
+    /// 最小体积
+    #[arg(long, default_value = "1MB")]
+    min: String,
+    /// 显示组数
+    #[arg(short, long, default_value_t = 50)]
+    limit: usize,
+    /// 把每组除首个外的副本移入隔离区
+    #[arg(long)]
+    apply: bool,
+    /// 跳过确认
+    #[arg(long)]
+    yes: bool,
+}
+
+#[derive(clap::Args)]
+struct AppsArgs {
+    /// 最小总占用过滤
+    #[arg(long, default_value = "100MB")]
+    min: String,
+}
+
+#[derive(clap::Args)]
+struct UninstallArgs {
+    /// App 名称（模糊匹配）
+    query: String,
+    /// 实际执行（默认只预览）
+    #[arg(long)]
+    apply: bool,
+    /// 跳过确认
+    #[arg(long)]
+    yes: bool,
 }
 
 #[derive(clap::Args)]
@@ -154,6 +217,10 @@ fn main() -> Result<()> {
         Cmd::Rules => cmd_rules()?,
         Cmd::Clean(args) => cmd_clean(args)?,
         Cmd::Quarantine(args) => cmd_quarantine(args)?,
+        Cmd::Large(args) => cmd_large(args)?,
+        Cmd::Dupes(args) => cmd_dupes(args)?,
+        Cmd::Apps(args) => cmd_apps(args)?,
+        Cmd::Uninstall(args) => cmd_uninstall(args)?,
     }
     Ok(())
 }
@@ -278,27 +345,7 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
     }
 
     let journal = clean::quarantine(&selected, false)?;
-    if journal.entries.is_empty() {
-        println!("\n没有可执行项（全部被安全门跳过）:");
-        for s in &journal.skipped {
-            println!("  \x1b[33m跳过\x1b[0m {}：{}", s.path.display(), s.reason);
-        }
-        return Ok(());
-    }
-    println!(
-        "\n\x1b[1m已移入隔离区\x1b[0m  会话 {}  共 {} 项，{}",
-        journal.session,
-        journal.entries.len(),
-        human(journal.total_size())
-    );
-    for s in &journal.skipped {
-        println!("  \x1b[33m跳过\x1b[0m {}：{}", s.path.display(), s.reason);
-    }
-    println!(
-        "\n恢复:       thin quarantine restore {}",
-        journal.session
-    );
-    println!("永久删除:   thin quarantine purge {}", journal.session);
+    print_journal(&journal);
     Ok(())
 }
 
@@ -386,6 +433,198 @@ fn cmd_quarantine(args: QuarantineArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn expand_root(s: &str) -> PathBuf {
+    fsutil::expand(s).unwrap_or_else(|| PathBuf::from(s))
+}
+
+/// 把家目录前缀显示为 ~
+fn shorten(path: &PathBuf) -> String {
+    let s = path.display().to_string();
+    let home = std::env::var("HOME").unwrap_or_default();
+    if !home.is_empty() && s.starts_with(&home) {
+        s.replacen(&home, "~", 1)
+    } else {
+        s
+    }
+}
+
+fn truncate(s: &str, width: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= width {
+        return s.to_string();
+    }
+    let mut out: String = chars[..width.saturating_sub(1)].iter().collect();
+    out.push('…');
+    out
+}
+
+fn cmd_large(args: LargeArgs) -> Result<()> {
+    let root = expand_root(&args.root);
+    let min = parse_size(&args.min).unwrap_or(100 * 1024 * 1024);
+    eprintln!("扫描大文件…");
+    let files = finder::find_large(&[root], min, args.limit);
+    if files.is_empty() {
+        println!("未发现 >= {} 的文件。", human(min));
+        return Ok(());
+    }
+    println!("{:>10}  {}", "大小", "文件");
+    println!("{}", "-".repeat(80));
+    for f in &files {
+        println!("{:>10}  {}", human(f.size), shorten(&f.path));
+    }
+    Ok(())
+}
+
+fn cmd_dupes(args: DupesArgs) -> Result<()> {
+    let root = expand_root(&args.root);
+    let min = parse_size(&args.min).unwrap_or(1024 * 1024);
+    eprintln!("扫描重复文件（需读取内容，可能较慢）…");
+    let groups = finder::find_duplicates(&[root], min, args.limit);
+    if groups.is_empty() {
+        println!("未发现重复文件。");
+        return Ok(());
+    }
+    let mut total = 0u64;
+    for (i, g) in groups.iter().enumerate() {
+        total += g.wasted();
+        println!(
+            "\x1b[1m组 {} · {} × {}  （可省 {}）\x1b[0m",
+            i + 1,
+            g.paths.len(),
+            human(g.size),
+            human(g.wasted())
+        );
+        for p in &g.paths {
+            println!("   {}", shorten(p));
+        }
+    }
+    println!("\n共 {} 组，可回收 {}", groups.len(), human(total));
+
+    if !args.apply {
+        println!("（只读报告；加 --apply 可把每组除首个外的副本移入隔离区）");
+        return Ok(());
+    }
+
+    let mut items: Vec<CleanItem> = Vec::new();
+    for g in &groups {
+        for p in g.paths.iter().skip(1) {
+            let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(g.size);
+            items.push(CleanItem::synthetic(
+                p.clone(),
+                size,
+                "dupes",
+                "重复文件副本",
+                Risk::Confirm,
+            ));
+        }
+    }
+    if items.is_empty() {
+        return Ok(());
+    }
+    if !args.yes && !confirm(&format!("将 {} 个重复副本移入隔离区？", items.len()))? {
+        println!("已取消。");
+        return Ok(());
+    }
+    let journal = clean::quarantine(&items, false)?;
+    print_journal(&journal);
+    Ok(())
+}
+
+fn cmd_apps(args: AppsArgs) -> Result<()> {
+    let min = parse_size(&args.min).unwrap_or(100 * 1024 * 1024);
+    let apps = apps::list_apps();
+    println!(
+        "{:<28} {:>10}  {:<12} {}",
+        "App", "总占用", "关联残留", "Bundle ID"
+    );
+    println!("{}", "-".repeat(92));
+    for a in apps.into_iter().filter(|a| a.total() >= min) {
+        println!(
+            "{:<28} {:>10}  {:<12} {}",
+            truncate(&a.name, 28),
+            human(a.total()),
+            human(a.leftovers_size()),
+            a.bundle_id.unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
+    let matched = apps::find_app(&args.query);
+    if matched.is_empty() {
+        println!("未找到匹配的 App: {}", args.query);
+        return Ok(());
+    }
+    if matched.len() > 1 {
+        println!("匹配到多个 App，请输入更精确的名称：");
+        for a in &matched {
+            println!("  {}  ({})", a.name, human(a.total()));
+        }
+        return Ok(());
+    }
+    let app = &matched[0];
+    let mut items: Vec<CleanItem> = vec![CleanItem::synthetic(
+        app.path.clone(),
+        app.size,
+        "app",
+        &app.name,
+        Risk::Confirm,
+    )];
+    for (p, s) in &app.leftovers {
+        items.push(CleanItem::synthetic(
+            p.clone(),
+            *s,
+            "app-leftover",
+            &format!("{} 残留", app.name),
+            Risk::Confirm,
+        ));
+    }
+
+    println!("\x1b[1m卸载计划: {}\x1b[0m\n", app.name);
+    for it in &items {
+        println!("• {:<44} {:>10}", shorten(&it.path), human(it.size));
+    }
+    println!(
+        "\n共 {} 项，预计释放 \x1b[1m{}\x1b[0m",
+        items.len(),
+        human(app.total())
+    );
+
+    if !args.apply {
+        println!("（预览；加 --apply 移入隔离区，可恢复）");
+        return Ok(());
+    }
+    if !args.yes && !confirm(&format!("卸载 {} 并移入隔离区？", app.name))? {
+        println!("已取消。");
+        return Ok(());
+    }
+    let journal = clean::quarantine(&items, false)?;
+    print_journal(&journal);
+    Ok(())
+}
+
+fn print_journal(journal: &clean::Journal) {
+    if journal.entries.is_empty() {
+        println!("\n没有可执行项（全部被安全门跳过）:");
+        for s in &journal.skipped {
+            println!("  \x1b[33m跳过\x1b[0m {}：{}", s.path.display(), s.reason);
+        }
+        return;
+    }
+    println!(
+        "\n\x1b[1m已移入隔离区\x1b[0m  会话 {}  共 {} 项，{}",
+        journal.session,
+        journal.entries.len(),
+        human(journal.total_size())
+    );
+    for s in &journal.skipped {
+        println!("  \x1b[33m跳过\x1b[0m {}：{}", s.path.display(), s.reason);
+    }
+    println!("\n恢复:       thin quarantine restore {}", journal.session);
+    println!("永久删除:   thin quarantine purge {}", journal.session);
 }
 
 fn confirm(prompt: &str) -> Result<bool> {

@@ -111,6 +111,28 @@ pub struct CleanItem {
     pub explain: Explain,
 }
 
+impl CleanItem {
+    /// 构造一个非规则来源的清理项（大文件/重复文件/App 卸载等）
+    pub fn synthetic(path: PathBuf, size: u64, rule_id: &str, name: &str, risk: Risk) -> Self {
+        CleanItem {
+            rule_id: rule_id.to_string(),
+            name: name.to_string(),
+            path,
+            category: Category::Other,
+            risk,
+            regenerable: false,
+            sudo: false,
+            size,
+            reclaim: "移入隔离区".to_string(),
+            explain: Explain {
+                what: "由命令动态生成".to_string(),
+                cost: "移入隔离区，可随时恢复".to_string(),
+                recover: "quarantine restore".to_string(),
+            },
+        }
+    }
+}
+
 /// 可回收空间汇总
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ReclaimSummary {

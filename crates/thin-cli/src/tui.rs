@@ -12,10 +12,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
+use std::collections::HashSet;
 use thin_core::clean;
 use thin_core::fmt::human;
 use thin_core::model::{CleanItem, Risk};
-use std::collections::HashSet;
 
 struct App {
     items: Vec<CleanItem>,

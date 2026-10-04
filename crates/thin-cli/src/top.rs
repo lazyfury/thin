@@ -1,5 +1,5 @@
-use thin_core::fmt::human;
 use std::path::PathBuf;
+use thin_core::fmt::human;
 
 /// `thin top [PATH]`：列出某目录下各子项占用（类似 `du -sh PATH/* | sort -rh`）
 pub fn run(path: PathBuf, limit: usize) {

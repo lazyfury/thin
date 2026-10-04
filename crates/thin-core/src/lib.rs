@@ -4,7 +4,9 @@
 //!
 //! 设计原则见仓库根目录 `DESIGN.md`：还原真实路径、诚实核算、风险分级。
 
+pub mod apps;
 pub mod clean;
+pub mod finder;
 pub mod fmt;
 pub mod fsutil;
 pub mod model;
