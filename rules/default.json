@@ -1,0 +1,458 @@
+[
+  {
+    "id": "rust-target",
+    "name": "Rust 编译产物 (target/)",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": ["~/Documents", "~/Developer", "~/Projects", "~/code", "~/src"],
+      "dirName": "target",
+      "requireSibling": "Cargo.toml",
+      "maxDepth": 6
+    },
+    "reclaim": "cd <项目> && cargo clean",
+    "explain": {
+      "what": "Rust 编译产生的中间文件与可执行文件",
+      "cost": "删除后下次编译需重新构建，耗时变长",
+      "recover": "重新编译即可，无需从备份恢复"
+    }
+  },
+  {
+    "id": "node-modules",
+    "name": "Node 依赖 (node_modules/)",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": ["~/Documents", "~/Developer", "~/Projects", "~/code", "~/src"],
+      "dirName": "node_modules",
+      "requireSibling": "package.json",
+      "maxDepth": 6
+    },
+    "reclaim": "cd <项目> && npm install",
+    "explain": {
+      "what": "npm/Node 项目依赖包",
+      "cost": "删除后项目无法直接运行，需重新安装依赖",
+      "recover": "重新 npm install 即可（需联网）"
+    }
+  },
+  {
+    "id": "user-caches",
+    "name": "用户缓存 (~/Library/Caches)",
+    "category": "app-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": { "kind": "path", "paths": ["~/Library/Caches"] },
+    "reclaim": "rm -rf ~/Library/Caches/*",
+    "explain": {
+      "what": "各 App 的缓存文件",
+      "cost": "部分 App 首次启动变慢或需重新登录",
+      "recover": "由 App 自动重建"
+    }
+  },
+  {
+    "id": "user-logs",
+    "name": "用户日志 (~/Library/Logs)",
+    "category": "log",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": { "kind": "path", "paths": ["~/Library/Logs"] },
+    "reclaim": "rm -rf ~/Library/Logs/*",
+    "explain": {
+      "what": "应用运行日志",
+      "cost": "丢失历史日志，排查问题时不可用",
+      "recover": "由应用重新生成"
+    }
+  },
+  {
+    "id": "system-logs",
+    "name": "系统日志 (/Library/Logs)",
+    "category": "log",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": true,
+    "matcher": { "kind": "path", "paths": ["/Library/Logs"] },
+    "reclaim": "sudo rm -rf /Library/Logs/*",
+    "explain": {
+      "what": "系统级应用与安装器日志",
+      "cost": "丢失历史日志",
+      "recover": "由系统重新生成"
+    }
+  },
+  {
+    "id": "var-logs",
+    "name": "var 日志 (/var/log)",
+    "category": "log",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": true,
+    "matcher": { "kind": "path", "paths": ["/var/log"] },
+    "reclaim": "sudo rm -rf /var/log/*.log*",
+    "explain": {
+      "what": "系统运行日志",
+      "cost": "丢失历史日志",
+      "recover": "由系统重新生成"
+    }
+  },
+  {
+    "id": "diagnostics",
+    "name": "系统诊断日志 (diagnostics)",
+    "category": "log",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": true,
+    "matcher": { "kind": "path", "paths": ["/private/var/db/diagnostics"] },
+    "reclaim": "sudo rm -rf /private/var/db/diagnostics/{Persist,Special,Signpost}",
+    "explain": {
+      "what": "macOS 崩溃/性能诊断数据（Persist/Special/Signpost）",
+      "cost": "丢失历史诊断数据，不影响系统运行",
+      "recover": "由系统重新收集"
+    }
+  },
+  {
+    "id": "uuidtext",
+    "name": "符号缓存 (uuidtext)",
+    "category": "log",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": true,
+    "matcher": { "kind": "path", "paths": ["/private/var/db/uuidtext"] },
+    "reclaim": "sudo rm -rf /private/var/db/uuidtext/*",
+    "explain": {
+      "what": "崩溃日志的符号化缓存",
+      "cost": "下次分析崩溃日志时需重新索引，略慢",
+      "recover": "由系统重建"
+    }
+  },
+  {
+    "id": "wallpaper-aerials",
+    "name": "动态壁纸缓存 (aerials)",
+    "category": "system-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": ["~/Library/Application Support/com.apple.wallpaper/aerials"]
+    },
+    "reclaim": "rm -rf ~/Library/Application Support/com.apple.wallpaper/aerials/*",
+    "explain": {
+      "what": "动态壁纸（航拍视频）本地缓存",
+      "cost": "动态壁纸需重新下载后才能显示",
+      "recover": "在系统设置里重新选择即可重新下载"
+    }
+  },
+  {
+    "id": "cargo-registry",
+    "name": "Cargo 包缓存 (registry)",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": ["~/.cargo/registry/cache", "~/.cargo/registry/src"]
+    },
+    "reclaim": "cargo cache -a  # 或删除 ~/.cargo/registry/cache",
+    "explain": {
+      "what": "Rust 依赖包下载与解压缓存",
+      "cost": "下次构建需重新下载依赖",
+      "recover": "cargo 自动重新下载"
+    }
+  },
+  {
+    "id": "cargo-git",
+    "name": "Cargo Git 缓存 (git)",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": { "kind": "path", "paths": ["~/.cargo/git"] },
+    "reclaim": "rm -rf ~/.cargo/git/*",
+    "explain": {
+      "what": "从 Git 拉取的依赖源码缓存",
+      "cost": "下次构建需重新拉取",
+      "recover": "cargo 自动重新拉取"
+    }
+  },
+  {
+    "id": "rustup-toolchains",
+    "name": "Rust 工具链 (toolchains)",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": { "kind": "path", "paths": ["~/.rustup/toolchains"] },
+    "reclaim": "rustup toolchain uninstall <name>",
+    "explain": {
+      "what": "已安装的 Rust 工具链（可能含多套/多目标）",
+      "cost": "删除后对应工具链编译不可用",
+      "recover": "rustup toolchain install 重新安装"
+    }
+  },
+  {
+    "id": "npm-cache",
+    "name": "npm 缓存 (_cacache)",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": { "kind": "path", "paths": ["~/.npm/_cacache"] },
+    "reclaim": "npm cache clean --force",
+    "explain": {
+      "what": "npm 依赖包本地缓存",
+      "cost": "下次安装需重新下载",
+      "recover": "npm 自动重新缓存"
+    }
+  },
+  {
+    "id": "homebrew-cache",
+    "name": "Homebrew 下载缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": ["~/Library/Caches/Homebrew", "/opt/homebrew/var/homebrew"]
+    },
+    "reclaim": "brew cleanup -s",
+    "explain": {
+      "what": "Homebrew 下载的安装包与旧版本",
+      "cost": "已装软件不受影响",
+      "recover": "需要时重新下载"
+    }
+  },
+  {
+    "id": "gradle-cache",
+    "name": "Gradle 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": { "kind": "path", "paths": ["~/.gradle/caches"] },
+    "reclaim": "rm -rf ~/.gradle/caches/*",
+    "explain": {
+      "what": "Gradle 依赖与构建缓存",
+      "cost": "下次构建需重新下载依赖",
+      "recover": "Gradle 自动重建"
+    }
+  },
+  {
+    "id": "xcode-derived",
+    "name": "Xcode DerivedData",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": ["~/Library/Developer/Xcode/DerivedData"]
+    },
+    "reclaim": "rm -rf ~/Library/Developer/Xcode/DerivedData/*",
+    "explain": {
+      "what": "Xcode 构建索引与中间产物",
+      "cost": "下次构建索引变慢",
+      "recover": "Xcode 自动重建"
+    }
+  },
+  {
+    "id": "xcode-archives",
+    "name": "Xcode Archives (历史归档)",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": false,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": ["~/Library/Developer/Xcode/Archives"]
+    },
+    "reclaim": "在 Xcode Organizer 中删除旧归档",
+    "explain": {
+      "what": "Xcode 打包归档（.xcarchive），含历史版本符号",
+      "cost": "丢失历史归档，无法再从中导出/上传旧版本",
+      "recover": "不可恢复，请谨慎"
+    }
+  },
+  {
+    "id": "android-sdk",
+    "name": "Android SDK",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": false,
+    "sudo": false,
+    "matcher": { "kind": "path", "paths": ["~/Library/Android/sdk"] },
+    "reclaim": "如不做 Android 开发可整体删除",
+    "explain": {
+      "what": "Android 开发 SDK 与模拟器镜像",
+      "cost": "删除后无法构建 Android 项目，需重新下载",
+      "recover": "可重新下载，但耗时较大"
+    }
+  },
+  {
+    "id": "chrome-optguide-model",
+    "name": "Chrome 端侧模型",
+    "category": "app-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": ["~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel"]
+    },
+    "reclaim": "rm -rf \"~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel\"",
+    "explain": {
+      "what": "Chrome 的设备端优化指南模型（可达数 GB）",
+      "cost": "Chrome 部分本地智能功能暂时降级",
+      "recover": "Chrome 自动重新下载"
+    }
+  },
+  {
+    "id": "chrome-cache",
+    "name": "Chrome 缓存",
+    "category": "app-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Caches/Google",
+        "~/Library/Application Support/Google/Chrome/Default/Cache",
+        "~/Library/Application Support/Google/Chrome/Default/Code Cache",
+        "~/Library/Application Support/Google/Chrome/GraphiteDawnCache"
+      ]
+    },
+    "reclaim": "在 Chrome 中清除缓存，或删除上述目录",
+    "explain": {
+      "what": "Chrome 网页与着色器缓存",
+      "cost": "首次访问网站略慢",
+      "recover": "Chrome 自动重建"
+    }
+  },
+  {
+    "id": "vscode-cache",
+    "name": "VS Code 缓存",
+    "category": "app-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Application Support/Code/Cache",
+        "~/Library/Application Support/Code/CachedData",
+        "~/Library/Application Support/Code/logs"
+      ]
+    },
+    "reclaim": "删除上述缓存目录",
+    "explain": {
+      "what": "VS Code 渲染缓存与日志",
+      "cost": "首次启动略慢",
+      "recover": "VS Code 自动重建"
+    }
+  },
+  {
+    "id": "ollama-models",
+    "name": "Ollama 模型",
+    "category": "app-cache",
+    "risk": "confirm",
+    "regenerable": false,
+    "sudo": false,
+    "matcher": { "kind": "path", "paths": ["~/.ollama/models"] },
+    "reclaim": "ollama rm <model>   # 逐个删除不再使用的模型",
+    "explain": {
+      "what": "本地大语言模型权重文件",
+      "cost": "删除后对应模型不可用",
+      "recover": "可重新 ollama pull，但需重新下载数 GB"
+    }
+  },
+  {
+    "id": "macos-install-data",
+    "name": "系统升级残留 (macOS Install Data)",
+    "category": "leftover",
+    "risk": "safe",
+    "regenerable": false,
+    "sudo": true,
+    "matcher": {
+      "kind": "path",
+      "paths": ["/System/Volumes/Data/macOS Install Data"]
+    },
+    "reclaim": "sudo rm -rf \"/System/Volumes/Data/macOS Install Data\"",
+    "explain": {
+      "what": "系统升级后遗留的安装数据/旧系统快照",
+      "cost": "无影响，升级已完成",
+      "recover": "无需恢复"
+    }
+  },
+  {
+    "id": "sleepimage",
+    "name": "休眠镜像 (sleepimage)",
+    "category": "system-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": true,
+    "matcher": { "kind": "path", "paths": ["/private/var/vm/sleepimage"] },
+    "reclaim": "sudo rm /private/var/vm/sleepimage",
+    "explain": {
+      "what": "休眠时保存内存的镜像文件（约等于内存大小）",
+      "cost": "休眠功能受影响，普通睡眠不受影响",
+      "recover": "系统会按需重建"
+    }
+  },
+  {
+    "id": "trash",
+    "name": "废纸篓",
+    "category": "trash",
+    "risk": "safe",
+    "regenerable": false,
+    "sudo": false,
+    "matcher": { "kind": "path", "paths": ["~/.Trash"] },
+    "reclaim": "清空废纸篓",
+    "explain": {
+      "what": "已删除但未清空的文件",
+      "cost": "彻底删除，不可恢复",
+      "recover": "不可恢复"
+    }
+  },
+  {
+    "id": "parallels-vm",
+    "name": "Parallels 虚拟机",
+    "category": "vm",
+    "risk": "destructive",
+    "regenerable": false,
+    "sudo": false,
+    "matcher": { "kind": "path", "paths": ["~/Parallels"] },
+    "reclaim": "在 Parallels 中删除不再需要的虚拟机",
+    "explain": {
+      "what": "Parallels 虚拟机磁盘镜像",
+      "cost": "删除后虚拟机及其中的数据全部丢失",
+      "recover": "不可恢复，请务必确认"
+    }
+  },
+  {
+    "id": "docker-data",
+    "name": "Docker 数据",
+    "category": "vm",
+    "risk": "destructive",
+    "regenerable": false,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": ["~/Library/Containers/com.docker.docker/Data/vms"]
+    },
+    "reclaim": "docker system prune -a   # 或删除 Docker.raw",
+    "explain": {
+      "what": "Docker 镜像、容器与卷数据",
+      "cost": "删除后容器/镜像全部丢失",
+      "recover": "需重新 pull 构建"
+    }
+  }
+]
