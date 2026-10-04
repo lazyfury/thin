@@ -78,7 +78,7 @@ impl SortMode {
     }
 }
 
-struct App {
+pub struct BrowseState {
     stack: Vec<PathBuf>,
     rows: Vec<Row>,
     /// 过滤后可见的下标（映射到 rows）
@@ -98,13 +98,12 @@ struct App {
     bookmark_pick: bool,
     bookmark_sel: usize,
     help: bool,
-    quit: bool,
     tick: usize,
     status: Option<String>,
 }
 
-impl App {
-    fn new(root: PathBuf) -> Self {
+impl BrowseState {
+    pub fn new(root: PathBuf) -> Self {
         let mut app = Self {
             stack: vec![root],
             rows: Vec::new(),
@@ -124,7 +123,6 @@ impl App {
             bookmark_pick: false,
             bookmark_sel: 0,
             help: false,
-            quit: false,
             tick: 0,
             status: None,
         };
@@ -154,7 +152,7 @@ impl App {
         self.loader = Some(spawn_load(dir, self.generation));
     }
 
-    fn poll(&mut self) {
+    pub fn poll(&mut self) {
         let Some(loader) = self.loader.take() else {
             return;
         };
@@ -179,6 +177,10 @@ impl App {
                 }
             }
         }
+    }
+
+    pub fn tick(&mut self) {
+        self.tick = self.tick.wrapping_add(1);
     }
 
     fn rebuild_visible(&mut self) {
@@ -301,7 +303,8 @@ impl App {
         }
     }
 
-    fn on_key(&mut self, code: KeyCode) {
+    /// 处理按键，返回 true 表示请求离开浏览（退出或切回其它标签）
+    pub fn on_key(&mut self, code: KeyCode) -> bool {
         if self.confirm {
             match code {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
@@ -311,7 +314,7 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.confirm = false,
                 _ => {}
             }
-            return;
+            return false;
         }
         if self.bookmark_pick {
             match code {
@@ -344,7 +347,7 @@ impl App {
                 }
                 _ => {}
             }
-            return;
+            return false;
         }
         if self.filtering {
             match code {
@@ -364,20 +367,20 @@ impl App {
                 }
                 _ => {}
             }
-            return;
+            return false;
         }
         if self.help && !matches!(code, KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q')) {
             self.help = false;
-            return;
+            return false;
         }
         if matches!(code, KeyCode::Esc) && self.loader.is_some() {
             // 取消正在进行的加载
             self.loader = None;
             self.status = Some("已取消加载".into());
-            return;
+            return false;
         }
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
+            KeyCode::Char('q') | KeyCode::Esc => return true,
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),
             KeyCode::Char('g') | KeyCode::Home => {
@@ -431,6 +434,7 @@ impl App {
             KeyCode::Char('?') => self.help = !self.help,
             _ => {}
         }
+        false
     }
 }
 
@@ -480,8 +484,8 @@ pub fn run(args: BrowseArgs) -> Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = App::new(root);
-    let res = event_loop(&mut terminal, &mut app);
+    let mut state = BrowseState::new(root);
+    let res = event_loop(&mut terminal, &mut state);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -491,16 +495,17 @@ pub fn run(args: BrowseArgs) -> Result<()> {
 
 fn event_loop(
     terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    app: &mut App,
+    state: &mut BrowseState,
 ) -> Result<()> {
-    while !app.quit {
-        app.poll();
-        app.tick = app.tick.wrapping_add(1);
-        terminal.draw(|f| ui(f, app))?;
+    let mut quit = false;
+    while !quit {
+        state.poll();
+        state.tick();
+        terminal.draw(|f| state.render(f, f.area()))?;
         if event::poll(Duration::from_millis(80))? {
             if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    app.on_key(key.code);
+                if key.kind == KeyEventKind::Press && state.on_key(key.code) {
+                    quit = true;
                 }
             }
         }
@@ -512,7 +517,8 @@ fn event_loop(
 // 绘制
 // ---------------------------------------------------------------------------
 
-fn ui(frame: &mut Frame, app: &mut App) {
+/// 在给定区域内绘制浏览界面（独立运行或嵌入 TUI 标签页均可）
+pub fn render(frame: &mut Frame, state: &mut BrowseState, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -520,24 +526,31 @@ fn ui(frame: &mut Frame, app: &mut App) {
             Constraint::Min(6),
             Constraint::Length(1),
         ])
-        .split(frame.area());
+        .split(area);
 
-    render_header(frame, app, chunks[0]);
-    render_body(frame, app, chunks[1]);
-    render_footer(frame, app, chunks[2]);
+    render_header(frame, state, chunks[0]);
+    render_body(frame, state, chunks[1]);
+    render_footer(frame, state, chunks[2]);
 
-    if app.help {
-        render_help(frame, frame.area());
+    if state.help {
+        render_help(frame, area);
     }
-    if app.confirm {
-        render_confirm(frame, app);
+    if state.confirm {
+        render_confirm(frame, state);
     }
-    if app.bookmark_pick {
-        render_bookmarks(frame, app);
+    if state.bookmark_pick {
+        render_bookmarks(frame, state);
     }
 }
 
-fn render_header(frame: &mut Frame, app: &App, area: Rect) {
+impl BrowseState {
+    /// 在给定区域绘制（方法形式，便于 `terminal.draw`）
+    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
+        render(frame, self, area);
+    }
+}
+
+fn render_header(frame: &mut Frame, app: &BrowseState, area: Rect) {
     let home = home_prefix();
     let crumbs: Vec<Span> = breadcrumb(&app.stack, &home)
         .into_iter()
@@ -561,7 +574,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(line)), area);
 }
 
-fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
+fn render_body(frame: &mut Frame, app: &mut BrowseState, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
@@ -581,7 +594,7 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// 当前层占用图（按体积切分矩形）
-fn render_treemap(frame: &mut Frame, app: &App, area: Rect) {
+fn render_treemap(frame: &mut Frame, app: &BrowseState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title("占用图 (t 切换)");
@@ -612,7 +625,7 @@ fn render_treemap(frame: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
+fn render_list(frame: &mut Frame, app: &mut BrowseState, area: Rect) {
     let home = home_prefix();
     let items: Vec<ListItem> = app
         .visible
@@ -668,7 +681,7 @@ fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_stateful_widget(list, area, &mut app.list_state);
 }
 
-fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
+fn render_detail(frame: &mut Frame, app: &BrowseState, area: Rect) {
     let block = Block::default().borders(Borders::ALL).title("用途 / 详情");
     let inner = block.inner(area);
     frame.render_widget(block, area);
@@ -736,7 +749,7 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
 }
 
-fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
+fn render_footer(frame: &mut Frame, app: &BrowseState, area: Rect) {
     let text = if app.confirm {
         "移入隔离区？ y 确认 / n 取消".into()
     } else if app.bookmark_pick {
@@ -795,7 +808,7 @@ fn render_loading(
     }
 }
 
-fn render_bookmarks(frame: &mut Frame, app: &App) {
+fn render_bookmarks(frame: &mut Frame, app: &BrowseState) {
     let a = centered_rect(72, 60, frame.area());
     frame.render_widget(Clear, a);
     let lines: Vec<Line> = if app.bookmarks.is_empty() {
@@ -828,7 +841,7 @@ fn render_bookmarks(frame: &mut Frame, app: &App) {
     );
 }
 
-fn render_confirm(frame: &mut Frame, app: &App) {
+fn render_confirm(frame: &mut Frame, app: &BrowseState) {
     let Some(row) = app.current() else {
         return;
     };

@@ -86,7 +86,7 @@ $ thin clean
 （dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）
 ```
 
-> TUI：`thin` 进入，六个标签 —— 清理 / 概览（硬盘占用图）/ 大文件 / 重复 / 应用 / 状态（实时）。
+> TUI：`thin` 进入，七个标签 —— 清理 / 概览（硬盘占用图）/ 大文件 / 重复 / 应用 / 状态（实时）/ **浏览**（逐步下钻 + 用途标注，即内嵌的 `thin browse`）。
 > 加载与扫描带进度：确定进度用进度条，不确定用 spinner。
 
 ## 命令速查
@@ -114,7 +114,7 @@ thin browse                       # 交互式浏览：进入目录才算大小�
 thin browse /System/Volumes       # 起点（↑↓ 移动 · Enter 进入 · / 过滤 · s 排序 · t 占用图 · b 书签 · c 清理）
 
 thin                              # 无参数：进入交互式 TUI
-thin tui                          # 显式进入 TUI
+thin tui                          # 显式进入 TUI（含「浏览」标签页，键 7）
 thin tui --min 100MB
 ```
 

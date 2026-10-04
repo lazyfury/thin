@@ -23,10 +23,13 @@ use thin_core::model::{CleanItem, Risk};
 use thin_core::progress::Progress;
 use thin_core::{apps, clean, finder, fsutil, probe, protect, rules, scan, status};
 
-use crate::treemap;
+use crate::browse::BrowseState;
+use crate::{browse, treemap};
 
-const TABS: [&str; 6] = ["清理", "概览", "大文件", "重复", "应用", "状态"];
+const TABS: [&str; 7] = ["清理", "概览", "大文件", "重复", "应用", "状态", "浏览"];
 const N_TABS: usize = TABS.len();
+/// 「浏览」标签页下标（独立组件 `crate::browse`）
+const BROWSE_TAB: usize = 6;
 
 // ---------------------------------------------------------------------------
 // 懒加载状态
@@ -94,6 +97,7 @@ struct App {
     large: Load<Vec<LargeFile>>,
     dupes: Load<Vec<DupeGroup>>,
     apps: Load<Vec<AppInfo>>,
+    browse: Option<BrowseState>,
     sysinfo: Option<status::SystemInfo>,
     live: Option<status::LiveStats>,
     cpu: status::CpuSampler,
@@ -124,6 +128,7 @@ impl App {
             large: Load::Idle,
             dupes: Load::Idle,
             apps: Load::Idle,
+            browse: None,
             sysinfo: None,
             live: None,
             cpu: status::CpuSampler::new(),
@@ -177,6 +182,11 @@ impl App {
                     self.sysinfo = Some(status::collect_info());
                 }
             }
+            6 => {
+                if self.browse.is_none() {
+                    self.browse = Some(BrowseState::new(root));
+                }
+            }
             _ => {}
         }
     }
@@ -187,6 +197,10 @@ impl App {
         self.large.poll();
         self.dupes.poll();
         self.apps.poll();
+        if let Some(b) = &mut self.browse {
+            b.poll();
+            b.tick();
+        }
         if let Load::Ready(items) = &self.clean {
             if self.selected.len() != items.len() {
                 self.selected = items
@@ -404,11 +418,36 @@ impl App {
             return;
         }
 
+        if self.tab == BROWSE_TAB {
+            // 浏览页：标签切换保留全局，其余按键交给 BrowseState
+            match code {
+                KeyCode::Tab | KeyCode::Char('l') => {
+                    self.next_tab(1);
+                    return;
+                }
+                KeyCode::BackTab | KeyCode::Char('h') => {
+                    self.next_tab(-1);
+                    return;
+                }
+                KeyCode::Char(c @ '1'..='7') => {
+                    self.switch_tab((c as u8 - b'1') as usize);
+                    return;
+                }
+                _ => {}
+            }
+            if let Some(b) = &mut self.browse {
+                if b.on_key(code) {
+                    self.switch_tab(0);
+                }
+            }
+            return;
+        }
+
         match code {
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Tab | KeyCode::Char('l') => self.next_tab(1),
             KeyCode::BackTab | KeyCode::Char('h') => self.next_tab(-1),
-            KeyCode::Char(c @ '1'..='6') => self.switch_tab((c as u8 - b'1') as usize),
+            KeyCode::Char(c @ '1'..='7') => self.switch_tab((c as u8 - b'1') as usize),
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),
             KeyCode::Char('g') | KeyCode::Home => self.list_states[self.tab].select(Some(0)),
@@ -600,7 +639,16 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
         3 => render_dupes(frame, app, area),
         4 => render_apps(frame, app, area),
         5 => render_status(frame, app, area),
+        6 => render_browse(frame, app, area),
         _ => {}
+    }
+}
+
+fn render_browse(frame: &mut Frame, app: &mut App, area: Rect) {
+    if let Some(b) = &mut app.browse {
+        browse::render(frame, b, area);
+    } else {
+        state_msg(frame, area, "初始化浏览…");
     }
 }
 
@@ -1142,12 +1190,13 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let text = if let Some(s) = &app.status {
         s.clone()
     } else if app.help {
-        " 1-6/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · r 重载 · c 清理 · q 退出"
+        " 1-7/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · r 重载 · c 清理 · q 退出"
             .into()
     } else {
         match app.tab {
             0 => " Tab 切页 · ↑↓ 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护·不清理 · c 移入隔离区 · r 重载 · ? 帮助 · q 退出",
-            _ => " 1-6/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
+            6 => " Tab 切页 · ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · s 排序 · t 占用图 · b 书签 · c 清理 · q 返回",
+            _ => " 1-7/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
         }
         .into()
     };
