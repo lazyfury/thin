@@ -2,7 +2,8 @@
 
 本文件面向自动化 agent：如何**探索磁盘**、把发现**写成规则**、并**非交互地**完成清理。
 
-核心原则：探索 → 归因 → 写规则 → 验证。所有写操作都进入**隔离区**，可恢复。
+核心原则：探索 → 归因 → 写规则 → 验证。所有写操作默认进入**系统废纸篓**（可恢复），
+加 `--quarantine` 则进入 thin 隔离区（`quarantine restore` 可恢复）；绝不永久删除。
 
 ---
 
@@ -18,7 +19,7 @@ thin rules [list|path]         # 规则列表 / 用户规则文件路径
 thin rules add ...             # 新增规则（agent 入口，--dir 写 rules.d/<id>.json）
 thin rules remove <id>         # 删除用户规则
 thin rules export [--new]      # 导出用户规则，便于并入内置 default.json
-thin clean [--apply] [--json] [--preset P] [--root DIR]  # 清理（默认 dry-run；--json 输出 approved/skipped 供 agent 消费）
+thin clean [--apply] [--json] [--preset P] [--root DIR] [--quarantine]  # 清理（默认 dry-run；默认入系统废纸篓，--quarantine 入隔离区）
 thin plan [--preset P] [--root DIR]  # 只读生成计划 JSON（agent 两阶段契约的第一阶段）
 thin apply --plan <file|-> [--yes]   # 执行已审阅的计划（再过一次安全门）
 thin preset list|add|remove    # 清理预设（内置 default / dev；定时任务只执行用户预设）
@@ -180,10 +181,11 @@ thin apply --plan plan.json --yes             # 原样执行；会再次过同�
 # 验证规则确实命中
 thin scan --detail custom-someapp
 
-# 清理（默认 dry-run；--apply 才执行，进隔离区）
+# 清理（默认 dry-run；--apply 才执行，移入系统废纸篓）
 thin clean --apply --id custom-someapp --yes
+# 需 thin 隔离区（Journal/恢复）时：thin clean --quarantine --apply --id custom-someapp --yes
 
-# 兜底：列出 / 恢复 / 永久删除
+# 兜底（仅 --quarantine 模式会产生会话）：列出 / 恢复 / 永久删除
 thin quarantine list
 thin quarantine restore <session>
 thin quarantine purge --older-than 7d --dry-run   # 先预览
@@ -195,7 +197,7 @@ thin quarantine purge --older-than 7d             # 二次确认后永久删除
 ## 4. Agent 必须遵守的安全约束
 
 1. **先只读**：`scan`/`discover`/`large`/`dupes` 都是只读，先用它们摸清情况。
-2. **永不直接 `rm`**：清理一律走 `thin clean --apply` / `quarantine`，默认进隔离区。
+2. **永不直接 `rm`**：清理一律走 `thin clean --apply`（默认进系统废纸篓）/ `--quarantine`（隔离区）。
 3. **风险分级**：
    - `safe`：可自动处理（可再生成）
    - `confirm`：需人工确认（`--all` 才纳入）
@@ -221,6 +223,7 @@ thin discover ~/Library --min 200MB --json          # 发现未归类目录
 thin rules add --path "~/Library/Application Support/RetroArch" \
   --risk safe --category app-cache --regenerable    # 写成规则
 thin scan --detail custom-retroarch                 # 验证命中
-thin clean --apply --id custom-retroarch --yes      # 移入隔离区（可恢复）
-thin quarantine restore <session>                   # 需要时还原
+thin clean --apply --id custom-retroarch --yes      # 移入系统废纸篓（可恢复）
+# thin clean --quarantine --apply --id custom-retroarch --yes  # 或进隔离区
+# thin quarantine restore <session>                  # 隔离区模式需要时还原
 ```

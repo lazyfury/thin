@@ -4,7 +4,8 @@
 
 **macOS 系统空间扫描与安全清理 CLI + TUI**
 
-> 清理 = 移入隔离区，而不是删除。每一项都说清「这是什么 / 删了会怎样 / 能不能恢复」。
+> 清理 = 移入系统废纸篓（可恢复），而不是永久删除；`--quarantine` 可改用 thin 隔离区。
+> 每一项都说清「这是什么 / 删了会怎样 / 能不能恢复」。
 
 ![platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
 ![rust](https://img.shields.io/badge/rust-1.88%2B-dea584?logo=rust&logoColor=white)
@@ -60,8 +61,9 @@ cargo build --release        # 产物 target/release/thin
 thin probe                     # 磁盘概览：容量 / 卷 / 快照 / 外接盘
 thin scan                      # 扫描已知可清理项，按体积排序
 thin clean                     # 默认 dry-run 预览，不执行任何操作
-thin clean --apply             # 确认后移入隔离区（可恢复）
-thin quarantine list           # 查看隔离会话
+thin clean --apply             # 确认后移入系统废纸篓（可恢复）
+thin clean --quarantine --apply # 改用 thin 隔离区（quarantine restore 可恢复）
+thin quarantine list           # 查看隔离会话（仅 --quarantine 模式）
 thin quarantine restore <会话>  # 撤回
 thin                            # 无参数：进入交互式 TUI
 ```
@@ -90,14 +92,14 @@ $ thin scan
 可回收总计: 8.7 GB （安全 688.3 MB / 需确认 8.0 GB / 需手动 2.2 GB）
 
 $ thin clean
-• Chrome 缓存    110.1 MB   →  移入隔离区（可恢复）
-• Homebrew 缓存   22.3 MB   →  移入隔离区（可恢复）
+• Chrome 缓存    110.1 MB   →  移入系统废纸篓（可恢复）
+• Homebrew 缓存   22.3 MB   →  移入系统废纸篓（可恢复）
 
 共 2 项，预计可释放 132.4 MB
-（dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）
+（dry-run，未执行任何操作。加 --apply 移入系统废纸篓）
 ```
 
-> TUI：`thin` 进入，五个标签 —— **清理 / 应用 / 隔离区 / 历史 / 浏览**（逐步下钻 + 用途标注，键 5）。
+> TUI：`thin` 进入，四个标签 —— **清理 / 应用 / 历史 / 浏览**（逐步下钻 + 用途标注，键 4）。
 > 加载与扫描带进度：确定进度用进度条，不确定用 spinner。
 > 底部状态栏区分反馈：信息/提示数秒后自动消失；**错误会保留到按 Esc 关闭**；
 > Esc 在无提示时退出；浏览页用 `Tab`/`Shift-Tab`/数字键切换标签（`l`/`h` 留给进入/上级）。
@@ -159,13 +161,13 @@ thin apply --plan plan.json --yes
 
 ```bash
 thin clean                        # dry-run 预览（默认「安全」项）
-thin clean --apply                # 移入隔离区（二次确认）
+thin clean --apply                # 移入系统废纸篓（二次确认；Finder 可恢复）
 thin clean --apply --yes          # 跳过确认
 thin clean --apply --all          # 连「需确认」项一起处理
 thin clean --apply --id rust-target --id chrome-optguide-model
 thin clean --preset dev --root .  # 定向清理：只清当前项目的开发产物
 thin clean --tree                 # dry-run 预览按文件夹合并成树形
-thin clean --trash --apply        # 用系统废纸篓替代 thin 隔离区（Finder 可恢复）
+thin clean --quarantine --apply   # 改用 thin 隔离区（而非默认的系统废纸篓）
 thin clean --json                 # 机器可读计划：approved / skipped / approvedBytes / protectedBytes
 thin clean --apply --json --yes   # 执行并输出账本 JSON
 
@@ -367,7 +369,7 @@ crates/
 - **M1** 安全清理：隔离区 + Journal + 恢复/永久删除 + TUI 交互 ✅
 - **M2** 大文件查找 / 重复文件检测 / App 卸载（均复用隔离区）✅
 - **M3** 规则热更新（用户规则文件）+ 异常大目录归因 + agent 规则写入入口 ✅
-- **M4** TUI 多标签页（清理 / 应用 / 隔离区 / 历史 / 浏览，懒加载 + 进度条/spinner）✅
+- **M4** TUI 多标签页（清理 / 应用 / 历史 / 浏览，懒加载 + 进度条/spinner）✅
 - **M5** 清理预设 + 历史记录 + 定时任务（launchd）+ 保护名单 + 统一安全门口径 + agent JSON ✅
 - **M6（当前）** 定向清理：`--preset dev` × `--root .`，以及 agent 两阶段 `plan` / `apply` ✅
 - **M7** SwiftUI 前端

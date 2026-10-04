@@ -527,6 +527,104 @@ pub fn plan_in(home: &Path, items: &[CleanItem]) -> Plan {
 // 系统废纸篓（可选模式）
 // ---------------------------------------------------------------------------
 
+/// 清理方式
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// 移入系统废纸篓（默认，Finder 可恢复）
+    Trash,
+    /// 移入 thin 隔离区（`quarantine restore` 可恢复）
+    Quarantine,
+}
+
+impl Mode {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Mode::Trash => "系统废纸篓",
+            Mode::Quarantine => "隔离区",
+        }
+    }
+}
+
+/// 默认清理方式：系统废纸篓可用则用它，否则回退隔离区。
+pub fn default_mode() -> Mode {
+    if crate::platform::platform().trash_available() {
+        Mode::Trash
+    } else {
+        Mode::Quarantine
+    }
+}
+
+/// 一次清理的结果（废纸篓或隔离区）。
+pub enum Applied {
+    Trash(TrashReport),
+    Quarantine(Journal),
+}
+
+impl Applied {
+    pub fn mode(&self) -> Mode {
+        match self {
+            Applied::Trash(_) => Mode::Trash,
+            Applied::Quarantine(_) => Mode::Quarantine,
+        }
+    }
+
+    /// 成功移走的项数
+    pub fn moved(&self) -> usize {
+        match self {
+            Applied::Trash(r) => r.trashed.len(),
+            Applied::Quarantine(j) => j.entries.len(),
+        }
+    }
+
+    /// 成功移走的字节数
+    pub fn moved_bytes(&self) -> u64 {
+        match self {
+            Applied::Trash(r) => r.trashed_bytes,
+            Applied::Quarantine(j) => j.total_size(),
+        }
+    }
+
+    /// 被移走项的原路径（供 UI 就地剔除）
+    pub fn originals(&self) -> Vec<PathBuf> {
+        match self {
+            Applied::Trash(r) => r.trashed.clone(),
+            Applied::Quarantine(j) => j.entries.iter().map(|e| e.original.clone()).collect(),
+        }
+    }
+
+    /// 失败项数（废纸篓专属；隔离区不会中途失败）
+    pub fn failed(&self) -> usize {
+        match self {
+            Applied::Trash(r) => r.failed.len(),
+            Applied::Quarantine(_) => 0,
+        }
+    }
+
+    /// 安全门跳过项数
+    pub fn skipped(&self) -> usize {
+        match self {
+            Applied::Trash(r) => r.skipped.len(),
+            Applied::Quarantine(j) => j.skipped.len(),
+        }
+    }
+
+    /// 隔离会话 id（仅隔离区模式）
+    pub fn session(&self) -> Option<&str> {
+        match self {
+            Applied::Trash(_) => None,
+            Applied::Quarantine(j) => Some(&j.session),
+        }
+    }
+}
+
+/// 按指定方式执行清理（内部复用同一安全门）。
+pub fn apply(items: &[CleanItem], mode: Mode) -> Result<Applied> {
+    match mode {
+        Mode::Trash => trash(items).map(Applied::Trash),
+        Mode::Quarantine => quarantine(items, false).map(Applied::Quarantine),
+    }
+}
+
 /// 移入系统废纸篓的结果
 #[derive(Debug, Default, Clone)]
 pub struct TrashReport {

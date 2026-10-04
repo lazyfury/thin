@@ -41,6 +41,9 @@ pub trait Platform: Send + Sync {
 
     /// 移入系统废纸篓；`None` 表示后端不可用。
     fn trash_item(&self, path: &Path) -> Option<bool>;
+
+    /// 是否支持系统废纸篓（Swift 后端可用）。
+    fn trash_available(&self) -> bool;
 }
 
 /// 纯 Rust 回退实现：卷容量用 `statfs`，其余能力不可用。
@@ -84,6 +87,10 @@ impl Platform for LibcPlatform {
 
     fn trash_item(&self, _path: &Path) -> Option<bool> {
         None
+    }
+
+    fn trash_available(&self) -> bool {
+        false
     }
 }
 
@@ -141,6 +148,10 @@ impl Platform for SwiftPlatform {
 
     fn trash_item(&self, path: &Path) -> Option<bool> {
         thin_sys::trash_item(path)
+    }
+
+    fn trash_available(&self) -> bool {
+        thin_sys::backend_available()
     }
 }
 

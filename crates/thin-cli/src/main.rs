@@ -174,7 +174,7 @@ struct DupesArgs {
     /// 显示组数
     #[arg(short, long, default_value_t = 50)]
     limit: usize,
-    /// 把每组除首个外的副本移入隔离区
+    /// 把每组除首个外的副本移入系统废纸篓（`--quarantine` 改回隔离区）
     #[arg(long)]
     apply: bool,
     /// 跳过确认
@@ -183,6 +183,9 @@ struct DupesArgs {
     /// 输出 JSON（只读报告；与 --apply 互斥）
     #[arg(long)]
     json: bool,
+    /// 改用 thin 隔离区（默认系统废纸篓）
+    #[arg(long)]
+    quarantine: bool,
 }
 
 #[derive(clap::Args)]
@@ -202,6 +205,9 @@ struct UninstallArgs {
     /// 跳过确认
     #[arg(long)]
     yes: bool,
+    /// 改用 thin 隔离区（默认 App 及残留移入系统废纸篓）
+    #[arg(long)]
+    quarantine: bool,
 }
 
 #[derive(clap::Args)]
@@ -349,9 +355,13 @@ struct CleanArgs {
     #[arg(long)]
     tree: bool,
 
-    /// 用系统废纸篓替代 thin 隔离区（Finder 可恢复；需 Swift 后端）
-    #[arg(long)]
+    /// （默认）以系统废纸篓作为清理方式（Finder 可恢复；需 Swift 后端）
+    #[arg(long, conflicts_with = "quarantine")]
     trash: bool,
+
+    /// 改用 thin 隔离区（`quarantine restore` 可恢复），而非默认的系统废纸篓
+    #[arg(long)]
+    quarantine: bool,
 }
 
 #[derive(clap::Args)]
@@ -382,6 +392,10 @@ struct ApplyArgs {
     /// 跳过确认（计划会再次过安全门；仍建议先看 thin plan 输出）
     #[arg(long)]
     yes: bool,
+
+    /// 改用 thin 隔离区（默认移入系统废纸篓）
+    #[arg(long)]
+    quarantine: bool,
 }
 
 #[derive(clap::Args)]
@@ -1026,7 +1040,7 @@ fn select_scoped(
     Ok(selected)
 }
 
-fn print_plan(plan: &clean::Plan, tree: bool) {
+fn print_plan(plan: &clean::Plan, tree: bool, mode: clean::Mode) {
     if tree {
         report::print_tree(&tree::build_forest(&plan.approved, home_dir().as_deref()));
         let total = plan.approved_bytes();
@@ -1048,12 +1062,13 @@ fn print_plan(plan: &clean::Plan, tree: bool) {
     }
     println!("\x1b[1m清理计划\x1b[0m");
     println!(
-        "\x1b[90m以下为官方推荐的清理方式；thin 统一将目标移入隔离区（可恢复），不会执行这些命令。\x1b[0m\n"
+        "\x1b[90m以下为官方推荐的清理方式；thin 将目标移入{}（可恢复），不会执行这些命令。\x1b[0m\n",
+        mode.label()
     );
     for it in &plan.approved {
         println!("• {:<28} {:>10}", it.name, human(it.size));
         println!("  {:<28} {}", "官方方式:", it.reclaim);
-        println!("  {:<28} 移入隔离区（可恢复）", "thin 动作:");
+        println!("  {:<28} 移入{}（可恢复）", "thin 动作:", mode.label());
         println!("  {:<28} {}", "路径:", it.path.display());
     }
     let total = plan.approved_bytes();
@@ -1137,26 +1152,47 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
         return Ok(());
     }
 
+    let mode = if args.quarantine {
+        clean::Mode::Quarantine
+    } else {
+        clean::default_mode()
+    };
     if !args.yes
         && !confirm(&format!(
-            "执行计划：将 {} 项移入隔离区？",
-            plan.approved.len()
+            "执行计划：将 {} 项移入{}？",
+            plan.approved.len(),
+            mode.label()
         ))?
     {
         println!("已取消。");
         return Ok(());
     }
 
-    let journal = clean::quarantine(&items, false)?;
-    print_journal(&journal);
-    record_history(
-        "apply",
-        None,
-        items.len(),
-        plan.approved.len(),
-        (0, 0),
-        Some(&journal),
-    );
+    let applied = clean::apply(&items, mode)?;
+    match &applied {
+        clean::Applied::Trash(report) => {
+            println!(
+                "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
+                report.trashed.len(),
+                human(report.trashed_bytes)
+            );
+            for (p, why) in &report.failed {
+                println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
+            }
+            record_history_trash(None, items.len(), plan.approved.len(), report);
+        }
+        clean::Applied::Quarantine(journal) => {
+            print_journal(journal);
+            record_history(
+                "apply",
+                None,
+                items.len(),
+                plan.approved.len(),
+                (0, 0),
+                Some(journal),
+            );
+        }
+    }
     warn_snapshots();
     Ok(())
 }
@@ -1221,11 +1257,24 @@ fn cmd_protect(args: ProtectArgs) -> Result<()> {
     Ok(())
 }
 
+/// 解析清理方式：`--quarantine` 显式选隔离区；`--trash` 显式选废纸篓；
+/// 都不给时用默认（废纸篓可用则废纸篓，否则回退隔离区）。
+fn resolve_mode(quarantine: bool, explicit_trash: bool) -> clean::Mode {
+    if quarantine {
+        clean::Mode::Quarantine
+    } else if explicit_trash {
+        clean::Mode::Trash
+    } else {
+        clean::default_mode()
+    }
+}
+
 fn cmd_clean(args: CleanArgs) -> Result<()> {
     let selected = select_items(&args)?;
     // 预演与执行共用同一安全门，保证「预览即所得」
     let plan = clean::plan(&selected);
     let apply = args.apply && !args.dry_run;
+    let mode = resolve_mode(args.quarantine, args.trash);
 
     // JSON 模式：供 agent 直接消费；dry-run 输出计划，--apply 输出账本
     if args.json {
@@ -1243,34 +1292,36 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
                 println!("{}", serde_json::to_string_pretty(&out)?);
                 return Ok(());
             }
-            if args.trash {
-                let report = clean::trash(&selected)?;
-                record_history_trash(
-                    args.preset.as_deref(),
-                    selected.len(),
-                    plan.approved.len(),
-                    &report,
-                );
-                let out = serde_json::json!({
-                    "mode": "trash",
-                    "trashed": report.trashed,
-                    "trashedBytes": report.trashed_bytes,
-                    "failed": report.failed,
-                    "skipped": report.skipped,
-                });
-                println!("{}", serde_json::to_string_pretty(&out)?);
-                return Ok(());
+            let applied = clean::apply(&selected, mode)?;
+            match &applied {
+                clean::Applied::Trash(report) => {
+                    record_history_trash(
+                        args.preset.as_deref(),
+                        selected.len(),
+                        plan.approved.len(),
+                        report,
+                    );
+                    let out = serde_json::json!({
+                        "mode": "trash",
+                        "trashed": report.trashed,
+                        "trashedBytes": report.trashed_bytes,
+                        "failed": report.failed,
+                        "skipped": report.skipped,
+                    });
+                    println!("{}", serde_json::to_string_pretty(&out)?);
+                }
+                clean::Applied::Quarantine(journal) => {
+                    record_history(
+                        "manual",
+                        args.preset.as_deref(),
+                        selected.len(),
+                        plan.approved.len(),
+                        (0, 0),
+                        Some(journal),
+                    );
+                    println!("{}", serde_json::to_string_pretty(journal)?);
+                }
             }
-            let journal = clean::quarantine(&selected, false)?;
-            record_history(
-                "manual",
-                args.preset.as_deref(),
-                selected.len(),
-                plan.approved.len(),
-                (0, 0),
-                Some(&journal),
-            );
-            println!("{}", serde_json::to_string_pretty(&journal)?);
             return Ok(());
         }
         let protected_items: Vec<_> = selected.iter().filter(|i| i.protected).cloned().collect();
@@ -1320,59 +1371,64 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
     }
 
     if !apply {
-        print_plan(&shown_plan, args.tree);
-        if args.trash {
-            println!("\n（dry-run，未执行任何操作。加 --apply 移入系统废纸篓）");
-        } else {
-            println!("\n（dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）");
+        print_plan(&shown_plan, args.tree, mode);
+        match mode {
+            clean::Mode::Trash => {
+                println!("\n（dry-run，未执行任何操作。加 --apply 移入系统废纸篓）")
+            }
+            clean::Mode::Quarantine => {
+                println!("\n（dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）")
+            }
         }
         return Ok(());
     }
 
-    let target = if args.trash {
-        "系统废纸篓"
-    } else {
-        "隔离区"
-    };
-    if !args.yes && !confirm(&format!("将 {} 项移入{target}？", plan.approved.len()))? {
+    if !args.yes
+        && !confirm(&format!(
+            "将 {} 项移入{}？",
+            plan.approved.len(),
+            mode.label()
+        ))?
+    {
         println!("已取消。");
         return Ok(());
     }
 
-    if args.trash {
-        let report = clean::trash(&selected)?;
-        println!(
-            "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
-            report.trashed.len(),
-            human(report.trashed_bytes)
-        );
-        for (p, why) in &report.failed {
-            println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
+    // 传原始候选项：apply 内部复用同一安全门，并如实记录被跳过项
+    let applied = clean::apply(&selected, mode)?;
+    match &applied {
+        clean::Applied::Trash(report) => {
+            println!(
+                "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
+                report.trashed.len(),
+                human(report.trashed_bytes)
+            );
+            for (p, why) in &report.failed {
+                println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
+            }
+            if !report.skipped.is_empty() {
+                println!("  安全门跳过 {} 项", report.skipped.len());
+            }
+            println!("\x1b[90m可在 Finder 废纸篓中恢复。\x1b[0m");
+            record_history_trash(
+                args.preset.as_deref(),
+                selected.len(),
+                plan.approved.len(),
+                report,
+            );
         }
-        if !report.skipped.is_empty() {
-            println!("  安全门跳过 {} 项", report.skipped.len());
+        clean::Applied::Quarantine(journal) => {
+            print_journal(journal);
+            record_history(
+                "manual",
+                args.preset.as_deref(),
+                selected.len(),
+                plan.approved.len(),
+                (0, 0),
+                Some(journal),
+            );
         }
-        println!("\x1b[90m可在 Finder 废纸篓中恢复。\x1b[0m");
-        record_history_trash(
-            args.preset.as_deref(),
-            selected.len(),
-            plan.approved.len(),
-            &report,
-        );
-        return Ok(());
     }
-
-    // 传原始候选项：quarantine 内部复用同一安全门，并如实记录被跳过项
-    let journal = clean::quarantine(&selected, false)?;
-    print_journal(&journal);
-    record_history(
-        "manual",
-        args.preset.as_deref(),
-        selected.len(),
-        plan.approved.len(),
-        (0, 0),
-        Some(&journal),
-    );
     warn_snapshots();
     Ok(())
 }
@@ -1683,8 +1739,12 @@ fn cmd_dupes(args: DupesArgs) -> Result<()> {
     }
     println!("\n共 {} 组，可回收 {}", groups.len(), human(total));
 
+    let mode = resolve_mode(args.quarantine, false);
     if !args.apply {
-        println!("（只读报告；加 --apply 可把每组除首个外的副本移入隔离区）");
+        println!(
+            "（只读报告；加 --apply 可把每组除首个外的副本移入{}）",
+            mode.label()
+        );
         return Ok(());
     }
 
@@ -1697,23 +1757,39 @@ fn cmd_dupes(args: DupesArgs) -> Result<()> {
     }
     if !args.yes
         && !confirm(&format!(
-            "将 {} 个重复副本移入隔离区？",
-            plan.approved.len()
+            "将 {} 个重复副本移入{}？",
+            plan.approved.len(),
+            mode.label()
         ))?
     {
         println!("已取消。");
         return Ok(());
     }
-    let journal = clean::quarantine(&items, false)?;
-    print_journal(&journal);
-    record_history(
-        "dupes",
-        None,
-        items.len(),
-        plan.approved.len(),
-        (0, 0),
-        Some(&journal),
-    );
+    let applied = clean::apply(&items, mode)?;
+    match &applied {
+        clean::Applied::Trash(report) => {
+            println!(
+                "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
+                report.trashed.len(),
+                human(report.trashed_bytes)
+            );
+            for (p, why) in &report.failed {
+                println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
+            }
+            record_history_trash(None, items.len(), plan.approved.len(), report);
+        }
+        clean::Applied::Quarantine(journal) => {
+            print_journal(journal);
+            record_history(
+                "dupes",
+                None,
+                items.len(),
+                plan.approved.len(),
+                (0, 0),
+                Some(journal),
+            );
+        }
+    }
     warn_snapshots();
     Ok(())
 }
@@ -1819,8 +1895,13 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         }
     }
 
+    let mode = if args.quarantine {
+        clean::Mode::Quarantine
+    } else {
+        clean::default_mode()
+    };
     if !args.apply {
-        println!("（预览；加 --apply 移入隔离区，可恢复）");
+        println!("（预览；加 --apply 移入{}，可恢复）", mode.label());
         return Ok(());
     }
 
@@ -1836,20 +1917,35 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         println!("没有可通过安全门的项。");
         return Ok(());
     }
-    if !args.yes && !confirm(&format!("卸载 {} 并移入隔离区？", app.name))? {
+    if !args.yes && !confirm(&format!("卸载 {} 并移入{}？", app.name, mode.label()))? {
         println!("已取消。");
         return Ok(());
     }
-    let journal = clean::quarantine(&items, false)?;
-    print_journal(&journal);
-    record_history(
-        "uninstall",
-        None,
-        items.len(),
-        plan.approved.len(),
-        (0, 0),
-        Some(&journal),
-    );
+    let applied = clean::apply(&items, mode)?;
+    match &applied {
+        clean::Applied::Trash(report) => {
+            println!(
+                "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
+                report.trashed.len(),
+                human(report.trashed_bytes)
+            );
+            for (p, why) in &report.failed {
+                println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
+            }
+            record_history_trash(None, items.len(), plan.approved.len(), report);
+        }
+        clean::Applied::Quarantine(journal) => {
+            print_journal(journal);
+            record_history(
+                "uninstall",
+                None,
+                items.len(),
+                plan.approved.len(),
+                (0, 0),
+                Some(journal),
+            );
+        }
+    }
     warn_snapshots();
     Ok(())
 }
@@ -2197,22 +2293,34 @@ fn run_preset(preset_id: &str, trigger: &str, dry_run: bool) -> Result<()> {
     }
 
     if dry_run {
-        print_plan(&plan, false);
+        print_plan(&plan, false, clean::default_mode());
         println!("\n（dry-run，未 purge / 未隔离 / 未写历史。去掉 --dry-run 即执行）");
         return Ok(());
     }
 
-    // 3) 移入隔离区
-    let journal = clean::quarantine(&selected, false)?;
-    print_journal(&journal);
-    record_history(
-        trigger,
-        Some(&p.id),
-        selected.len(),
-        plan.approved.len(),
-        (purged_sessions, purged_bytes),
-        Some(&journal),
-    );
+    // 3) 执行清理（默认系统废纸篓）
+    let applied = clean::apply(&selected, clean::default_mode())?;
+    match &applied {
+        clean::Applied::Trash(report) => {
+            println!(
+                "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
+                report.trashed.len(),
+                human(report.trashed_bytes)
+            );
+            record_history_trash(Some(&p.id), selected.len(), plan.approved.len(), report);
+        }
+        clean::Applied::Quarantine(journal) => {
+            print_journal(journal);
+            record_history(
+                trigger,
+                Some(&p.id),
+                selected.len(),
+                plan.approved.len(),
+                (purged_sessions, purged_bytes),
+                Some(journal),
+            );
+        }
+    }
     Ok(())
 }
 

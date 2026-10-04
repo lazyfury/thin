@@ -166,10 +166,13 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
   `{bundleId, sandboxed, groups}`；`find_leftovers` 据此精确补充
   `~/Library/Containers/<bundle-id>` 与 `~/Library/Group Containers/<group-id>`，
   不再只靠名称猜测（group id 常与 bundle id 无关）。
-- ✅ `thin_trash_item`（`FileManager.trashItem`）+ `clean::trash()`：`thin clean --trash`
-  用系统废纸篓替代内置隔离区，与隔离区**共用同一安全门**；后端不可用时整体报错，绝不回退 `rm`。
+- ✅ `thin_trash_item`（`FileManager.trashItem`）+ `clean::Mode`/`default_mode`/`apply`：
+  **系统废纸篓为默认清理方式**，`--quarantine` 改回隔离区；两者**共用同一安全门**。
+  后端不可用时默认自动回退隔离区（显式 `--trash` 则报错），**绝不回退 `rm`**。
+  `clean` / `apply --plan` / `uninstall` / `dupes` / `schedule run` 均已切换。
+- ✅ TUI 去掉「隔离区」标签（现为 清理/应用/历史/浏览，键 1-4）；TUI 清理/卸载同样默认走废纸篓。
 - 实测：`iShot Pro` 预览正确列出 `Group Containers/4K6FWZU8C4.group.cn.better365`；
-  `thin clean --trash --apply` 成功移动并写入历史（`manual-trash`）。ABI 升至 4。
+  默认 `thin clean --apply` 成功移入废纸篓，`--quarantine` 会话可 `quarantine list` 看到。ABI 升至 4。
 - `NSFileCoordinator` 暂缓：缓存/残留目录极少被其他进程持续持有，收益低于复杂度；
   现有 `clean.rs` 的 `deny delete` ACL 退化路径已能处理占用场景。
 - objc2 备选：`objc2-foundation` 覆盖 `trashItem`/`NSFileCoordinator`；entitlements 需 Security。
