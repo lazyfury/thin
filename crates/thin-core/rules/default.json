@@ -385,7 +385,8 @@
     "matcher": {
       "kind": "path",
       "paths": [
-        "~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel"
+        "~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel",
+        "~/Library/Application Support/Google/Chrome/optimization_guide_model_store"
       ]
     },
     "reclaim": "rm -rf \"~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel\"",
@@ -407,8 +408,10 @@
       "paths": [
         "~/Library/Caches/Google",
         "~/Library/Application Support/Google/Chrome/Default/Cache",
-        "~/Library/Application Support/Google/Chrome/Default/Code Cache",
-        "~/Library/Application Support/Google/Chrome/GraphiteDawnCache"
+        "~/Library/Application Support/Google/Chrome/GraphiteDawnCache",
+        "~/Library/Application Support/Google/Chrome/component_crx_cache",
+        "~/Library/Application Support/Google/Chrome/extensions_crx_cache",
+        "~/Library/Application Support/Google/Chrome/WasmTtsEngine"
       ]
     },
     "reclaim": "在 Chrome 中清除缓存，或删除上述目录",
@@ -430,6 +433,7 @@
       "paths": [
         "~/Library/Application Support/Code/Cache",
         "~/Library/Application Support/Code/CachedData",
+        "~/Library/Application Support/Code/CachedExtensionVSIXs",
         "~/Library/Application Support/Code/logs"
       ]
     },
@@ -1436,6 +1440,139 @@
       "what": "模拟器运行时缓存",
       "cost": "首次启动模拟器略慢",
       "recover": "自动重建"
+    }
+  },
+  {
+    "id": "sandbox-caches",
+    "name": "沙盒应用缓存 (Containers/**/Caches)",
+    "category": "app-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Library/Containers",
+        "~/Library/Group Containers"
+      ],
+      "dirName": "Caches",
+      "maxDepth": 6
+    },
+    "reclaim": "删除各沙盒 App 私有目录下的 Caches（按 App 评估，thin clean 可预览）",
+    "explain": {
+      "what": "沙盒 App 私有数据里的缓存（网络图片、索引、分析结果等，如 mediaanalysisd/photoanalysisd）",
+      "cost": "对应 App 首次运行略慢，部分需重新索引/分析",
+      "recover": "由 App 自动重建"
+    }
+  },
+  {
+    "id": "electron-gpu-cache",
+    "name": "Electron GPU 缓存 (GPUCache)",
+    "category": "app-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Library/Application Support"
+      ],
+      "dirName": "GPUCache",
+      "maxDepth": 6
+    },
+    "reclaim": "删除各 App 的 GPUCache 目录",
+    "explain": {
+      "what": "Chromium/Electron 应用的 GPU 着色器缓存",
+      "cost": "应用首次渲染/启动略慢",
+      "recover": "由应用自动重建"
+    }
+  },
+  {
+    "id": "electron-dawn-webgpu-cache",
+    "name": "Electron WebGPU 缓存 (DawnWebGPUCache)",
+    "category": "app-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Library/Application Support"
+      ],
+      "dirName": "DawnWebGPUCache",
+      "maxDepth": 6
+    },
+    "reclaim": "删除各 App 的 DawnWebGPUCache 目录",
+    "explain": {
+      "what": "Chromium/Electron 的 WebGPU (Dawn) 着色器缓存",
+      "cost": "使用 WebGPU 的应用首次渲染略慢",
+      "recover": "由应用自动重建"
+    }
+  },
+  {
+    "id": "electron-dawn-graphite-cache",
+    "name": "Electron Graphite 缓存 (DawnGraphiteCache)",
+    "category": "app-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Library/Application Support"
+      ],
+      "dirName": "DawnGraphiteCache",
+      "maxDepth": 6
+    },
+    "reclaim": "删除各 App 的 DawnGraphiteCache 目录",
+    "explain": {
+      "what": "Chromium/Electron 的 Graphite 图形后端缓存",
+      "cost": "应用首次渲染略慢",
+      "recover": "由应用自动重建"
+    }
+  },
+  {
+    "id": "electron-code-cache",
+    "name": "Electron 代码缓存 (Code Cache)",
+    "category": "app-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Library/Application Support"
+      ],
+      "dirName": "Code Cache",
+      "maxDepth": 6
+    },
+    "reclaim": "删除各 App 的 Code Cache 目录",
+    "explain": {
+      "what": "Chromium/Electron 的 V8 编译代码缓存",
+      "cost": "应用首次启动/加载页面略慢",
+      "recover": "由应用自动重建"
+    }
+  },
+  {
+    "id": "electron-shared-dictionary",
+    "name": "Electron 共享字典缓存 (Shared Dictionary)",
+    "category": "app-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Library/Application Support"
+      ],
+      "dirName": "Shared Dictionary",
+      "maxDepth": 6
+    },
+    "reclaim": "删除各 App 的 Shared Dictionary 目录",
+    "explain": {
+      "what": "Chromium/Electron 下载的共享压缩字典",
+      "cost": "首次访问时重新下载字典",
+      "recover": "由应用自动重新下载"
     }
   }
 ]
