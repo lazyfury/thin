@@ -337,6 +337,9 @@ enum ScheduleCmd {
     Run {
         #[arg(long)]
         preset: String,
+        /// 只预览将清理的项，不 purge / 不隔离 / 不写历史
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -1428,7 +1431,7 @@ fn cmd_schedule(args: ScheduleArgs) -> Result<()> {
         ScheduleCmd::Install(a) => {
             if !preset::is_user_defined(&a.preset) {
                 return Err(anyhow!(
-                    "预设 '{}' 不是用户自定义预设；定时任务只执行用户预设。\n请先创建: thin preset add {}",
+                    "预设 '{}' 不是用户自定义预设；定时任务只执行用户自定义预设。\n请先创建同名用户预设（默认只选缓存类、仅 safe、可再生）:\n  thin preset add {}",
                     a.preset,
                     a.preset
                 ));
@@ -1477,18 +1480,25 @@ fn cmd_schedule(args: ScheduleArgs) -> Result<()> {
                 }
             }
         }
-        ScheduleCmd::Run { preset: pid } => run_preset(&pid, "schedule")?,
+        ScheduleCmd::Run {
+            preset: pid,
+            dry_run,
+        } => run_preset(&pid, "schedule", dry_run)?,
     }
     Ok(())
 }
 
-/// 按预设执行一次清理（先回收旧会话，再隔离新项），并写入历史
-fn run_preset(preset_id: &str, trigger: &str) -> Result<()> {
+/// 按预设执行一次清理（先回收旧会话，再隔离新项），并写入历史。
+/// `dry_run=true` 时只打印清理计划，不 purge、不隔离、不写历史。
+fn run_preset(preset_id: &str, trigger: &str, dry_run: bool) -> Result<()> {
     let p = preset::get(preset_id).ok_or_else(|| anyhow!("未找到预设 {preset_id}"))?;
 
     // 1) 先永久删除早于保留期的旧会话（否则隔离不释放空间）
-    let (purged_sessions, purged_bytes) =
-        clean::purge_older_than(p.purge_after_days).unwrap_or((0, 0));
+    let (purged_sessions, purged_bytes) = if dry_run {
+        (0, 0)
+    } else {
+        clean::purge_older_than(p.purge_after_days).unwrap_or((0, 0))
+    };
     if purged_sessions > 0 {
         println!(
             "已永久删除 {purged_sessions} 个旧会话，释放 {}",
@@ -1510,14 +1520,22 @@ fn run_preset(preset_id: &str, trigger: &str) -> Result<()> {
 
     if plan.approved.is_empty() {
         println!("没有可清理项。");
-        record_history(
-            trigger,
-            Some(&p.id),
-            selected.len(),
-            0,
-            (purged_sessions, purged_bytes),
-            None,
-        );
+        if !dry_run {
+            record_history(
+                trigger,
+                Some(&p.id),
+                selected.len(),
+                0,
+                (purged_sessions, purged_bytes),
+                None,
+            );
+        }
+        return Ok(());
+    }
+
+    if dry_run {
+        print_plan(&plan);
+        println!("\n（dry-run，未 purge / 未隔离 / 未写历史。去掉 --dry-run 即执行）");
         return Ok(());
     }
 

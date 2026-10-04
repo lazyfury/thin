@@ -21,6 +21,7 @@ thin clean [--apply]           # 清理（默认 dry-run）
 thin preset list|add|remove    # 清理预设（定时任务只执行用户预设）
 thin history [--limit N]       # 清理历史记录
 thin schedule install|status|run|uninstall   # 定时任务（launchd）
+thin schedule run --preset <id> --dry-run    # 预览一次预设清理，不 purge/不隔离/不写历史
 thin quarantine list|restore|purge
 thin large [ROOT] --min --limit
 thin dupes [ROOT] --min [--apply]
