@@ -1191,14 +1191,7 @@ fn cmd_apply(args: ApplyArgs) -> Result<()> {
     let applied = clean::apply(&items, mode)?;
     match &applied {
         clean::Applied::Trash(report) => {
-            println!(
-                "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
-                report.trashed.len(),
-                human(report.trashed_bytes)
-            );
-            for (p, why) in &report.failed {
-                println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
-            }
+            print_trash_report(report);
             record_history_trash(None, items.len(), plan.approved.len(), report);
         }
         clean::Applied::Quarantine(journal) => {
@@ -1324,6 +1317,7 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
                     let out = serde_json::json!({
                         "mode": "trash",
                         "trashed": report.trashed,
+                        "contentsOnly": report.contents_only,
                         "trashedBytes": report.trashed_bytes,
                         "failed": report.failed,
                         "skipped": report.skipped,
@@ -1418,14 +1412,7 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
     let applied = clean::apply(&selected, mode)?;
     match &applied {
         clean::Applied::Trash(report) => {
-            println!(
-                "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
-                report.trashed.len(),
-                human(report.trashed_bytes)
-            );
-            for (p, why) in &report.failed {
-                println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
-            }
+            print_trash_report(report);
             if !report.skipped.is_empty() {
                 println!("  安全门跳过 {} 项", report.skipped.len());
             }
@@ -1788,14 +1775,7 @@ fn cmd_dupes(args: DupesArgs) -> Result<()> {
     let applied = clean::apply(&items, mode)?;
     match &applied {
         clean::Applied::Trash(report) => {
-            println!(
-                "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
-                report.trashed.len(),
-                human(report.trashed_bytes)
-            );
-            for (p, why) in &report.failed {
-                println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
-            }
+            print_trash_report(report);
             record_history_trash(None, items.len(), plan.approved.len(), report);
         }
         clean::Applied::Quarantine(journal) => {
@@ -1944,14 +1924,7 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
     let applied = clean::apply(&items, mode)?;
     match &applied {
         clean::Applied::Trash(report) => {
-            println!(
-                "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
-                report.trashed.len(),
-                human(report.trashed_bytes)
-            );
-            for (p, why) in &report.failed {
-                println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
-            }
+            print_trash_report(report);
             record_history_trash(None, items.len(), plan.approved.len(), report);
         }
         clean::Applied::Quarantine(journal) => {
@@ -2322,11 +2295,7 @@ fn run_preset(preset_id: &str, trigger: &str, dry_run: bool) -> Result<()> {
     let applied = clean::apply(&selected, clean::default_mode())?;
     match &applied {
         clean::Applied::Trash(report) => {
-            println!(
-                "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
-                report.trashed.len(),
-                human(report.trashed_bytes)
-            );
+            print_trash_report(report);
             record_history_trash(Some(&p.id), selected.len(), plan.approved.len(), report);
         }
         clean::Applied::Quarantine(journal) => {
@@ -2370,6 +2339,25 @@ fn record_history(
     }
 }
 
+/// 打印一次「移入系统废纸篓」的结果（含仅移入内容的退化情形）。
+fn print_trash_report(report: &clean::TrashReport) {
+    print!(
+        "\x1b[1m已移入系统废纸篓\x1b[0m {} 项 · {}",
+        report.moved_count(),
+        human(report.trashed_bytes)
+    );
+    if report.contents_count() > 0 {
+        print!(
+            "\x1b[90m（其中 {} 项原目录受 ACL 保护，仅移入内容）\x1b[0m",
+            report.contents_count()
+        );
+    }
+    println!();
+    for (p, why) in &report.failed {
+        println!("  \x1b[33m失败\x1b[0m {}：{why}", shorten(p));
+    }
+}
+
 /// 记录一次「移入系统废纸篓」到历史（无隔离会话）。
 fn record_history_trash(
     preset: Option<&str>,
@@ -2381,7 +2369,7 @@ fn record_history_trash(
     r.preset = preset.map(str::to_string);
     r.scanned = scanned;
     r.approved = approved;
-    r.moved = report.trashed.len();
+    r.moved = report.moved_count();
     r.moved_bytes = report.trashed_bytes;
     r.skipped = report.skipped.len() + report.failed.len();
     if let Err(e) = history::append(&r) {

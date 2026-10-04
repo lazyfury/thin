@@ -245,6 +245,7 @@ thin schedule uninstall
 | 机制 | 说明 |
 |---|---|
 | 默认可恢复 | 清理 = 移动到 `~/.thin/quarantine/<会话>/`（同卷内为改名，**不立即释放空间**；`quarantine purge` 后才真正释放） |
+| `deny delete` ACL | `~/Library/Caches`、`~/Library/Logs` 等目录无法整体删除，thin 退化为**只清内容**（等价 `rm -rf <dir>/*`），目录本身保留；废纸篓与隔离区两种模式一致 |
 | Journal | 每次清理写入账本（原始路径、隔离路径、大小、规则），支持精确回滚 |
 | 受保护白名单 | `/`、`/System`、`/usr`、`/etc`、`/private/var/vm`、`/private/var/db`、`/Library/Apple`、Keychains、iCloud、CloudStorage —— 永不触碰 |
 | 个人目录顶层 | `~/Documents`、`~/Desktop`、`~/Library` 等**本身**不可整体清理，但其内部具体缓存/项目产物仍可清 |

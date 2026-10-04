@@ -571,7 +571,7 @@ impl Applied {
     /// 成功移走的项数
     pub fn moved(&self) -> usize {
         match self {
-            Applied::Trash(r) => r.trashed.len(),
+            Applied::Trash(r) => r.moved_count(),
             Applied::Quarantine(j) => j.entries.len(),
         }
     }
@@ -587,7 +587,11 @@ impl Applied {
     /// 被移走项的原路径（供 UI 就地剔除）
     pub fn originals(&self) -> Vec<PathBuf> {
         match self {
-            Applied::Trash(r) => r.trashed.clone(),
+            Applied::Trash(r) => {
+                let mut v = r.trashed.clone();
+                v.extend(r.contents_only.iter().cloned());
+                v
+            }
             Applied::Quarantine(j) => j.entries.iter().map(|e| e.original.clone()).collect(),
         }
     }
@@ -628,10 +632,26 @@ pub fn apply(items: &[CleanItem], mode: Mode) -> Result<Applied> {
 /// 移入系统废纸篓的结果
 #[derive(Debug, Default, Clone)]
 pub struct TrashReport {
+    /// 整体移入废纸篓的项
     pub trashed: Vec<PathBuf>,
+    /// 原目录带 macOS `deny delete` ACL、无法整体移动，只移入了内容的项
+    /// （目录仍在原位，语义等价于 `rm -rf <dir>/*`）
+    pub contents_only: Vec<PathBuf>,
     pub trashed_bytes: u64,
     pub failed: Vec<(PathBuf, String)>,
     pub skipped: Vec<SkippedItem>,
+}
+
+impl TrashReport {
+    /// 成功处理的项数（整体移入 + 仅移入内容）
+    pub fn moved_count(&self) -> usize {
+        self.trashed.len() + self.contents_only.len()
+    }
+
+    /// 其中「仅移入内容」的项数
+    pub fn contents_count(&self) -> usize {
+        self.contents_only.len()
+    }
 }
 
 /// 把候选项移入系统废纸篓（Finder 可恢复）。
@@ -658,6 +678,22 @@ pub fn trash_with(
                 report.trashed_bytes = report.trashed_bytes.saturating_add(it.size);
                 report.trashed.push(it.path.clone());
             }
+            // 目录带 macOS `deny delete` ACL 时（`~/Library/Caches`、`~/Library/Logs` 等）
+            // 无法整体移入废纸篓；退化为「只搬内容」，原目录留在原位，
+            // 语义等价于这些规则 reclaim 里写的 `rm -rf <dir>/*`。
+            Some(false) if it.path.is_dir() => {
+                let (moved, bytes, failed) = trash_contents(platform, &it.path);
+                if moved == 0 {
+                    report.failed.push((
+                        it.path.clone(),
+                        "移入废纸篓失败（权限或路径问题，内容也不可移动）".to_string(),
+                    ));
+                } else {
+                    report.trashed_bytes = report.trashed_bytes.saturating_add(bytes);
+                    report.contents_only.push(it.path.clone());
+                }
+                report.failed.extend(failed);
+            }
             Some(false) => report.failed.push((
                 it.path.clone(),
                 "移入废纸篓失败（权限或路径问题）".to_string(),
@@ -666,6 +702,43 @@ pub fn trash_with(
         }
     }
     Ok(report)
+}
+
+/// 把目录的直接子项逐个移入系统废纸篓，返回（成功数、字节数、失败子项）。
+///
+/// 仅用于带 `deny delete` ACL 的目录：目录本身无法整体移动，但规则要清的正是
+/// 它的内容（等价 `rm -rf <dir>/*`）。只下一层，与规则语义一致。
+fn trash_contents(
+    platform: &dyn crate::platform::Platform,
+    dir: &Path,
+) -> (usize, u64, Vec<(PathBuf, String)>) {
+    let mut moved = 0usize;
+    let mut bytes = 0u64;
+    let mut failed = Vec::new();
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(e) => {
+            failed.push((dir.to_path_buf(), format!("读取目录失败: {e}")));
+            return (0, 0, failed);
+        }
+    };
+    for entry in entries.flatten() {
+        let child = entry.path();
+        // 先量体积，移走后路径即不可访问
+        let size = crate::fsutil::size_of(&child);
+        match platform.trash_item(&child) {
+            Some(true) => {
+                moved += 1;
+                bytes = bytes.saturating_add(size);
+            }
+            Some(false) => failed.push((child, "移入废纸篓失败（权限或路径问题）".to_string())),
+            None => {
+                failed.push((child, "Swift 后端不可用".to_string()));
+                break;
+            }
+        }
+    }
+    (moved, bytes, failed)
 }
 
 // ---------------------------------------------------------------------------
@@ -1069,6 +1142,79 @@ mod tests {
             .args(["-a", "group:everyone deny delete"])
             .arg(&cache)
             .status();
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// 测试替身：对指定目录返回整体移动失败（模拟 `deny delete` ACL），
+    /// 其余路径（含其子项）返回成功。
+    struct DenyDirPlatform {
+        deny: PathBuf,
+    }
+
+    impl crate::platform::Platform for DenyDirPlatform {
+        fn capacity(&self, _path: &str) -> Option<crate::probe::Capacity> {
+            None
+        }
+        fn is_app_running(&self, _app: &Path) -> Option<bool> {
+            None
+        }
+        fn bundle_id(&self, _app: &Path) -> Option<String> {
+            None
+        }
+        fn full_disk_access(&self) -> Option<bool> {
+            None
+        }
+        fn dir_usage(&self, _path: &Path) -> Option<crate::fsutil::Usage> {
+            None
+        }
+        fn app_sandbox_info(&self, _app: &Path) -> Option<crate::platform::SandboxInfo> {
+            None
+        }
+        fn trash_item(&self, path: &Path) -> Option<bool> {
+            Some(path != self.deny)
+        }
+        fn trash_available(&self) -> bool {
+            true
+        }
+    }
+
+    /// 系统废纸篓模式下，带 `deny delete` ACL 的目录（如 `~/Library/Caches`）
+    /// 无法整体移走，应退化为只搬内容，而不是整项失败。
+    #[test]
+    fn trash_falls_back_to_contents_on_deny_delete_acl() {
+        let base = std::env::temp_dir().join(format!("thin-trash-deny-{}", std::process::id()));
+        let work = base.join("work");
+        let cache = work.join("Caches");
+        std::fs::create_dir_all(cache.join("a")).unwrap();
+        std::fs::write(cache.join("a").join("x.bin"), vec![0u8; 1024]).unwrap();
+        std::fs::write(cache.join("b.bin"), vec![0u8; 512]).unwrap();
+
+        let report = trash_with(
+            &DenyDirPlatform {
+                deny: cache.clone(),
+            },
+            &[item(cache.clone(), 1536)],
+        )
+        .unwrap();
+        assert_eq!(report.trashed.len(), 0, "目录整体移入应失败");
+        assert_eq!(
+            report.contents_only,
+            vec![cache.clone()],
+            "应退化为只搬内容"
+        );
+        assert_eq!(report.moved_count(), 1);
+        assert_eq!(report.contents_count(), 1);
+        assert!(
+            report.failed.is_empty(),
+            "子项应全部成功: {:?}",
+            report.failed
+        );
+        assert!(
+            report.trashed_bytes >= 1536,
+            "字节数应计入内容: {}",
+            report.trashed_bytes
+        );
+
         let _ = std::fs::remove_dir_all(&base);
     }
 
