@@ -90,7 +90,7 @@ enum Cmd {
     /// 保护名单：被标记的路径及其子目录永不清理
     Protect(ProtectArgs),
 
-    /// Agent 工作流：打印内嵌的 AGENTS.md（探索 → 写规则 → 可恢复清理）
+    /// Agent 工作流：打印内嵌的用户提示词（探索 → 写规则 → 可恢复清理）
     Agents,
 }
 
@@ -582,14 +582,15 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// 仓库根 AGENTS.md 在编译期嵌入：安装出来的二进制旁边没有仓库文件，
+/// 面向使用者的 agent 提示词在编译期嵌入：安装出来的二进制旁边没有仓库文件，
 /// 内嵌才能保证 `thin agents` 离线可读、永不失效。
-const AGENTS_DOC: &str = include_str!("../../../AGENTS.md");
+/// 注意：这是用户提示词，不是仓库开发指南（仓库根 AGENTS.md）。
+const AGENT_PROMPT: &str = include_str!("../../../docs/agent-prompt.md");
 
 /// `thin agents`：把 agent 工作流原样打到 stdout，便于 `thin agents | ...` 或直接喂给 agent。
 fn print_agents() {
-    print!("{AGENTS_DOC}");
-    if !AGENTS_DOC.ends_with('\n') {
+    print!("{AGENT_PROMPT}");
+    if !AGENT_PROMPT.ends_with('\n') {
         println!();
     }
 }

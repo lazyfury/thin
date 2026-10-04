@@ -14,7 +14,7 @@
 
 [为什么做 thin](#为什么做-thin) · [快速开始](#快速开始) · [命令速查](#命令速查) · [安全模型](#安全模型) · [规则系统](#规则系统) · [路线图](#路线图)
 
-设计文档 [DESIGN.md](./DESIGN.md) · Agent 工作流 [AGENTS.md](./AGENTS.md)
+设计文档 [DESIGN.md](./DESIGN.md) · Agent 提示词（用户）[docs/agent-prompt.md](./docs/agent-prompt.md) · 开发指南 [AGENTS.md](./AGENTS.md)
 
 </div>
 
@@ -156,6 +156,8 @@ thin apply --plan plan.json --yes
 ```
 
 `plan` 输出的 `approved` 是完整清理项；`apply` 会**再次过同一安全门**，所以过期的计划也不会误删。
+
+把完整工作流提示词交给外部 agent：`thin agents`（原样打印 [`docs/agent-prompt.md`](./docs/agent-prompt.md)，编译期内嵌、离线可用）。
 
 </details>
 
