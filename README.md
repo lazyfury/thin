@@ -56,6 +56,7 @@ thin top ~/Library --limit 20
 thin tui
 thin tui --min 100MB
 # 标签: 清理 / 概览(硬盘占用图) / 大文件 / 重复 / 应用
+# 加载与扫描带进度：确定进度用进度条(Gauge)，不确定用 spinner 动画
 
 # 规则 / 归因 / agent 入口
 thin rules                          # 列出所有规则
@@ -149,7 +150,7 @@ thin rules remove custom-someapp
 - **M1** 安全清理：隔离区 + Journal + 恢复/永久删除 + TUI 交互 ✅
 - **M2** 大文件查找 / 重复文件检测 / App 卸载（均复用隔离区）✅
 - **M3** 规则热更新（用户规则文件）+ 异常大目录归因 + **agent 规则写入入口** ✅
-- **M4（当前）** TUI 多标签页（清理/概览占用图/大文件/重复/应用，懒加载）✅
+- **M4（当前）** TUI 多标签页（清理/概览占用图/大文件/重复/应用，懒加载 + 进度条/spinner）✅
 - M5 SwiftUI 前端
 
 ## 测试

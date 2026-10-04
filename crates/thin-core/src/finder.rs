@@ -1,5 +1,6 @@
 //! 大文件查找与重复文件检测（M2）。
 
+use crate::progress::Progress;
 use rayon::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
@@ -28,7 +29,10 @@ struct Found {
 }
 
 /// 遍历 roots 下所有 >= min_size 的文件（不跨设备）
-fn walk_files(roots: &[PathBuf], min_size: u64) -> Vec<Found> {
+fn walk_files(roots: &[PathBuf], min_size: u64, progress: Option<&Progress>) -> Vec<Found> {
+    if let Some(p) = progress {
+        p.set_label("遍历文件");
+    }
     let mut out = Vec::new();
     for root in roots {
         if !root.exists() {
@@ -78,6 +82,9 @@ fn walk_files(roots: &[PathBuf], min_size: u64) -> Vec<Found> {
                     alloc: md.blocks().saturating_mul(512),
                     inode: (md.dev(), md.ino()),
                 });
+                if let Some(p) = progress {
+                    p.touch();
+                }
             }
         }
     }
@@ -96,7 +103,17 @@ pub struct LargeFile {
 
 /// 查找最大的文件（按实际占用降序，取前 limit 个）
 pub fn find_large(roots: &[PathBuf], min_size: u64, limit: usize) -> Vec<LargeFile> {
-    let mut files: Vec<LargeFile> = walk_files(roots, min_size)
+    find_large_progress(roots, min_size, limit, &Progress::new())
+}
+
+pub fn find_large_progress(
+    roots: &[PathBuf],
+    min_size: u64,
+    limit: usize,
+    progress: &Progress,
+) -> Vec<LargeFile> {
+    progress.set_label("扫描大文件");
+    let mut files: Vec<LargeFile> = walk_files(roots, min_size, Some(progress))
         .into_iter()
         .filter(|f| f.alloc >= min_size)
         .map(|f| LargeFile {
@@ -129,10 +146,20 @@ impl DupeGroup {
 
 /// 查找内容相同的重复文件（先按大小、再按部分哈希、最后全量哈希）
 pub fn find_duplicates(roots: &[PathBuf], min_size: u64, limit: usize) -> Vec<DupeGroup> {
+    find_duplicates_progress(roots, min_size, limit, &Progress::new())
+}
+
+pub fn find_duplicates_progress(
+    roots: &[PathBuf],
+    min_size: u64,
+    limit: usize,
+    progress: &Progress,
+) -> Vec<DupeGroup> {
     // 1) 按大小分组，硬链接（同 inode）只算一次
+    progress.set_label("按大小分组");
     let mut seen: HashSet<(u64, u64)> = HashSet::new();
     let mut by_size: HashMap<u64, Vec<PathBuf>> = HashMap::new();
-    for f in walk_files(roots, min_size) {
+    for f in walk_files(roots, min_size, Some(progress)) {
         if !seen.insert(f.inode) {
             continue; // 硬链接不是真的重复占用
         }
@@ -141,15 +168,31 @@ pub fn find_duplicates(roots: &[PathBuf], min_size: u64, limit: usize) -> Vec<Du
     let candidates: Vec<Vec<PathBuf>> = by_size.into_values().filter(|v| v.len() > 1).collect();
 
     // 2) 部分哈希（前 8KB）快速排除
+    progress.reset();
+    progress.set_label("部分哈希");
+    progress.set_total(candidates.len() as u64);
     let partial: Vec<Vec<PathBuf>> = candidates
         .par_iter()
-        .flat_map(|group| group_by_hash(group, Some(8192)))
+        .map(|group| {
+            let r = group_by_hash(group, Some(8192));
+            progress.inc();
+            r
+        })
+        .flatten()
         .collect();
 
     // 3) 全量哈希确认
+    progress.reset();
+    progress.set_label("全量哈希");
+    progress.set_total(partial.len() as u64);
     let mut groups: Vec<DupeGroup> = partial
         .par_iter()
-        .flat_map(|group| group_by_hash(group, None))
+        .map(|group| {
+            let r = group_by_hash(group, None);
+            progress.inc();
+            r
+        })
+        .flatten()
         .map(|paths| {
             let size = std::fs::metadata(&paths[0]).map(|m| m.len()).unwrap_or(0);
             DupeGroup { size, paths }

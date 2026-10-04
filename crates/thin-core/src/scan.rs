@@ -4,11 +4,28 @@ use rayon::prelude::*;
 
 /// 执行规则扫描（并行），返回按大小降序的清理项
 pub fn scan(rules: &[Rule], include_destructive: bool, min_size: u64) -> Vec<CleanItem> {
+    scan_progress(
+        rules,
+        include_destructive,
+        min_size,
+        &crate::progress::Progress::new(),
+    )
+}
+
+/// 带进度上报的扫描
+pub fn scan_progress(
+    rules: &[Rule],
+    include_destructive: bool,
+    min_size: u64,
+    progress: &crate::progress::Progress,
+) -> Vec<CleanItem> {
+    progress.set_label("扫描规则");
+    progress.set_total(rules.len() as u64);
     let per_rule: Vec<Vec<CleanItem>> = rules
         .par_iter()
         .map(|rule| {
             let paths = rules::expand_rule(rule);
-            paths
+            let out: Vec<CleanItem> = paths
                 .into_iter()
                 .map(|path| {
                     let size = crate::fsutil::size_of(&path);
@@ -26,7 +43,9 @@ pub fn scan(rules: &[Rule], include_destructive: bool, min_size: u64) -> Vec<Cle
                     }
                 })
                 .filter(|item| item.size >= min_size)
-                .collect()
+                .collect();
+            progress.inc();
+            out
         })
         .collect();
 

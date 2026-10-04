@@ -73,16 +73,27 @@ pub fn size_of(path: &Path) -> u64 {
 
 /// 列出目录下各直接子项的大小（降序，并行统计）
 pub fn children_sizes(root: &Path) -> Vec<(PathBuf, u64)> {
+    children_sizes_progress(root, &crate::progress::Progress::new())
+}
+
+/// 带进度上报的 children_sizes
+pub fn children_sizes_progress(
+    root: &Path,
+    progress: &crate::progress::Progress,
+) -> Vec<(PathBuf, u64)> {
     let mut paths = Vec::new();
     if let Ok(entries) = std::fs::read_dir(root) {
         for e in entries.flatten() {
             paths.push(e.path());
         }
     }
+    progress.set_label("统计目录占用");
+    progress.set_total(paths.len() as u64);
     let mut v: Vec<(PathBuf, u64)> = paths
         .into_par_iter()
         .map(|p| {
             let s = size_of(&p);
+            progress.inc();
             (p, s)
         })
         .filter(|(_, s)| *s > 0)

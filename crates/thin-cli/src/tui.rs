@@ -10,15 +10,17 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 use thin_core::apps::AppInfo;
 use thin_core::finder::{DupeGroup, LargeFile};
 use thin_core::fmt::human;
 use thin_core::model::{CleanItem, Risk};
+use thin_core::progress::Progress;
 use thin_core::{apps, clean, finder, fsutil, probe, rules, scan};
 
 use crate::treemap;
@@ -32,25 +34,30 @@ const N_TABS: usize = TABS.len();
 
 enum Load<T> {
     Idle,
-    Loading(Receiver<std::result::Result<T, String>>),
+    Loading {
+        rx: Receiver<std::result::Result<T, String>>,
+        progress: Arc<Progress>,
+    },
     Ready(T),
     Failed(String),
 }
 
 impl<T> Load<T> {
-    fn spawn(f: impl FnOnce() -> Result<T> + Send + 'static) -> Self
+    fn spawn(f: impl FnOnce(&Progress) -> Result<T> + Send + 'static) -> Self
     where
         T: Send + 'static,
     {
+        let progress = Arc::new(Progress::new());
+        let p = progress.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
-            let _ = tx.send(f().map_err(|e| format!("{e:#}")));
+            let _ = tx.send(f(&p).map_err(|e| format!("{e:#}")));
         });
-        Load::Loading(rx)
+        Load::Loading { rx, progress }
     }
 
     fn poll(&mut self) {
-        if let Load::Loading(rx) = self {
+        if let Load::Loading { rx, .. } = self {
             match rx.try_recv() {
                 Ok(Ok(v)) => *self = Load::Ready(v),
                 Ok(Err(e)) => *self = Load::Failed(e),
@@ -91,6 +98,7 @@ struct App {
     status: Option<String>,
     help: bool,
     quit: bool,
+    tick: usize,
 }
 
 impl App {
@@ -116,6 +124,7 @@ impl App {
             status: None,
             help: false,
             quit: false,
+            tick: 0,
         }
     }
 
@@ -124,24 +133,36 @@ impl App {
         match tab {
             0 if self.clean.is_idle() => {
                 let min = self.min;
-                self.clean = Load::spawn(move || {
+                self.clean = Load::spawn(move |p| {
                     let catalog = rules::load()?;
-                    Ok(scan::scan(&catalog, true, min))
+                    Ok(scan::scan_progress(&catalog, true, min, p))
                 });
             }
             1 if self.overview.is_idle() => {
-                self.overview = Load::spawn(move || Ok(fsutil::children_sizes(&root)));
+                self.overview = Load::spawn(move |p| Ok(fsutil::children_sizes_progress(&root, p)));
             }
             2 if self.large.is_idle() => {
-                self.large =
-                    Load::spawn(move || Ok(finder::find_large(&[root], 100 * 1024 * 1024, 300)));
+                self.large = Load::spawn(move |p| {
+                    Ok(finder::find_large_progress(
+                        &[root],
+                        100 * 1024 * 1024,
+                        300,
+                        p,
+                    ))
+                });
             }
             3 if self.dupes.is_idle() => {
-                self.dupes =
-                    Load::spawn(move || Ok(finder::find_duplicates(&[root], 1024 * 1024, 200)));
+                self.dupes = Load::spawn(move |p| {
+                    Ok(finder::find_duplicates_progress(
+                        &[root],
+                        1024 * 1024,
+                        200,
+                        p,
+                    ))
+                });
             }
             4 if self.apps.is_idle() => {
-                self.apps = Load::spawn(move || Ok(apps::list_apps()));
+                self.apps = Load::spawn(move |_p| Ok(apps::list_apps()));
             }
             _ => {}
         }
@@ -366,6 +387,7 @@ fn event_loop(
 ) -> Result<()> {
     while !app.quit {
         app.poll_loaders();
+        app.tick = app.tick.wrapping_add(1);
         terminal.draw(|f| ui(f, app))?;
         if event::poll(Duration::from_millis(80))? {
             if let Event::Key(key) = event::read()? {
@@ -499,6 +521,41 @@ fn state_msg(frame: &mut Frame, area: Rect, msg: &str) {
     frame.render_widget(p, area);
 }
 
+/// 加载中：确定进度用 Gauge 进度条，不确定进度用 spinner 动画
+fn render_loading(
+    frame: &mut Frame,
+    area: Rect,
+    progress: Option<&Arc<Progress>>,
+    tick: usize,
+    fallback: &str,
+) {
+    let Some(p) = progress else {
+        state_msg(frame, area, fallback);
+        return;
+    };
+    let s = p.snapshot();
+    if s.total > 0 {
+        let ratio = (s.done as f64 / s.total as f64).clamp(0.0, 1.0);
+        let gauge = Gauge::default()
+            .block(Block::default().borders(Borders::ALL).title(s.label))
+            .gauge_style(Style::default().fg(Color::Cyan))
+            .ratio(ratio)
+            .label(format!("{}/{}  {:.0}%", s.done, s.total, ratio * 100.0));
+        let a = centered_rect(60, 24, area);
+        frame.render_widget(Clear, a);
+        frame.render_widget(gauge, a);
+    } else {
+        const SPINNER: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+        let spin = SPINNER[tick % SPINNER.len()];
+        let msg = if s.count > 0 {
+            format!("{spin} {} …  已处理 {}", s.label, s.count)
+        } else {
+            format!("{spin} {} …", s.label)
+        };
+        state_msg(frame, area, &msg);
+    }
+}
+
 /// 概览：磁盘占用 treemap
 fn render_overview(frame: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default()
@@ -533,7 +590,9 @@ fn render_overview(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             treemap::render(frame, inner, &entries);
         }
-        Load::Loading(_) => state_msg(frame, inner, "统计目录占用中…"),
+        Load::Loading { progress, .. } => {
+            render_loading(frame, inner, Some(progress), app.tick, "统计目录占用中…")
+        }
         Load::Failed(e) => state_msg(frame, inner, e),
         Load::Idle => state_msg(frame, inner, "等待加载"),
     }
@@ -634,8 +693,8 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
                 parts[1],
             );
         }
-        Load::Loading(_) => {
-            state_msg(frame, parts[0], "扫描中…");
+        Load::Loading { progress, .. } => {
+            render_loading(frame, parts[0], Some(progress), app.tick, "扫描中…");
             state_msg(frame, parts[1], "");
         }
         Load::Failed(e) => state_msg(frame, parts[0], e),
@@ -676,7 +735,9 @@ fn render_large(frame: &mut Frame, app: &mut App, area: Rect) {
                 .highlight_symbol("› ");
             frame.render_stateful_widget(list, area, &mut app.list_states[app.tab]);
         }
-        Load::Loading(_) => state_msg(frame, area, "扫描大文件中…"),
+        Load::Loading { progress, .. } => {
+            render_loading(frame, area, Some(progress), app.tick, "扫描大文件中…")
+        }
         Load::Failed(e) => state_msg(frame, area, e),
         Load::Idle => state_msg(frame, area, "等待加载"),
     }
@@ -739,8 +800,14 @@ fn render_dupes(frame: &mut Frame, app: &mut App, area: Rect) {
                 parts[1],
             );
         }
-        Load::Loading(_) => {
-            state_msg(frame, parts[0], "检测重复中…（需读取内容）");
+        Load::Loading { progress, .. } => {
+            render_loading(
+                frame,
+                parts[0],
+                Some(progress),
+                app.tick,
+                "检测重复中…（需读取内容）",
+            );
             state_msg(frame, parts[1], "");
         }
         Load::Failed(e) => state_msg(frame, parts[0], e),
@@ -821,8 +888,8 @@ fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
                 parts[1],
             );
         }
-        Load::Loading(_) => {
-            state_msg(frame, parts[0], "读取应用中…");
+        Load::Loading { progress, .. } => {
+            render_loading(frame, parts[0], Some(progress), app.tick, "读取应用中…");
             state_msg(frame, parts[1], "");
         }
         Load::Failed(e) => state_msg(frame, parts[0], e),
