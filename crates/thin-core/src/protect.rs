@@ -40,6 +40,9 @@ pub fn is_protected(path: &Path) -> bool {
     is_protected_in(&thin_home(), path)
 }
 
+/// 运行期保护名单命中的固定原因文案；也用于把它与「静态安全门保护」区分开。
+pub const REASON: &str = "thin protect 保护名单";
+
 pub fn is_protected_in(home: &Path, path: &Path) -> bool {
     matches(&load_in(home), path)
 }

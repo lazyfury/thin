@@ -22,6 +22,7 @@ use thin_core::{
 #[command(
     name = "thin",
     about = "macOS 系统空间扫描与安全清理 (M5 · 预设/历史/定时)",
+    after_help = "Agent 工作流: thin agents（探索 → 写规则 → 可恢复清理；含安全约束与命令速查）",
     version
 )]
 struct Cli {
@@ -88,6 +89,9 @@ enum Cmd {
 
     /// 保护名单：被标记的路径及其子目录永不清理
     Protect(ProtectArgs),
+
+    /// Agent 工作流：打印内嵌的 AGENTS.md（探索 → 写规则 → 可恢复清理）
+    Agents,
 }
 
 #[derive(clap::Args)]
@@ -115,6 +119,10 @@ struct ScanArgs {
     /// 显示指定规则的详细说明（可多次）
     #[arg(long = "detail")]
     detail: Vec<String>,
+
+    /// 同时列出需 sudo / 受系统保护、thin 不会处理的项（默认隐藏）
+    #[arg(long)]
+    manual: bool,
 }
 
 #[derive(clap::Args)]
@@ -328,6 +336,10 @@ struct CleanArgs {
     /// 输出 JSON：dry-run 输出清理计划；--apply 输出账本（需配合 --yes）
     #[arg(long)]
     json: bool,
+
+    /// 同时预览需 sudo / 受系统保护、thin 不会处理的项（默认隐藏）
+    #[arg(long)]
+    manual: bool,
 }
 
 #[derive(clap::Args)]
@@ -539,8 +551,21 @@ fn main() -> Result<()> {
         Cmd::History(args) => cmd_history(args)?,
         Cmd::Schedule(args) => cmd_schedule(args)?,
         Cmd::Protect(args) => cmd_protect(args)?,
+        Cmd::Agents => print_agents(),
     }
     Ok(())
+}
+
+/// 仓库根 AGENTS.md 在编译期嵌入：安装出来的二进制旁边没有仓库文件，
+/// 内嵌才能保证 `thin agents` 离线可读、永不失效。
+const AGENTS_DOC: &str = include_str!("../../../AGENTS.md");
+
+/// `thin agents`：把 agent 工作流原样打到 stdout，便于 `thin agents | ...` 或直接喂给 agent。
+fn print_agents() {
+    print!("{AGENTS_DOC}");
+    if !AGENTS_DOC.ends_with('\n') {
+        println!();
+    }
 }
 
 /// 无子命令时的默认入口：TTY 下直接进 TUI，否则打印帮助（便于脚本/管道不会卡住）
@@ -586,8 +611,20 @@ fn cmd_scan(args: ScanArgs) -> Result<()> {
         return Ok(());
     }
 
-    report::print_table(&items);
-    report::print_summary(&items);
+    // 默认把「需 sudo / 受系统保护」的项整个藏起来：thin 本来就不会动它们，
+    // 显示出来只会让人以为能清。--manual 才列出；JSON 与 --detail 仍基于全量 items。
+    let visible: Vec<thin_core::CleanItem> = if args.manual {
+        items.clone()
+    } else {
+        items
+            .iter()
+            .filter(|it| !scan::is_manual(it))
+            .cloned()
+            .collect()
+    };
+
+    report::print_table(&visible);
+    report::print_summary(&visible);
     if let Some(v) = &volume {
         println!(
             "规则覆盖（含嵌套去重）: {} ｜ 主卷已用 {}（{:.0}%）",
@@ -1174,16 +1211,34 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
         println!("没有符合条件的清理项。");
         return Ok(());
     }
-    if plan.approved.is_empty() {
-        println!("没有可通过安全门的清理项：");
-        for s in &plan.skipped {
-            println!("  - {}：{}", shorten(&s.path), s.reason);
+
+    // 默认把「需 sudo / 受系统保护」的项从预览里整个藏起来：它们本就不会被执行。
+    // --manual 才展示；真正执行仍走完整 selected（安全门逐项把关）。
+    let shown_selected: Vec<thin_core::CleanItem> = if args.manual {
+        selected.clone()
+    } else {
+        selected
+            .iter()
+            .filter(|it| !scan::is_manual(it))
+            .cloned()
+            .collect()
+    };
+    let shown_plan = clean::plan(&shown_selected);
+
+    if shown_plan.approved.is_empty() {
+        if !shown_plan.skipped.is_empty() {
+            println!("没有可通过安全门的清理项：");
+            for s in &shown_plan.skipped {
+                println!("  - {}：{}", shorten(&s.path), s.reason);
+            }
+        } else {
+            println!("没有可通过安全门的清理项。");
         }
         return Ok(());
     }
 
     if !apply {
-        print_plan(&plan);
+        print_plan(&shown_plan);
         println!("\n（dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）");
         return Ok(());
     }

@@ -28,6 +28,8 @@ pub fn print_table(items: &[CleanItem]) {
         };
         let (label, color) = if it.protected {
             ("已保护", "\x1b[90m")
+        } else if it.sudo {
+            ("需 sudo", "\x1b[33m")
         } else {
             (it.risk.label(), it.risk.color())
         };
@@ -64,13 +66,18 @@ pub fn print_summary(items: &[CleanItem]) {
     } else {
         String::new()
     };
+    let manual = if s.manual > 0 {
+        format!(" / 需手动 {}", human(s.manual))
+    } else {
+        String::new()
+    };
     println!(
-        "\x1b[1m可回收总计: {}\x1b[0m  （安全 {} / 需确认 {} / 不可再生 {} / 需手动 {}{}）",
+        "\x1b[1m可回收总计: {}\x1b[0m  （安全 {} / 需确认 {} / 不可再生 {}{}{}）",
         human(s.total_reclaimable()),
         human(s.safe),
         human(s.confirm),
         human(s.destructive),
-        human(s.manual),
+        manual,
         protected
     );
     let extra = if nested > 0 {
@@ -78,9 +85,15 @@ pub fn print_summary(items: &[CleanItem]) {
     } else {
         String::new()
     };
+    let sudo_note = if s.manual > 0 {
+        "；需 sudo 项需手动处理"
+    } else {
+        ""
+    };
     println!(
-        "共 {} 项{extra}。默认仅「安全+需确认」计入可回收；需 sudo 项需手动处理。",
-        items.len()
+        "共 {} 项{extra}。默认仅「安全+需确认」计入可回收{}。",
+        items.len(),
+        sudo_note
     );
     if s.protected > 0 {
         println!(

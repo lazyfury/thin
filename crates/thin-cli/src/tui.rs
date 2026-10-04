@@ -110,6 +110,8 @@ struct App {
     list_states: Vec<ListState>,
     clean: Load<Vec<CleanItem>>,
     selected: Vec<bool>,
+    /// 清理页是否显示「需 sudo / 受系统保护」的项（默认隐藏，键 m 切换）
+    show_manual: bool,
     apps: Load<Vec<AppInfo>>,
     quarantine: Load<Vec<clean::Journal>>,
     history: Load<Vec<history::Record>>,
@@ -140,6 +142,7 @@ impl App {
             list_states,
             clean: Load::Idle,
             selected: Vec::new(),
+            show_manual: false,
             apps: Load::Idle,
             quarantine: Load::Idle,
             history: Load::Idle,
@@ -179,9 +182,15 @@ impl App {
         match tab {
             0 if self.clean.is_idle() => {
                 let min = self.min;
+                let show_manual = self.show_manual;
                 self.clean = Load::spawn(move |p| {
                     let catalog = rules::load()?;
-                    Ok(scan::scan_progress(&catalog, true, min, p))
+                    let mut items = scan::scan_progress(&catalog, true, min, p);
+                    if !show_manual {
+                        // 与 CLI 默认一致：需 sudo / 受系统保护的项不展示、也不可勾选。
+                        items.retain(|it| !scan::is_manual(it));
+                    }
+                    Ok(items)
                 });
             }
             APPS_TAB if self.apps.is_idle() => {
@@ -300,7 +309,7 @@ impl App {
             if let Load::Ready(items) = &self.clean
                 && items.get(i).map(|it| it.protected).unwrap_or(false)
             {
-                self.warn("该路径已在保护名单，先 thin protect remove 再清理");
+                self.warn("该路径已在保护名单，按 P 解除后再清理");
                 return;
             }
             self.selected[i] = !self.selected[i];
@@ -328,6 +337,44 @@ impl App {
                 self.info(format!("已保护 {}（含子目录）", canon.display()));
             }
             Err(e) => self.error(format!("加入保护名单失败：{e}")),
+        }
+    }
+
+    /// 从保护名单移除覆盖当前项的条目（`thin protect remove`），并重新扫描标注。
+    fn unprotect_current(&mut self) {
+        let i = self.cursor();
+        let path = match &self.clean {
+            Load::Ready(items) => items.get(i).map(|it| it.path.clone()),
+            _ => None,
+        };
+        let Some(path) = path else { return };
+        // 名单里可能是其父目录条目在覆盖该项，先找到真正命中的那条。
+        let target = protect::covering(&protect::load(), &path)
+            .cloned()
+            .unwrap_or(path);
+        match protect::remove(&target) {
+            Ok(true) => {
+                // 解除后该项可能仍受静态安全门保护（SIP 等），重扫一次重新判定。
+                self.clean = Load::Idle;
+                self.selected.clear();
+                self.ensure(CLEAN_TAB);
+                self.info(format!("已解除保护 {}（含子目录）", target.display()));
+            }
+            Ok(false) => self.warn("该路径不在 thin protect 名单（系统保护无法解除）"),
+            Err(e) => self.error(format!("解除保护失败：{e}")),
+        }
+    }
+
+    /// 切换清理页是否显示「需 sudo / 受系统保护」的项（默认隐藏，改后重扫一次）。
+    fn toggle_manual(&mut self) {
+        self.show_manual = !self.show_manual;
+        self.clean = Load::Idle;
+        self.selected.clear();
+        self.ensure(CLEAN_TAB);
+        if self.show_manual {
+            self.warn("已显示需 sudo / 受系统保护的项：thin 不会清理它们");
+        } else {
+            self.info("已隐藏需 sudo / 受系统保护的项");
         }
     }
 
@@ -691,6 +738,8 @@ impl App {
             KeyCode::Char('A') if self.tab == CLEAN_TAB => self.select_kind(false, true),
             KeyCode::Char('n') if self.tab == CLEAN_TAB => self.select_kind(false, false),
             KeyCode::Char('p') if self.tab == CLEAN_TAB => self.protect_current(),
+            KeyCode::Char('P') if self.tab == CLEAN_TAB => self.unprotect_current(),
+            KeyCode::Char('m') if self.tab == CLEAN_TAB => self.toggle_manual(),
             KeyCode::Char('c') if self.tab == CLEAN_TAB => {
                 if self.selected_count() > 0 {
                     self.confirm = true;
@@ -1184,6 +1233,8 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
                                 text::pad_end(
                                     if it.protected {
                                         "已保护"
+                                    } else if it.sudo {
+                                        "需 sudo"
                                     } else {
                                         it.risk.label()
                                     },
@@ -1192,6 +1243,8 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
                             ),
                             Style::default().fg(if it.protected {
                                 Color::DarkGray
+                            } else if it.sudo {
+                                Color::Yellow
                             } else {
                                 risk_color(it.risk)
                             }),
@@ -1227,12 +1280,16 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
                         Span::styled(
                             if it.protected {
                                 "已保护（thin protect）"
+                            } else if it.sudo {
+                                "需 sudo（thin 不会清理）"
                             } else {
                                 it.risk.label()
                             }
                             .to_string(),
                             Style::default().fg(if it.protected {
                                 Color::DarkGray
+                            } else if it.sudo {
+                                Color::Yellow
                             } else {
                                 risk_color(it.risk)
                             }),
@@ -1381,14 +1438,14 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.help {
         (
-            " 1-9/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · r 重载 · c 清理 · Esc 关闭提示/退出 · q 退出"
+            " 1-9/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · P 解除 · m 需sudo · r 重载 · c 清理 · Esc 关闭提示/退出 · q 退出"
                 .to_string(),
             toast::bar_style(),
         )
     } else {
         let hint = match app.tab {
             0 => {
-                " Tab 切页 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · c 清理 · r 重载 · ? 帮助 · q 退出"
+                " Tab 切页 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · P 解除 · m 需sudo · c 清理 · r 重载 · ? 帮助 · q 退出"
             }
             APPS_TAB => " ↑↓/jk 移动 · u 卸载 · r 重载 · ? 帮助 · q 退出",
             QUARANTINE_TAB => " ↑↓/jk 移动 · Enter 恢复 · p 永久删除 · r 重载 · ? 帮助 · q 退出",

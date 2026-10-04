@@ -136,7 +136,7 @@ pub fn mark_protection_with(items: &mut [CleanItem], protect_list: &[std::path::
         it.protected_reason = None;
         if crate::protect::matches(protect_list, &it.path) {
             it.protected = true;
-            it.protected_reason = Some("thin protect 保护名单".to_string());
+            it.protected_reason = Some(crate::protect::REASON.to_string());
         } else if !it.sudo
             && let Some(reason) = crate::clean::static_protection_reason(&it.path)
         {
@@ -144,6 +144,17 @@ pub fn mark_protection_with(items: &mut [CleanItem], protect_list: &[std::path::
             it.protected_reason = Some(reason);
         }
     }
+}
+
+/// thin 默认**不展示、也不执行**的「需手动」项：
+///
+/// - 需要 root（`item.sudo`）；
+/// - 受静态安全门保护（SIP / 裸顶层目录 / 个人目录顶层 / 跨卷等）。
+///
+/// `thin protect` 名单**不算**在这里：那是用户主动保护，仍应可见（标为「已保护」）。
+pub fn is_manual(item: &CleanItem) -> bool {
+    item.sudo
+        || (item.protected && item.protected_reason.as_deref() != Some(crate::protect::REASON))
 }
 
 /// 判断某路径是否被列表中另一个路径包含（嵌套重复）
