@@ -545,16 +545,20 @@ fn event_loop(
 
 /// 在给定区域内绘制浏览界面（独立运行或嵌入 TUI 标签页均可）
 pub fn render(frame: &mut Frame, state: &mut BrowseState, area: Rect) {
+    // 内嵌到 TUI 标签页时砍掉自带的标题行（面包屑），当前路径改放到列表块标题
+    let header_h = if state.embedded { 0 } else { 2 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),
+            Constraint::Length(header_h),
             Constraint::Min(6),
             Constraint::Length(1),
         ])
         .split(area);
 
-    render_header(frame, state, chunks[0]);
+    if !state.embedded {
+        render_header(frame, state, chunks[0]);
+    }
     render_body(frame, state, chunks[1]);
     render_footer(frame, state, chunks[2]);
 
@@ -693,12 +697,18 @@ fn render_list(frame: &mut Frame, app: &mut BrowseState, area: Rect) {
         })
         .collect();
 
-    let title = format!(
+    // 内嵌时无面包屑，当前路径放在块标题里（避免与标题行重复）
+    let meta = format!(
         "{} 项 · 排序:{}{}",
         app.visible.len(),
         app.sort.label(),
         if app.show_hidden { " · 含隐藏" } else { "" }
     );
+    let title = if app.embedded {
+        format!("{}  ·  {meta}", app.cwd().display())
+    } else {
+        meta
+    };
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
