@@ -1,0 +1,4 @@
+[toolchain]
+# edition 2024 + let-chains 需要较新的 stable；CI 与本地保持一致。
+channel = "stable"
+components = ["clippy", "rustfmt"]

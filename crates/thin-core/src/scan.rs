@@ -41,6 +41,7 @@ pub fn scan_progress(
                         reclaim: rule.reclaim.clone(),
                         explain: rule.explain.clone(),
                         protected: false,
+                        protected_reason: None,
                     }
                 })
                 .filter(|item| item.size >= min_size)
@@ -54,15 +55,40 @@ pub fn scan_progress(
     if !include_destructive {
         items.retain(|i| i.risk != Risk::Destructive);
     }
-    // 标注保护名单：展示但不清除、不计入可回收（load 一次，批量匹配）
+    // 标注保护：展示但不清除、不计入可回收。
+    // ① 运行期 `thin protect` 名单；② 静态安全门（受保护路径 / 个人目录顶层 /
+    //    裸顶层根等）。后者保证 `scan` 不会宣传 `clean` 必然跳过的项——
+    //    `clean::plan` 与这里共用同一个 `static_protection_reason`。
+    // 需 sudo 的项已由 `summarize` 归入「需手动」，不在此重复标记。
+    mark_protection(&mut items);
+    items.sort_by_key(|i| std::cmp::Reverse(i.size));
+    items
+}
+
+/// 批量标注保护状态（供 scan 使用，加载一次保护名单）。
+pub fn mark_protection(items: &mut [CleanItem]) {
     let protect_list = crate::protect::load();
-    if !protect_list.is_empty() {
-        for it in &mut items {
-            it.protected = crate::protect::matches(&protect_list, &it.path);
+    mark_protection_with(items, &protect_list);
+}
+
+/// 在已加载的保护名单上标注，避免逐项读盘（便于测试）。
+///
+/// 需 sudo 的项不参与静态保护标记：它们本来就不会被 thin 自动移动，
+/// 已由 `summarize` 计入「需手动」，交给用户手动处理。
+pub fn mark_protection_with(items: &mut [CleanItem], protect_list: &[std::path::PathBuf]) {
+    for it in items {
+        it.protected = false;
+        it.protected_reason = None;
+        if crate::protect::matches(protect_list, &it.path) {
+            it.protected = true;
+            it.protected_reason = Some("thin protect 保护名单".to_string());
+        } else if !it.sudo
+            && let Some(reason) = crate::clean::static_protection_reason(&it.path)
+        {
+            it.protected = true;
+            it.protected_reason = Some(reason);
         }
     }
-    items.sort_by(|a, b| b.size.cmp(&a.size));
-    items
 }
 
 /// 判断某路径是否被列表中另一个路径包含（嵌套重复）
@@ -182,6 +208,7 @@ mod tests {
                 recover: "重新生成".into(),
             },
             protected: false,
+            protected_reason: None,
         }
     }
 
@@ -259,5 +286,19 @@ mod tests {
             item("/a/logs", 2000, Risk::Safe, true),
         ];
         assert_eq!(accounted_bytes(&items), 8000);
+    }
+
+    #[test]
+    fn static_protected_items_are_marked_but_sudo_is_not() {
+        let mut items = vec![
+            item("/System/Library", 10, Risk::Safe, false),
+            item("/System/Library", 10, Risk::Safe, true),
+            item("/tmp/thin-nonexistent-xyz", 10, Risk::Safe, false),
+        ];
+        mark_protection_with(&mut items, &[]);
+        assert!(items[0].protected, "静态保护路径应被标记");
+        assert!(items[0].protected_reason.is_some());
+        assert!(!items[1].protected, "需 sudo 项归入「需手动」，不重复标记");
+        assert!(!items[2].protected);
     }
 }

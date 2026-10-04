@@ -468,16 +468,16 @@
     "id": "macos-install-data",
     "name": "系统升级残留 (macOS Install Data)",
     "category": "leftover",
-    "risk": "safe",
+    "risk": "confirm",
     "regenerable": false,
     "sudo": true,
     "matcher": {
       "kind": "path",
       "paths": [
-        "/System/Volumes/Data/macOS Install Data"
+        "/macOS Install Data"
       ]
     },
-    "reclaim": "sudo rm -rf \"/System/Volumes/Data/macOS Install Data\"",
+    "reclaim": "sudo rm -rf \"/macOS Install Data\"",
     "explain": {
       "what": "系统升级后遗留的安装数据/旧系统快照",
       "cost": "无影响，升级已完成",
@@ -488,7 +488,7 @@
     "id": "trash",
     "name": "废纸篓",
     "category": "trash",
-    "risk": "safe",
+    "risk": "confirm",
     "regenerable": false,
     "sudo": false,
     "matcher": {

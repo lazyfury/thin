@@ -14,8 +14,8 @@ fn pad_colored(label: &str, color: &str, width: usize) -> String {
 /// 打印扫描结果表格
 pub fn print_table(items: &[CleanItem]) {
     println!(
-        "{:>10}  {:<10} {:<8} {:<26} {}",
-        "大小", "风险", "类别", "名称", "路径"
+        "{:>10}  {:<10} {:<8} {:<26} 路径",
+        "大小", "风险", "类别", "名称"
     );
     println!("{}", "-".repeat(96));
     let home = std::env::var("HOME").unwrap_or_default();
@@ -83,7 +83,9 @@ pub fn print_summary(items: &[CleanItem]) {
         items.len()
     );
     if s.protected > 0 {
-        println!("\x1b[90m标记「已保护」的项不会清理；用 thin protect list 查看/移除。\x1b[0m");
+        println!(
+            "\x1b[90m标记「已保护」的项不会清理（thin protect 名单或系统保护路径）；用 thin protect list 查看/移除。\x1b[0m"
+        );
     }
 }
 
@@ -103,4 +105,7 @@ pub fn print_detail(it: &CleanItem) {
     println!("  能否恢复: {}", it.explain.recover);
     println!("  官方方式: {}", it.reclaim);
     println!("  thin 动作: 移入隔离区（可恢复）");
+    if let Some(reason) = &it.protected_reason {
+        println!("  \x1b[33m受保护: {reason}（不会清理）\x1b[0m");
+    }
 }

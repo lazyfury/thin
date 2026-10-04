@@ -162,7 +162,8 @@ thin clean --apply --id custom-someapp --yes
 # 兜底：列出 / 恢复 / 永久删除
 thin quarantine list
 thin quarantine restore <session>
-thin quarantine purge --older-than 7d
+thin quarantine purge --older-than 7d --dry-run   # 先预览
+thin quarantine purge --older-than 7d             # 二次确认后永久删除
 ```
 
 ---
@@ -181,8 +182,9 @@ thin quarantine purge --older-than 7d
 7. **预演=执行**：`thin clean` 的 dry-run 与 `--apply` 使用**同一安全门**（`clean::plan`），被跳过项不会计入「可释放」。
 8. **运行中的 App / 系统 App**：`uninstall --apply` 前检测运行状态（超时视为运行中）；系统关键 App（列表见 `apps.rs`）禁止卸载。
 9. **外部命令超时**：`tmutil`/`plutil`/`pgrep`/`mount`/`date` 均有超时，避免挂死。
-5. **写规则前先确认路径真实存在且可清理**；`regenerable=false` 的项风险应设为 `confirm` 或 `destructive`。
-6. 不确定时，宁可 `risk=confirm` 且 `--dry-run` 先看结果。
+10. **写规则前先确认路径真实存在且可清理**；`regenerable=false` 的项风险应设为 `confirm` 或 `destructive`。
+11. 不确定时，宁可 `risk=confirm` 且 `--dry-run` 先看结果。
+12. **永久删除要确认**：`thin quarantine purge` 默认二次确认；agent 显式传 `--yes` 才跳过，并应先用 `--dry-run` 预览。
 
 ---
 

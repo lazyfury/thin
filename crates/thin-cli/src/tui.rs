@@ -243,10 +243,8 @@ impl App {
             7 if self.history.is_idle() => {
                 self.history = Load::spawn(move |_p| history::load(None));
             }
-            8 => {
-                if self.browse.is_none() {
-                    self.browse = Some(BrowseState::new(root));
-                }
+            8 if self.browse.is_none() => {
+                self.browse = Some(BrowseState::new(root));
             }
             _ => {}
         }
@@ -264,13 +262,13 @@ impl App {
             b.poll();
             b.tick();
         }
-        if let Load::Ready(items) = &self.clean {
-            if self.selected.len() != items.len() {
-                self.selected = items
-                    .iter()
-                    .map(|i| i.risk == Risk::Safe && !i.protected)
-                    .collect();
-            }
+        if let Load::Ready(items) = &self.clean
+            && self.selected.len() != items.len()
+        {
+            self.selected = items
+                .iter()
+                .map(|i| i.risk == Risk::Safe && !i.protected)
+                .collect();
         }
         self.expire_status();
     }
@@ -374,11 +372,11 @@ impl App {
         let i = self.cursor();
         if i < self.selected.len() {
             // 保护名单项不可勾选
-            if let Load::Ready(items) = &self.clean {
-                if items.get(i).map(|it| it.protected).unwrap_or(false) {
-                    self.warn("该路径已在保护名单，先 thin protect remove 再清理");
-                    return;
-                }
+            if let Load::Ready(items) = &self.clean
+                && items.get(i).map(|it| it.protected).unwrap_or(false)
+            {
+                self.warn("该路径已在保护名单，先 thin protect remove 再清理");
+                return;
             }
             self.selected[i] = !self.selected[i];
         }
@@ -394,10 +392,10 @@ impl App {
         let Some(path) = path else { return };
         match protect::add(&path) {
             Ok(canon) => {
-                if let Load::Ready(items) = &mut self.clean {
-                    if let Some(it) = items.get_mut(i) {
-                        it.protected = true;
-                    }
+                if let Load::Ready(items) = &mut self.clean
+                    && let Some(it) = items.get_mut(i)
+                {
+                    it.protected = true;
                 }
                 if i < self.selected.len() {
                     self.selected[i] = false;
@@ -803,12 +801,11 @@ fn event_loop(
         app.refresh_status(false);
         app.tick = app.tick.wrapping_add(1);
         terminal.draw(|f| ui(f, app))?;
-        if event::poll(Duration::from_millis(80))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    app.on_key(key);
-                }
-            }
+        if event::poll(Duration::from_millis(80))?
+            && let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            app.on_key(key);
         }
     }
     Ok(())

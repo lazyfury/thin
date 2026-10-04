@@ -10,9 +10,9 @@ mod tui;
 use anyhow::{Context, Result, anyhow};
 use clap::{CommandFactory, Parser, Subcommand};
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thin_core::fmt::human;
-use thin_core::model::{Category, Matcher, Risk};
+use thin_core::model::{Category, Risk};
 use thin_core::{
     CleanItem, Rule, apps, clean, discover, finder, fsutil, history, preset, probe, protect, rules,
     scan, schedule,
@@ -30,6 +30,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // CLI 参数枚举只解析一次，无需为体积 boxing
 enum Cmd {
     /// 磁盘概览：容量、卷、快照、外接盘
     Probe,
@@ -184,6 +185,7 @@ struct RulesArgs {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant)] // CLI 参数枚举只解析一次，无需为体积 boxing
 enum RulesCmd {
     /// 列出所有规则（默认）
     List,
@@ -452,6 +454,12 @@ struct PurgeArgs {
     /// 永久删除早于 N 天的会话，如 7d
     #[arg(long, default_value = "")]
     older_than: String,
+    /// 只预览将永久删除的会话，不执行
+    #[arg(long)]
+    dry_run: bool,
+    /// 跳过确认（永久删除不可恢复，务必确认）
+    #[arg(long)]
+    yes: bool,
 }
 
 fn main() -> Result<()> {
@@ -588,8 +596,8 @@ fn list_rules() -> Result<()> {
         .map(|r| r.id)
         .collect();
     println!(
-        "{:>8}  {:<10} {:<12} {:<6} {}",
-        "风险", "类别", "可再生", "来源", "名称 / 规则 id"
+        "{:>8}  {:<10} {:<12} {:<6} 名称 / 规则 id",
+        "风险", "类别", "可再生", "来源"
     );
     println!("{}", "-".repeat(88));
     for r in &catalog {
@@ -693,23 +701,15 @@ fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
         )
     };
 
-    // 预检：受保护 / 个人目录顶层不得建成清理规则（与 clean 安全门共用同一判断）。
+    // 预检：受保护 / 个人目录顶层不得建成清理规则（与 clean 安全门共用同一判断）；
+    // findDir 规则不得在无 requireSibling 约束下按名字查找敏感目录。
     // 这样 `discover` 之类的建议即使被直接照做，也会在写盘前被拦下，
     // 而不是等到 clean 才发现「整份 ~/Documents 会被搬走」。
-    if let Matcher::Path { paths } = &rule.matcher {
-        for raw in paths {
-            let Some(p) = fsutil::expand(raw) else {
-                continue;
-            };
-            if let Some(reason) = clean::static_protection_reason(&p) {
-                anyhow::bail!(
-                    "拒绝写入规则 {}：目标 {} 受保护（{}）\n提示：个人目录本身不可整体清理；如需清理其内部的具体缓存，请指向子路径。",
-                    rule.id,
-                    p.display(),
-                    reason
-                );
-            }
-        }
+    if let Err(reason) = rules::check_rule_safety(&rule) {
+        anyhow::bail!(
+            "拒绝写入规则 {}：{reason}\n提示：个人目录本身不可整体清理；如需清理其内部的具体缓存，请指向子路径，或为 findDir 规则设置 requireSibling。",
+            rule.id
+        );
     }
 
     let saved = if args.dir {
@@ -764,7 +764,7 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
         return Ok(());
     }
 
-    println!("{:>10}  {:<20} {}", "大小", "归因", "路径");
+    println!("{:>10}  {:<20} 路径", "大小", "归因");
     println!("{}", "-".repeat(90));
     for f in &report.findings {
         let tag = if f.coverage.is_uncovered() {
@@ -873,7 +873,7 @@ fn print_plan(plan: &clean::Plan) {
     for it in &plan.approved {
         println!("• {:<28} {:>10}", it.name, human(it.size));
         println!("  {:<28} {}", "官方方式:", it.reclaim);
-        println!("  {:<28} {}", "thin 动作:", "移入隔离区（可恢复）");
+        println!("  {:<28} 移入隔离区（可恢复）", "thin 动作:");
         println!("  {:<28} {}", "路径:", it.path.display());
     }
     let total = plan.approved_bytes();
@@ -988,9 +988,9 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&journal)?);
             return Ok(());
         }
-        let protected_bytes: u64 = selected
+        let protected_items: Vec<_> = selected.iter().filter(|i| i.protected).cloned().collect();
+        let protected_bytes: u64 = scan::top_level(&protected_items)
             .iter()
-            .filter(|i| i.protected)
             .map(|i| i.size)
             .sum();
         let out = serde_json::json!({
@@ -1112,24 +1112,60 @@ fn cmd_quarantine(args: QuarantineArgs) -> Result<()> {
             }
         }
         QuarantineCmd::Purge(p) => {
-            if !p.older_than.is_empty() {
-                let days = parse_days_arg(&p.older_than)?;
-                let (n, freed) = clean::purge_older_than(days)?;
-                println!("永久删除 {n} 个会话，释放 {}", human(freed));
+            let targets: Vec<clean::Journal> = if !p.older_than.is_empty() {
+                clean::sessions_older_than(parse_days_arg(&p.older_than)?)?
             } else if p.all {
-                let list = clean::list_journals()?;
-                let (mut n, mut freed) = (0usize, 0u64);
-                for j in list {
-                    freed += clean::purge_session(&j.session)?;
-                    n += 1;
-                }
-                println!("永久删除 {n} 个会话，释放 {}", human(freed));
-            } else if let Some(s) = p.session {
-                let freed = clean::purge_session(&s)?;
-                println!("永久删除会话 {s}，释放 {}", human(freed));
+                clean::list_journals()?
+            } else if let Some(s) = &p.session {
+                clean::list_journals()?
+                    .into_iter()
+                    .filter(|j| &j.session == s)
+                    .collect()
             } else {
                 println!("请指定会话、--all 或 --older-than 7d。");
+                return Ok(());
+            };
+
+            if targets.is_empty() {
+                println!("没有匹配的隔离会话。");
+                return Ok(());
             }
+
+            let total: u64 = targets.iter().map(|j| j.total_size()).sum();
+            println!(
+                "将永久删除 {} 个会话，释放 {}（不可恢复）:",
+                targets.len(),
+                human(total)
+            );
+            for j in &targets {
+                println!(
+                    "  - {}  {} 项  {}",
+                    j.session,
+                    j.entries.len(),
+                    human(j.total_size())
+                );
+            }
+
+            if p.dry_run {
+                println!("\n（dry-run，未执行任何删除）");
+                return Ok(());
+            }
+            if !p.yes
+                && !confirm(&format!(
+                    "永久删除以上 {} 个会话？此操作不可恢复",
+                    targets.len()
+                ))?
+            {
+                println!("已取消。");
+                return Ok(());
+            }
+
+            let (mut n, mut freed) = (0usize, 0u64);
+            for j in targets {
+                freed += clean::purge_session(&j.session)?;
+                n += 1;
+            }
+            println!("永久删除 {n} 个会话，释放 {}", human(freed));
         }
     }
     Ok(())
@@ -1140,7 +1176,7 @@ fn expand_root(s: &str) -> PathBuf {
 }
 
 /// 把家目录前缀显示为 ~
-fn shorten(path: &PathBuf) -> String {
+fn shorten(path: &Path) -> String {
     let s = path.display().to_string();
     let raw = std::env::var("HOME").unwrap_or_default();
     let canon = std::fs::canonicalize(&raw)
@@ -1201,7 +1237,7 @@ fn cmd_large(args: LargeArgs) -> Result<()> {
         println!("未发现 >= {} 的文件。", human(min));
         return Ok(());
     }
-    println!("{:>10}  {}", "大小", "文件");
+    println!("{:>10}  文件", "大小");
     println!("{}", "-".repeat(80));
     for f in &files {
         let tag = if is_protected(&f.path) {
@@ -1342,8 +1378,8 @@ fn cmd_apps(args: AppsArgs) -> Result<()> {
     let min = parse_size_arg(&args.min)?;
     let apps = apps::list_apps();
     println!(
-        "{:<6} {:>10}  {:<12} {:<28} {}",
-        "等级", "总占用", "关联残留", "App", "Bundle ID"
+        "{:<6} {:>10}  {:<12} {:<28} Bundle ID",
+        "等级", "总占用", "关联残留", "App"
     );
     println!("{}", "-".repeat(96));
     for a in apps.into_iter().filter(|a| a.total() >= min) {
@@ -1581,8 +1617,8 @@ fn cmd_preset(args: PresetArgs) -> Result<()> {
     match args.cmd {
         None | Some(PresetCmd::List) => {
             println!(
-                "{:<18} {:<10} {:<6} {:<6} {}",
-                "id", "名称", "来源", "保留", "类别 [风险]"
+                "{:<18} {:<10} {:<6} {:<6} 类别 [风险]",
+                "id", "名称", "来源", "保留"
             );
             println!("{}", "-".repeat(84));
             print_preset_row(&preset::Preset::builtin_default(), "内置");
@@ -1649,12 +1685,12 @@ fn cmd_history(args: HistoryArgs) -> Result<()> {
             );
         }
     }
-    if let Ok(n) = history::unreconciled_count_in(&clean::thin_home()) {
-        if n > 0 {
-            println!(
-                "\n\x1b[90m另有 {n} 个隔离会话未记录，可用 `thin history --reconcile` 回填。\x1b[0m"
-            );
-        }
+    if let Ok(n) = history::unreconciled_count_in(&clean::thin_home())
+        && n > 0
+    {
+        println!(
+            "\n\x1b[90m另有 {n} 个隔离会话未记录，可用 `thin history --reconcile` 回填。\x1b[0m"
+        );
     }
     Ok(())
 }
@@ -1755,12 +1791,11 @@ fn cmd_schedule(args: ScheduleArgs) -> Result<()> {
                 "已加载: {}",
                 if schedule::is_loaded() { "是" } else { "否" }
             );
-            if exists {
-                if let Ok(s) = std::fs::read_to_string(&path) {
-                    if let Some(p) = extract_preset(&s) {
-                        println!("预设:   {p}");
-                    }
-                }
+            if exists
+                && let Ok(s) = std::fs::read_to_string(&path)
+                && let Some(p) = extract_preset(&s)
+            {
+                println!("预设:   {p}");
             }
         }
         ScheduleCmd::Run {

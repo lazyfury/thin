@@ -7,7 +7,7 @@
 > 清理 = 移入隔离区，而不是删除。每一项都说清「这是什么 / 删了会怎样 / 能不能恢复」。
 
 ![platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
-![rust](https://img.shields.io/badge/rust-1.85%2B-dea584?logo=rust&logoColor=white)
+![rust](https://img.shields.io/badge/rust-1.88%2B-dea584?logo=rust&logoColor=white)
 ![license](https://img.shields.io/badge/license-MIT-blue)
 ![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
@@ -37,7 +37,7 @@ macOS 的「系统数据 / 系统缓存」是个兜底分类，会把虚拟机�
 ### 安装
 
 ```bash
-# 从 Git 安装（需要 Rust 1.85+，edition 2024）
+# 从 Git 安装（需要 Rust 1.88+，edition 2024 + let-chains）
 # 注意：包名是 thin-cli，安装出的二进制名是 thin；默认装到 ~/.cargo/bin/thin
 cargo install --git https://github.com/lazyfury/thin.git thin-cli
 
@@ -136,8 +136,10 @@ thin clean --apply --json --yes   # 执行并输出账本 JSON
 thin quarantine list              # 查看所有会话
 thin quarantine restore           # 恢复最近一次
 thin quarantine restore --all     # 恢复全部
-thin quarantine purge <会话>       # 永久删除
+thin quarantine purge <会话> --dry-run   # 预览将永久删除的会话
+thin quarantine purge <会话>       # 二次确认后永久删除
 thin quarantine purge --older-than 7d
+thin quarantine purge --all --yes  # 跳过确认（谨慎）
 ```
 
 </details>

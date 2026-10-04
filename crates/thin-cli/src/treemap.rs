@@ -21,7 +21,7 @@ pub fn layout(rect: Rect, values: &[u64]) -> Vec<(Rect, usize)> {
         .enumerate()
         .map(|(i, v)| (v, i))
         .collect();
-    items.sort_by(|a, b| b.0.cmp(&a.0));
+    items.sort_by_key(|x| std::cmp::Reverse(x.0));
     let mut out = Vec::new();
     split(rect, &items, &mut out);
     out

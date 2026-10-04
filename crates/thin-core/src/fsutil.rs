@@ -47,6 +47,15 @@ pub fn expand(path: &str) -> Option<PathBuf> {
     Some(PathBuf::from(path))
 }
 
+/// 规范化路径用于**比较**：存在则 `canonicalize`（解析 symlink，如 macOS 上
+/// `/tmp → /private/tmp`、`/var → /private/var`），不存在则回退原样。
+///
+/// 扫描/规则展开时统一走这里，保证 `starts_with` 嵌套去重与安全门前缀判断
+/// 不会因 symlink 或路径写法不同而失效。
+pub fn canonicalize_or(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
+}
+
 /// 取路径所在设备号（用于避免跨越挂载点）
 pub fn device_of(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|m| m.dev())
@@ -107,10 +116,10 @@ pub fn size_of(path: &Path) -> u64 {
 /// 与 [`size_of`]（按实际分配块）不同，用于跨卷复制前的空间预估，
 /// 因为复制会把稀疏文件的空洞也写成实心。
 pub fn logical_size(path: &Path) -> u64 {
-    if let Ok(m) = std::fs::metadata(path) {
-        if m.is_file() {
-            return m.len();
-        }
+    if let Ok(m) = std::fs::metadata(path)
+        && m.is_file()
+    {
+        return m.len();
     }
     let root_dev = device_of(path);
     let mut total: u64 = 0;
@@ -167,7 +176,7 @@ pub fn children_sizes_progress(
         })
         .filter(|(_, s)| *s > 0)
         .collect();
-    v.sort_by(|a, b| b.1.cmp(&a.1));
+    v.sort_by_key(|x| std::cmp::Reverse(x.1));
     v
 }
 
@@ -268,7 +277,7 @@ pub fn children_entries_progress(
             entry
         })
         .collect();
-    v.sort_by(|a, b| b.size.cmp(&a.size));
+    v.sort_by_key(|a| std::cmp::Reverse(a.size));
     v
 }
 

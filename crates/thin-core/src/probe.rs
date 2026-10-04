@@ -57,13 +57,13 @@ pub fn list_mounts() -> Vec<Mount> {
         let s = String::from_utf8_lossy(&out.stdout);
         for line in s.lines() {
             // 形如: /dev/disk7s1 on /Volumes/数据 (apfs, ...)
-            if let Some((dev, rest)) = line.split_once(" on ") {
-                if let Some((mnt, _)) = rest.split_once(" (") {
-                    v.push(Mount {
-                        device: dev.to_string(),
-                        mount: mnt.to_string(),
-                    });
-                }
+            if let Some((dev, rest)) = line.split_once(" on ")
+                && let Some((mnt, _)) = rest.split_once(" (")
+            {
+                v.push(Mount {
+                    device: dev.to_string(),
+                    mount: mnt.to_string(),
+                });
             }
         }
     }

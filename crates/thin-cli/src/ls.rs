@@ -63,8 +63,8 @@ pub fn run(args: LsArgs) -> Result<()> {
         println!("  {}", root_rec.note);
     }
     println!(
-        "{:>10}  {:<4} {:<24} {:<26} {}",
-        "大小", "类型", "名称", "用途", "状态"
+        "{:>10}  {:<4} {:<24} {:<26} 状态",
+        "大小", "类型", "名称", "用途"
     );
     println!("{}", "-".repeat(104));
     print_nodes(&nodes, 0, &home, &args);

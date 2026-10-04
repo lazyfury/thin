@@ -14,18 +14,30 @@ pub fn builtin() -> Result<Vec<Rule>> {
 
 /// 用户规则文件（可热更新，agent 可写入）
 pub fn user_rules_path() -> PathBuf {
-    clean::thin_home().join("rules.json")
+    user_rules_path_in(&clean::thin_home())
+}
+
+pub fn user_rules_path_in(home: &Path) -> PathBuf {
+    home.join("rules.json")
 }
 
 /// 用户规则目录：可放多个 `*.json`（每个为单条规则或规则数组），便于逐步添加。
 /// 加载顺序：内置 → `rules.json` → `rules.d/*.json`（按文件名），同名 id 后者覆盖。
 pub fn user_rules_dir() -> PathBuf {
-    clean::thin_home().join("rules.d")
+    user_rules_dir_in(&clean::thin_home())
+}
+
+pub fn user_rules_dir_in(home: &Path) -> PathBuf {
+    home.join("rules.d")
 }
 
 /// 读取用户规则（不存在则为空）
 pub fn load_user_rules() -> Result<Vec<Rule>> {
-    let path = user_rules_path();
+    load_user_rules_in(&clean::thin_home())
+}
+
+pub fn load_user_rules_in(home: &Path) -> Result<Vec<Rule>> {
+    let path = user_rules_path_in(home);
     if !path.exists() {
         return Ok(Vec::new());
     }
@@ -47,7 +59,7 @@ pub fn load_dir_rules_in(dir: &Path) -> Result<Vec<Rule>> {
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
-    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)?
+    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)?
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
@@ -74,8 +86,12 @@ pub fn load_dir_rules_in(dir: &Path) -> Result<Vec<Rule>> {
 
 /// 所有用户来源的规则（`rules.json` + `rules.d`），同 id 后者覆盖。
 pub fn load_all_user_rules() -> Result<Vec<Rule>> {
-    let mut all = load_user_rules()?;
-    all.extend(load_dir_rules()?);
+    load_all_user_rules_in(&clean::thin_home())
+}
+
+pub fn load_all_user_rules_in(home: &Path) -> Result<Vec<Rule>> {
+    let mut all = load_user_rules_in(home)?;
+    all.extend(load_dir_rules_in(&user_rules_dir_in(home))?);
     let mut merged: Vec<Rule> = Vec::new();
     for r in all {
         merged.retain(|x| x.id != r.id);
@@ -86,7 +102,11 @@ pub fn load_all_user_rules() -> Result<Vec<Rule>> {
 
 /// 写入用户规则文件
 pub fn save_user_rules(rules: &[Rule]) -> Result<PathBuf> {
-    let path = user_rules_path();
+    save_user_rules_in(&clean::thin_home(), rules)
+}
+
+pub fn save_user_rules_in(home: &Path, rules: &[Rule]) -> Result<PathBuf> {
+    let path = user_rules_path_in(home);
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -96,19 +116,36 @@ pub fn save_user_rules(rules: &[Rule]) -> Result<PathBuf> {
 
 /// 把单条规则写入 `rules.d/<id>.json`（一规则一文件，便于逐步添加/管理）
 pub fn save_dir_rule(rule: &Rule) -> Result<PathBuf> {
-    let dir = user_rules_dir();
+    save_dir_rule_in(&clean::thin_home(), rule)
+}
+
+pub fn save_dir_rule_in(home: &Path, rule: &Rule) -> Result<PathBuf> {
+    let dir = user_rules_dir_in(home);
     std::fs::create_dir_all(&dir)?;
     let path = dir.join(format!("{}.json", rule.id));
     std::fs::write(&path, serde_json::to_string_pretty(rule)?)?;
     Ok(path)
 }
 
-/// 新增/覆盖一条用户规则（按 id），返回写入的文件路径
+/// 新增/覆盖一条用户规则（按 id），返回写入的文件路径。
+///
+/// 默认写入 `rules.json`，并**清理同 id 的 `rules.d/<id>.json`**——否则
+/// `rules.d` 在加载顺序上会覆盖 `rules.json`，本次更新会静默失效。
 pub fn upsert_user_rule(rule: Rule) -> Result<PathBuf> {
-    let mut rules = load_user_rules()?;
+    upsert_user_rule_in(&clean::thin_home(), rule)
+}
+
+pub fn upsert_user_rule_in(home: &Path, rule: Rule) -> Result<PathBuf> {
+    let mut rules = load_user_rules_in(home)?;
     rules.retain(|r| r.id != rule.id);
-    rules.push(rule);
-    save_user_rules(&rules)
+    rules.push(rule.clone());
+    let saved = save_user_rules_in(home, &rules)?;
+    let dir_file = user_rules_dir_in(home).join(format!("{}.json", rule.id));
+    if dir_file.exists() {
+        std::fs::remove_file(&dir_file)
+            .with_context(|| format!("清理 rules.d 旧规则失败: {}", dir_file.display()))?;
+    }
+    Ok(saved)
 }
 
 /// 删除一条用户规则（`rules.json` 与 `rules.d/<id>.json`）；返回是否删除成功
@@ -153,14 +190,23 @@ fn base_rules() -> Result<Vec<Rule>> {
     }
 }
 
-/// 把规则展开成具体的候选路径
+/// 把规则展开成具体的候选路径。
+///
+/// 结果统一 `canonicalize`（解析 symlink，如 `/tmp → /private/tmp`）并去重，
+/// 保证后续嵌套去重与安全门前缀判断不会因路径写法不同而失效。
 pub fn expand_rule(rule: &Rule) -> Vec<PathBuf> {
     match &rule.matcher {
-        Matcher::Path { paths } => paths
-            .iter()
-            .filter_map(|p| fsutil::expand(p))
-            .filter(|p| p.exists())
-            .collect(),
+        Matcher::Path { paths } => {
+            let mut out: Vec<PathBuf> = paths
+                .iter()
+                .filter_map(|p| fsutil::expand(p))
+                .filter(|p| p.exists())
+                .map(|p| fsutil::canonicalize_or(&p))
+                .collect();
+            out.sort();
+            out.dedup();
+            out
+        }
         Matcher::FindDir {
             roots,
             dir_name,
@@ -171,10 +217,56 @@ pub fn expand_rule(rule: &Rule) -> Vec<PathBuf> {
                 .iter()
                 .filter_map(|r| fsutil::expand(r))
                 .filter(|r| r.is_dir())
+                .map(|r| fsutil::canonicalize_or(&r))
                 .collect();
-            fsutil::find_dirs(&roots, dir_name, require_sibling.as_deref(), *max_depth)
+            let mut found =
+                fsutil::find_dirs(&roots, dir_name, require_sibling.as_deref(), *max_depth);
+            found = found
+                .into_iter()
+                .map(|p| fsutil::canonicalize_or(&p))
+                .collect();
+            found.sort();
+            found.dedup();
+            found
         }
     }
+}
+
+/// 写盘前的规则安全预检。
+///
+/// - `path` 规则：目标不得是受保护路径 / 个人目录顶层 / 裸顶层根，
+///   否则会“整目录被搬走”。
+/// - `findDir` 规则：不允许在**没有 `requireSibling` 约束**的情况下按名字查找
+///   敏感目录（如 `Documents`、`Library`），避免误命中个人/系统目录。
+///
+/// 返回 `Err(原因)` 表示应拒绝写入。
+pub fn check_rule_safety(rule: &Rule) -> Result<(), String> {
+    match &rule.matcher {
+        Matcher::Path { paths } => {
+            for raw in paths {
+                let Some(p) = fsutil::expand(raw) else {
+                    continue;
+                };
+                if let Some(reason) = clean::static_protection_reason(&p) {
+                    return Err(format!("目标 {} 受保护（{}）", p.display(), reason));
+                }
+            }
+        }
+        Matcher::FindDir {
+            dir_name,
+            require_sibling,
+            ..
+        } => {
+            if require_sibling.is_none()
+                && let Some(what) = clean::is_sensitive_dir_name(dir_name)
+            {
+                return Err(format!(
+                    "按名字查找 {dir_name:?}（{what}）且未设置 requireSibling，可能误命中受保护目录"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -300,5 +392,123 @@ mod tests {
         assert_eq!(ids, vec!["a1", "b1"]);
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn upsert_removes_stale_rules_d_override() {
+        let base = std::env::temp_dir().join(format!("thin-upsert-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        let mut r = make_path_rule(
+            "dup".into(),
+            "旧".into(),
+            "/tmp/dup".into(),
+            Category::DevCache,
+            Risk::Safe,
+            true,
+            "x".into(),
+            "w".into(),
+            "c".into(),
+            "r".into(),
+        );
+        save_dir_rule_in(&base, &r).unwrap();
+        assert!(user_rules_dir_in(&base).join("dup.json").exists());
+
+        r.name = "新".into();
+        upsert_user_rule_in(&base, r).unwrap();
+
+        // rules.d 覆盖文件应被清理，加载到的是更新后的 rules.json
+        assert!(!user_rules_dir_in(&base).join("dup.json").exists());
+        let all = load_all_user_rules_in(&base).unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].name, "新");
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn expand_rule_canonicalizes_symlinks_and_dedupes() {
+        let base = std::env::temp_dir().join(format!("thin-canon-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let real = base.join("real");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+
+        // 同时指向真实路径与符号链接 → 规范化后应合并为一条
+        let base_rule = make_path_rule(
+            "x".into(),
+            "x".into(),
+            String::new(),
+            Category::DevCache,
+            Risk::Safe,
+            true,
+            "x".into(),
+            "w".into(),
+            "c".into(),
+            "r".into(),
+        );
+        let rule = Rule {
+            matcher: Matcher::Path {
+                paths: vec![
+                    link.to_string_lossy().into_owned(),
+                    real.to_string_lossy().into_owned(),
+                ],
+            },
+            ..base_rule
+        };
+        let got = expand_rule(&rule);
+        assert_eq!(got, vec![real.canonicalize().unwrap()]);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn check_rule_safety_blocks_dangerous_rules() {
+        // path 规则指向裸顶层根 → 拒绝
+        let r = make_path_rule(
+            "p".into(),
+            "p".into(),
+            "/Library/Logs".into(),
+            Category::Log,
+            Risk::Safe,
+            true,
+            "rm".into(),
+            "w".into(),
+            "c".into(),
+            "r".into(),
+        );
+        assert!(check_rule_safety(&r).is_err());
+
+        // findDir 无 requireSibling 且 dirName 敏感 → 拒绝
+        let mut r = make_path_rule(
+            "f".into(),
+            "f".into(),
+            String::new(),
+            Category::Other,
+            Risk::Confirm,
+            false,
+            "x".into(),
+            "w".into(),
+            "c".into(),
+            "r".into(),
+        );
+        r.matcher = Matcher::FindDir {
+            roots: vec!["~/Documents".into()],
+            dir_name: "Documents".into(),
+            require_sibling: None,
+            max_depth: Some(6),
+        };
+        assert!(check_rule_safety(&r).is_err());
+
+        // 加上 requireSibling 后放行
+        if let Matcher::FindDir {
+            require_sibling, ..
+        } = &mut r.matcher
+        {
+            *require_sibling = Some("Cargo.toml".into());
+        }
+        assert!(check_rule_safety(&r).is_ok());
     }
 }

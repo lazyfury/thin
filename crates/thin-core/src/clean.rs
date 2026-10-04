@@ -59,10 +59,10 @@ fn user_home() -> Option<PathBuf> {
 
 /// thin 的数据目录（隔离区/账本），支持 THIN_HOME 覆盖（便于测试）
 pub fn thin_home() -> PathBuf {
-    if let Ok(p) = std::env::var("THIN_HOME") {
-        if !p.is_empty() {
-            return PathBuf::from(p);
-        }
+    if let Ok(p) = std::env::var("THIN_HOME")
+        && !p.is_empty()
+    {
+        return PathBuf::from(p);
     }
     user_home()
         .map(|h| h.join(".thin"))
@@ -145,6 +145,8 @@ const BARE_ROOTS: &[&str] = &[
     "/Library/Logs",
     "/Volumes",
     "/opt",
+    "/opt/homebrew",
+    "/usr/local",
     "/Users",
     "/private",
     "/private/var",
@@ -192,13 +194,13 @@ pub fn protection_reason_in(path: &Path, ref_vol: Option<&Path>) -> Option<Strin
     // 注：静态校验不涉及卷，故这里单独判断，避免 discover 在任意卷上误报。
     if let Some(vol) = ref_vol {
         let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        if let (Some(a), Some(b)) = (volume_device(&canon), volume_device(vol)) {
-            if a != b {
-                return Some(format!(
-                    "位于不同卷（外接盘/其他挂载），不在隔离区所在卷 {}",
-                    vol.display()
-                ));
-            }
+        if let (Some(a), Some(b)) = (volume_device(&canon), volume_device(vol))
+            && a != b
+        {
+            return Some(format!(
+                "位于不同卷（外接盘/其他挂载），不在隔离区所在卷 {}",
+                vol.display()
+            ));
         }
     }
     None
@@ -225,10 +227,10 @@ pub fn static_protection_reason(path: &Path) -> Option<String> {
     if canon == Path::new("/") {
         return Some("根目录".into());
     }
-    if let Some(h) = &home {
-        if canon == *h {
-            return Some("整个用户主目录".into());
-        }
+    if let Some(h) = &home
+        && canon == *h
+    {
+        return Some("整个用户主目录".into());
     }
 
     // 用户隐私目录（始终保护，先于 allow 判断）
@@ -253,13 +255,22 @@ pub fn static_protection_reason(path: &Path) -> Option<String> {
     }
 
     // 其他用户主目录（/Users/<name> 本身）
-    if let Ok(rest) = canon.strip_prefix("/Users") {
-        if rest.components().count() == 1 {
-            return Some("用户主目录".into());
+    if let Ok(rest) = canon.strip_prefix("/Users")
+        && rest.components().count() == 1
+    {
+        return Some("用户主目录".into());
+    }
+
+    // 裸顶层根：即使其子项可清理，也绝不删除这些目录**本身**。
+    // 注意：必须在允许清单之前**独立**判断——否则 `/Library/Logs`、`/usr/local`
+    // 这些同时出现在 ALLOW_SUBTREES 里的裸根会被 `allowed` 绕过而整目录被搬走。
+    for s in BARE_ROOTS {
+        if canon == Path::new(s) {
+            return Some(format!("禁止删除顶层目录 {s}"));
         }
     }
 
-    // 拒绝子树 / 裸顶层根（允许清单内的可清理项例外）
+    // 拒绝子树（允许清单内的可重建缓存/日志例外，例如 /private/var/log）
     let allowed = ALLOW_SUBTREES.iter().any(|s| {
         let p = Path::new(s);
         canon == p || canon.starts_with(p)
@@ -271,23 +282,45 @@ pub fn static_protection_reason(path: &Path) -> Option<String> {
                 return Some(format!("受保护路径 {s}"));
             }
         }
-        for s in BARE_ROOTS {
-            if canon == Path::new(s) {
-                return Some(format!("禁止删除顶层目录 {s}"));
-            }
-        }
     }
 
     // 挂载点保护（路径自身是挂载点，与父目录设备号不同）
-    if let Some(parent) = canon.parent() {
-        if let (Ok(a), Ok(b)) = (std::fs::metadata(&canon), std::fs::metadata(parent)) {
-            use std::os::unix::fs::MetadataExt;
-            if a.dev() != b.dev() {
-                return Some("是挂载点".into());
-            }
+    if let Some(parent) = canon.parent()
+        && let (Ok(a), Ok(b)) = (std::fs::metadata(&canon), std::fs::metadata(parent))
+    {
+        use std::os::unix::fs::MetadataExt;
+        if a.dev() != b.dev() {
+            return Some("是挂载点".into());
         }
     }
     None
+}
+
+/// 敏感目录名（用于 `findDir` 规则预检）。
+///
+/// 这些名字的目录本身是裸顶层根或用户个人目录；按名字“发现并整体清理”它们
+/// 风险极高（例如 `dirName = "Documents"`）。返回一句人类可读的说明。
+pub fn is_sensitive_dir_name(name: &str) -> Option<&'static str> {
+    const SENSITIVE: &[(&str, &str)] = &[
+        ("Library", "系统/用户库目录"),
+        ("Documents", "用户文稿"),
+        ("Downloads", "下载目录"),
+        ("Desktop", "桌面"),
+        ("Movies", "影片"),
+        ("Music", "音乐"),
+        ("Pictures", "图片"),
+        ("Public", "公共目录"),
+        ("Applications", "应用程序目录"),
+        ("System", "系统目录"),
+        ("Users", "用户目录"),
+        ("private", "系统私有目录"),
+        ("var", "系统变量目录"),
+        ("etc", "系统配置目录"),
+        ("usr", "系统目录"),
+        ("opt", "系统目录"),
+        ("Volumes", "挂载卷目录"),
+    ];
+    SENSITIVE.iter().find(|(n, _)| *n == name).map(|(_, r)| *r)
 }
 
 /// 若路径受保护，返回原因（以用户主目录作为隔离区参考卷）
@@ -321,14 +354,14 @@ fn move_path(src: &Path, dst: &Path) -> Result<()> {
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
             // 跨文件系统：复制前先确认空间足够，再复制后删除
             let need = crate::fsutil::logical_size(src);
-            if let Some(avail) = available_bytes(dst) {
-                if avail < need {
-                    anyhow::bail!(
-                        "目标卷空间不足：需要 {}，可用 {}",
-                        crate::fmt::human(need),
-                        crate::fmt::human(avail)
-                    );
-                }
+            if let Some(avail) = available_bytes(dst)
+                && avail < need
+            {
+                anyhow::bail!(
+                    "目标卷空间不足：需要 {}，可用 {}",
+                    crate::fmt::human(need),
+                    crate::fmt::human(avail)
+                );
             }
             copy_recursive(src, dst)?;
             remove_path(src)?;
@@ -457,14 +490,12 @@ pub fn quarantine_into(home: &Path, items: &[CleanItem], dry_run: bool) -> Resul
             .unwrap_or_else(|| format!("item{i}"));
         let stored = payload.join(format!("{:04}-{}", i, sanitize(&base)));
 
-        if !dry_run {
-            if let Err(e) = move_path(&it.path, &stored) {
-                journal.skipped.push(SkippedItem {
-                    path: it.path.clone(),
-                    reason: describe_move_error(&e),
-                });
-                continue;
-            }
+        if !dry_run && let Err(e) = move_path(&it.path, &stored) {
+            journal.skipped.push(SkippedItem {
+                path: it.path.clone(),
+                reason: describe_move_error(&e),
+            });
+            continue;
         }
 
         journal.entries.push(JournalEntry {
@@ -538,7 +569,7 @@ pub fn list_journals_in(home: &Path) -> Result<Vec<Journal>> {
             out.push(j);
         }
     }
-    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    out.sort_by_key(|a| std::cmp::Reverse(a.created_at));
     Ok(out)
 }
 
@@ -598,20 +629,30 @@ pub fn purge_session_in(home: &Path, session: &str) -> Result<u64> {
     Ok(freed)
 }
 
+/// 早于 `days` 天的隔离会话（供 purge 预览与执行共用）
+pub fn sessions_older_than(days: u64) -> Result<Vec<Journal>> {
+    sessions_older_than_in(&thin_home(), days)
+}
+
+pub fn sessions_older_than_in(home: &Path, days: u64) -> Result<Vec<Journal>> {
+    let cutoff = now_secs().saturating_sub(days.saturating_mul(86_400));
+    Ok(list_journals_in(home)?
+        .into_iter()
+        .filter(|j| j.created_at < cutoff)
+        .collect())
+}
+
 /// 永久删除早于 `days` 天的隔离会话，返回 (会话数, 释放字节)
 pub fn purge_older_than(days: u64) -> Result<(usize, u64)> {
     purge_older_than_in(&thin_home(), days)
 }
 
 pub fn purge_older_than_in(home: &Path, days: u64) -> Result<(usize, u64)> {
-    let cutoff = now_secs().saturating_sub(days * 86_400);
     let mut count = 0;
     let mut freed = 0;
-    for j in list_journals_in(home)? {
-        if j.created_at < cutoff {
-            freed += purge_session_in(home, &j.session)?;
-            count += 1;
-        }
+    for j in sessions_older_than_in(home, days)? {
+        freed += purge_session_in(home, &j.session)?;
+        count += 1;
     }
     Ok((count, freed))
 }
@@ -638,6 +679,7 @@ mod tests {
                 recover: "重新生成".into(),
             },
             protected: false,
+            protected_reason: None,
         }
     }
 
@@ -654,6 +696,11 @@ mod tests {
         assert!(protection_reason(Path::new("/Library")).is_some());
         assert!(protection_reason(Path::new("/private/var")).is_some());
         assert!(protection_reason(Path::new("/usr")).is_some());
+        // 裸顶层根即使位于允许清单内，也不能删除目录本身；其子项仍可清理
+        assert!(protection_reason(Path::new("/Library/Logs")).is_some());
+        assert!(protection_reason(Path::new("/Library/Logs/DiagnosticReports")).is_none());
+        assert!(protection_reason(Path::new("/usr/local")).is_some());
+        assert!(protection_reason(Path::new("/usr/local/lib/foo")).is_none());
         // 个人目录顶层：整体不可清，但其内部具体缓存/产物允许
         assert!(protection_reason(&home.join("Documents")).is_some());
         assert!(protection_reason(&home.join("Downloads")).is_some());

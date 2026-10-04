@@ -109,9 +109,12 @@ pub struct CleanItem {
     pub size: u64,
     pub reclaim: String,
     pub explain: Explain,
-    /// 命中 `thin protect` 保护名单：展示但绝不清除、不计入可回收
+    /// 受保护（`thin protect` 保护名单或系统保护路径）：展示但绝不清除、不计入可回收
     #[serde(default)]
     pub protected: bool,
+    /// 受保护的原因（保护名单 / 系统保护路径）；`None` 表示未受保护
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_reason: Option<String>,
 }
 
 impl CleanItem {
@@ -133,6 +136,7 @@ impl CleanItem {
                 recover: "quarantine restore".to_string(),
             },
             protected: false,
+            protected_reason: None,
         }
     }
 }

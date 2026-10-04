@@ -14,7 +14,7 @@ pub fn run(path: PathBuf, limit: usize) {
     let home = std::env::var("HOME").unwrap_or_default();
 
     println!("\x1b[1m{}\x1b[0m", path.display());
-    println!("{:>10}  {}", "大小", "子项");
+    println!("{:>10}  子项", "大小");
     println!("{}", "-".repeat(70));
     for (p, size) in children.into_iter().take(limit) {
         let s = p.display().to_string();

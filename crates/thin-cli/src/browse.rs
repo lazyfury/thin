@@ -365,6 +365,7 @@ impl BrowseState {
                 recover: String::new(),
             }),
             protected: rec.protected,
+            protected_reason: None,
         };
         match clean::quarantine(&[item], false) {
             Ok(journal) if journal.entries.is_empty() => {

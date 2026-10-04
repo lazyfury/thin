@@ -106,7 +106,7 @@ pub fn analyze(root: &Path, min_size: u64, catalog: &[Rule]) -> Report {
             });
         }
     }
-    report.findings.sort_by(|a, b| b.size.cmp(&a.size));
+    report.findings.sort_by_key(|f| std::cmp::Reverse(f.size));
     report
 }
 

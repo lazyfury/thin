@@ -131,10 +131,10 @@ pub fn is_user_defined(id: &str) -> bool {
 
 /// 按 id 取预设：用户预设优先，其次内置默认
 pub fn get(id: &str) -> Option<Preset> {
-    if let Ok(list) = load() {
-        if let Some(p) = list.into_iter().find(|p| p.id == id) {
-            return Some(p);
-        }
+    if let Ok(list) = load()
+        && let Some(p) = list.into_iter().find(|p| p.id == id)
+    {
+        return Some(p);
     }
     if id == "default" {
         return Some(Preset::builtin_default());
@@ -195,6 +195,7 @@ mod tests {
                 recover: String::new(),
             },
             protected: false,
+            protected_reason: None,
         }
     }
 

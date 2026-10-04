@@ -109,7 +109,7 @@ pub fn list_apps() -> Vec<AppInfo> {
             }
         })
         .collect();
-    apps.sort_by(|a, b| b.total().cmp(&a.total()));
+    apps.sort_by_key(|a| std::cmp::Reverse(a.total()));
     apps
 }
 
@@ -238,10 +238,11 @@ fn name_tokens(name: &str, bundle_id: Option<&str>) -> Vec<String> {
     if let Some(b) = bundle_id {
         let bl = b.to_lowercase();
         v.push(bl.clone());
-        if let Some(last) = bl.rsplit('.').next() {
-            if last.len() >= 3 && !GENERIC_TOKENS.contains(&last) {
-                v.push(last.to_string());
-            }
+        if let Some(last) = bl.rsplit('.').next()
+            && last.len() >= 3
+            && !GENERIC_TOKENS.contains(&last)
+        {
+            v.push(last.to_string());
         }
         for (bid, hints) in APP_HINTS {
             if bid.eq_ignore_ascii_case(b) {
@@ -387,7 +388,7 @@ pub fn find_leftovers(name: &str, bundle_id: Option<&str>, app_path: &Path) -> V
             sudo,
         });
     }
-    out.sort_by(|a, b| b.size.cmp(&a.size));
+    out.sort_by_key(|a| std::cmp::Reverse(a.size));
     out
 }
 
@@ -405,10 +406,10 @@ pub fn pkg_receipt_ids(bundle_id: Option<&str>, name: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .filter(|id| {
             let l = id.to_lowercase();
-            if let Some(b) = bundle_id {
-                if l == b.to_lowercase() {
-                    return true;
-                }
+            if let Some(b) = bundle_id
+                && l == b.to_lowercase()
+            {
+                return true;
             }
             // 名称匹配需要足够长，避免泛词误报
             norm.len() >= 5 && l.replace(['.', '-', '_'], "").contains(&norm)

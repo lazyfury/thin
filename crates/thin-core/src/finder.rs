@@ -39,15 +39,15 @@ fn walk_files(roots: &[PathBuf], min_size: u64, progress: Option<&Progress>) -> 
             continue;
         }
         if root.is_file() {
-            if let Ok(m) = std::fs::metadata(root) {
-                if m.len() >= min_size {
-                    out.push(Found {
-                        path: root.clone(),
-                        size: m.len(),
-                        alloc: m.blocks().saturating_mul(512),
-                        inode: (m.dev(), m.ino()),
-                    });
-                }
+            if let Ok(m) = std::fs::metadata(root)
+                && m.len() >= min_size
+            {
+                out.push(Found {
+                    path: root.clone(),
+                    size: m.len(),
+                    alloc: m.blocks().saturating_mul(512),
+                    inode: (m.dev(), m.ino()),
+                });
             }
             continue;
         }
@@ -121,7 +121,7 @@ pub fn find_large_progress(
             size: f.alloc,
         })
         .collect();
-    files.sort_by(|a, b| b.size.cmp(&a.size));
+    files.sort_by_key(|a| std::cmp::Reverse(a.size));
     files.truncate(limit);
     files
 }
@@ -199,7 +199,7 @@ pub fn find_duplicates_progress(
         })
         .collect();
 
-    groups.sort_by(|a, b| b.wasted().cmp(&a.wasted()));
+    groups.sort_by_key(|a| std::cmp::Reverse(a.wasted()));
     groups.truncate(limit);
     groups
 }
@@ -246,12 +246,12 @@ mod tests {
         std::fs::write(base.join("b.bin"), &content).unwrap();
         std::fs::write(base.join("c.bin"), vec![9u8; 4096]).unwrap();
 
-        let groups = find_duplicates(&[base.clone()], 1, 100);
+        let groups = find_duplicates(std::slice::from_ref(&base), 1, 100);
         assert_eq!(groups.len(), 1, "应只有一组重复");
         assert_eq!(groups[0].paths.len(), 2);
         assert_eq!(groups[0].wasted(), 4096);
 
-        let large = find_large(&[base.clone()], 1, 10);
+        let large = find_large(std::slice::from_ref(&base), 1, 10);
         assert_eq!(large.len(), 3);
 
         let _ = std::fs::remove_dir_all(&base);
