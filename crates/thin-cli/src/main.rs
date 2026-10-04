@@ -41,9 +41,6 @@ enum Cmd {
     /// 浏览目录：列出子项并标注用途（学习向，只读）
     Ls(ls::LsArgs),
 
-    /// 交互式文件浏览：逐步下钻 + 用途标注（实验，只读）
-    Browse(browse::BrowseArgs),
-
     /// 交互式 TUI（浏览、勾选、移入隔离区）
     Tui(TuiArgs),
 
@@ -470,7 +467,6 @@ fn main() -> Result<()> {
         }
         Cmd::Tui(args) => cmd_tui(args)?,
         Cmd::Ls(args) => ls::run(args)?,
-        Cmd::Browse(args) => browse::run(args)?,
         Cmd::Rules(args) => cmd_rules(args)?,
         Cmd::Discover(args) => cmd_discover(args)?,
         Cmd::Clean(args) => cmd_clean(args)?,

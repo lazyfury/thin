@@ -1,28 +1,21 @@
-//! `thin browse [PATH]`：交互式文件浏览器（实验）。
+//! 文件浏览组件：主 TUI「浏览」标签页（键 7）。
 //!
 //! 一步步下钻，进入某目录才计算其直接子项的大小，并把能识别的目录标注用途。
-//! 只读：不触发任何清理。按 `?` 查看快捷键。
+//! 只读；`c` 可在确认后移入隔离区。按 `?` 查看快捷键。
 
 use anyhow::Result;
-use crossterm::{
-    event::{self, Event, KeyCode, KeyEventKind, KeyModifiers},
-    execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
-};
+use crossterm::event::KeyCode;
 use ratatui::{
-    Frame, Terminal,
-    backend::CrosstermBackend,
+    Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
 use std::collections::HashMap;
-use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use std::time::Duration;
 use thin_core::catalog::Safety;
 use thin_core::clean;
 use thin_core::fmt::human;
@@ -32,13 +25,6 @@ use thin_core::progress::{Progress, ProgressSnapshot};
 use thin_core::recognize::{Recognition, Recognizer, Source};
 
 use crate::treemap;
-
-#[derive(clap::Args)]
-pub struct BrowseArgs {
-    /// 起始目录
-    #[arg(default_value = "~")]
-    pub path: String,
-}
 
 /// 一行：子项 + 用途识别
 #[derive(Clone)]
@@ -101,8 +87,6 @@ pub struct BrowseState {
     tick: usize,
     status: Option<String>,
     status_at: usize,
-    /// 是否嵌入在主 TUI 标签页（影响页脚文案）
-    embedded: bool,
 }
 
 impl BrowseState {
@@ -129,7 +113,6 @@ impl BrowseState {
             tick: 0,
             status: None,
             status_at: 0,
-            embedded: false,
         };
         app.load();
         app
@@ -182,11 +165,6 @@ impl BrowseState {
                 }
             }
         }
-    }
-
-    /// 标记为嵌入模式（主 TUI 标签页）
-    pub fn set_embedded(&mut self) {
-        self.embedded = true;
     }
 
     pub fn tick(&mut self) {
@@ -485,82 +463,19 @@ fn spawn_load(dir: PathBuf, generation: u64) -> Loader {
     }
 }
 
-pub fn run(args: BrowseArgs) -> Result<()> {
-    let root = fsutil::expand(&args.path).unwrap_or_else(|| PathBuf::from(&args.path));
-    if !std::io::stdout().is_terminal() {
-        // 非 TTY：退化为只读一层列表
-        return crate::ls::run(crate::ls::LsArgs {
-            path: args.path,
-            depth: 1,
-            all: false,
-            long: true,
-            json: false,
-        });
-    }
-
-    enable_raw_mode()?;
-    let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let mut state = BrowseState::new(root);
-    let res = event_loop(&mut terminal, &mut state);
-
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    terminal.show_cursor()?;
-    res
-}
-
-fn event_loop(
-    terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-    state: &mut BrowseState,
-) -> Result<()> {
-    let mut quit = false;
-    while !quit {
-        state.poll();
-        state.tick();
-        terminal.draw(|f| state.render(f, f.area()))?;
-        if event::poll(Duration::from_millis(80))? {
-            if let Event::Key(key) = event::read()? {
-                if key.kind == KeyEventKind::Press {
-                    if key.modifiers.contains(KeyModifiers::CONTROL)
-                        && matches!(key.code, KeyCode::Char('c'))
-                    {
-                        quit = true;
-                    } else if key.modifiers.is_empty() && state.on_key(key.code) {
-                        quit = true;
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
 // ---------------------------------------------------------------------------
 // 绘制
 // ---------------------------------------------------------------------------
 
-/// 在给定区域内绘制浏览界面（独立运行或嵌入 TUI 标签页均可）
+/// 在给定区域内绘制浏览界面（主 TUI 标签页；当前路径显示在列表块标题）
 pub fn render(frame: &mut Frame, state: &mut BrowseState, area: Rect) {
-    // 内嵌到 TUI 标签页时砍掉自带的标题行（面包屑），当前路径改放到列表块标题
-    let header_h = if state.embedded { 0 } else { 2 };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_h),
-            Constraint::Min(6),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(6), Constraint::Length(1)])
         .split(area);
 
-    if !state.embedded {
-        render_header(frame, state, chunks[0]);
-    }
-    render_body(frame, state, chunks[1]);
-    render_footer(frame, state, chunks[2]);
+    render_body(frame, state, chunks[0]);
+    render_footer(frame, state, chunks[1]);
 
     if state.help {
         render_help(frame, area);
@@ -571,37 +486,6 @@ pub fn render(frame: &mut Frame, state: &mut BrowseState, area: Rect) {
     if state.bookmark_pick {
         render_bookmarks(frame, state);
     }
-}
-
-impl BrowseState {
-    /// 在给定区域绘制（方法形式，便于 `terminal.draw`）
-    pub fn render(&mut self, frame: &mut Frame, area: Rect) {
-        render(frame, self, area);
-    }
-}
-
-fn render_header(frame: &mut Frame, app: &BrowseState, area: Rect) {
-    let home = home_prefix();
-    let crumbs: Vec<Span> = breadcrumb(&app.stack, &home)
-        .into_iter()
-        .flat_map(|(name, is_last)| {
-            let color = if is_last {
-                Color::White
-            } else {
-                Color::DarkGray
-            };
-            vec![
-                Span::styled(name, Style::default().fg(color)),
-                Span::styled(" › ", Style::default().fg(Color::DarkGray)),
-            ]
-        })
-        .collect();
-    let mut line = vec![Span::styled(
-        " 磁盘浏览 ",
-        Style::default().add_modifier(Modifier::BOLD),
-    )];
-    line.extend(crumbs);
-    frame.render_widget(Paragraph::new(Line::from(line)), area);
 }
 
 fn render_body(frame: &mut Frame, app: &mut BrowseState, area: Rect) {
@@ -704,11 +588,7 @@ fn render_list(frame: &mut Frame, app: &mut BrowseState, area: Rect) {
         app.sort.label(),
         if app.show_hidden { " · 含隐藏" } else { "" }
     );
-    let title = if app.embedded {
-        format!("{}  ·  {meta}", app.cwd().display())
-    } else {
-        meta
-    };
+    let title = format!("{}  ·  {meta}", app.cwd().display());
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
@@ -795,11 +675,8 @@ fn render_footer(frame: &mut Frame, app: &BrowseState, area: Rect) {
         s.clone()
     } else if app.loader.is_some() {
         "加载中…  Esc 取消".into()
-    } else if app.embedded {
-        " ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · s 排序 · t 占用图 · b 书签 · c 清理 · q 返回".into()
     } else {
-        " ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · s 排序 · t 占用图 · b 书签 · c 清理 · ? 帮助 · q 退出"
-            .into()
+        " ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · s 排序 · t 占用图 · b 书签 · c 清理 · q 返回".into()
     };
     frame.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
@@ -947,23 +824,6 @@ fn render_help(frame: &mut Frame, area: Rect) {
 // ---------------------------------------------------------------------------
 // 小工具
 // ---------------------------------------------------------------------------
-
-fn breadcrumb(stack: &[PathBuf], home: &str) -> Vec<(String, bool)> {
-    stack
-        .iter()
-        .enumerate()
-        .map(|(i, p)| {
-            let name = if i == 0 {
-                shorten(p, home)
-            } else {
-                p.file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_else(|| p.display().to_string())
-            };
-            (name, i + 1 == stack.len())
-        })
-        .collect()
-}
 
 fn is_hidden(path: &Path) -> bool {
     path.file_name()
@@ -1136,14 +996,6 @@ mod tests {
         assert!(!is_hidden(Path::new("/a/bin")));
         assert_eq!(truncate("abcdef", 4), "abc…");
         assert_eq!(truncate("ab", 4), "ab");
-    }
-
-    #[test]
-    fn breadcrumb_marks_last() {
-        let stack = vec![PathBuf::from("/Users/x"), PathBuf::from("/Users/x/Library")];
-        let crumbs = breadcrumb(&stack, "/Users/x");
-        assert_eq!(crumbs[0], ("~".to_string(), false));
-        assert_eq!(crumbs[1], ("Library".to_string(), true));
     }
 
     #[test]

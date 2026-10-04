@@ -14,7 +14,6 @@ thin scan [--all] [--json]     # 扫描已知可清理项
 thin discover [ROOT] [--json]  # 找出「未被规则覆盖」的大目录
 thin top [ROOT]                # 某目录下最大子项
 thin ls [PATH] [--depth N] [--long] [--all] [--json]  # 浏览并标注用途（学习向，只读）
-thin browse [PATH]             # 交互式浏览：逐步下钻 + 用途标注（按 c 可在确认后清理）
 thin rules [list|path]         # 规则列表 / 用户规则文件路径
 thin rules add ...             # 新增规则（agent 入口，--dir 写 rules.d/<id>.json）
 thin rules remove <id>         # 删除用户规则

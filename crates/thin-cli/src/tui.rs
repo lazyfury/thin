@@ -184,9 +184,7 @@ impl App {
             }
             6 => {
                 if self.browse.is_none() {
-                    let mut b = BrowseState::new(root);
-                    b.set_embedded();
-                    self.browse = Some(b);
+                    self.browse = Some(BrowseState::new(root));
                 }
             }
             _ => {}
