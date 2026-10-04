@@ -71,6 +71,22 @@ impl Preset {
             ..Preset::builtin_default()
         }
     }
+
+    /// 面向开发者的内置预设：只清 `dev-cache`、safe + confirm、且仅可再生。
+    ///
+    /// 常配合 `--root` 使用：`thin clean --preset dev --root .` 只清当前项目产物。
+    pub fn builtin_dev() -> Self {
+        Preset {
+            id: "dev".to_string(),
+            name: "开发缓存定向清理".to_string(),
+            categories: vec![Category::DevCache],
+            risks: vec![Risk::Safe, Risk::Confirm],
+            regenerable_only: true,
+            include_ids: Vec::new(),
+            exclude_ids: Vec::new(),
+            purge_after_days: 7,
+        }
+    }
 }
 
 /// 用户预设文件路径
@@ -138,6 +154,9 @@ pub fn get(id: &str) -> Option<Preset> {
     }
     if id == "default" {
         return Some(Preset::builtin_default());
+    }
+    if id == "dev" {
+        return Some(Preset::builtin_dev());
     }
     None
 }
@@ -254,5 +273,33 @@ mod tests {
             &p,
             &item("keep", Category::AppCache, Risk::Safe, true)
         ));
+    }
+
+    #[test]
+    fn builtin_dev_is_dev_cache_safe_and_confirm() {
+        let p = Preset::builtin_dev();
+        assert_eq!(p.id, "dev");
+        assert_eq!(p.categories, vec![Category::DevCache]);
+        assert_eq!(p.risks, vec![Risk::Safe, Risk::Confirm]);
+        assert!(p.regenerable_only);
+        assert!(matches(
+            &p,
+            &item("a", Category::DevCache, Risk::Safe, true)
+        ));
+        assert!(matches(
+            &p,
+            &item("b", Category::DevCache, Risk::Confirm, true)
+        ));
+        // 不可再生不选
+        assert!(!matches(
+            &p,
+            &item("c", Category::DevCache, Risk::Safe, false)
+        ));
+        // 非 dev-cache 不选
+        assert!(!matches(
+            &p,
+            &item("d", Category::AppCache, Risk::Safe, true)
+        ));
+        assert!(get("dev").is_some());
     }
 }

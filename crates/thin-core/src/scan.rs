@@ -12,6 +12,43 @@ pub fn scan(rules: &[Rule], include_destructive: bool, min_size: u64) -> Vec<Cle
     )
 }
 
+/// 定向扫描：只保留位于 `scope` 之下的命中项（`scope=None` 等价于全量）。
+///
+/// 与 [`scope_items`] 的区别：这里把 `scope` 传入规则展开，使 `findDir` 规则
+/// 会去 `scope` 下找 `target/` 等产物，而不只是事后过滤。
+pub fn scan_scoped(
+    rules: &[Rule],
+    include_destructive: bool,
+    min_size: u64,
+    scope: Option<&std::path::Path>,
+) -> Vec<CleanItem> {
+    scan_progress_scoped(
+        rules,
+        include_destructive,
+        min_size,
+        scope,
+        &crate::progress::Progress::new(),
+    )
+}
+
+/// 按根目录过滤清理项：仅保留 `scope` 之下（含自身）的项。
+///
+/// 用于 `--root` 定向清理（如只清当前项目）：先全量扫描，再按规范化路径收窄，
+/// 避免为「项目作用域」另造一套 matcher。`scope=None` 原样返回。
+pub fn scope_items(items: Vec<CleanItem>, scope: Option<&std::path::Path>) -> Vec<CleanItem> {
+    let Some(root) = scope else {
+        return items;
+    };
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    items
+        .into_iter()
+        .filter(|it| {
+            let path = std::fs::canonicalize(&it.path).unwrap_or_else(|_| it.path.clone());
+            path == root || path.starts_with(&root)
+        })
+        .collect()
+}
+
 /// 带进度上报的扫描
 pub fn scan_progress(
     rules: &[Rule],
@@ -19,12 +56,26 @@ pub fn scan_progress(
     min_size: u64,
     progress: &crate::progress::Progress,
 ) -> Vec<CleanItem> {
+    scan_progress_scoped(rules, include_destructive, min_size, None, progress)
+}
+
+/// 带进度上报 + 作用域（`--root`）的扫描。
+///
+/// `scope=Some(root)` 时：`findDir` 规则在 `root` 下查找，`path` 规则命中项随后
+/// 被裁到 `root` 之内。两者结合使 `--root .` 成为真正的「只清这个项目」。
+pub fn scan_progress_scoped(
+    rules: &[Rule],
+    include_destructive: bool,
+    min_size: u64,
+    scope: Option<&std::path::Path>,
+    progress: &crate::progress::Progress,
+) -> Vec<CleanItem> {
     progress.set_label("扫描规则");
     progress.set_total(rules.len() as u64);
     let per_rule: Vec<Vec<CleanItem>> = rules
         .par_iter()
         .map(|rule| {
-            let paths = rules::expand_rule(rule);
+            let paths = rules::expand_rule_scoped(rule, scope);
             let out: Vec<CleanItem> = paths
                 .into_iter()
                 .map(|path| {
@@ -54,6 +105,10 @@ pub fn scan_progress(
     let mut items: Vec<CleanItem> = per_rule.into_iter().flatten().collect();
     if !include_destructive {
         items.retain(|i| i.risk != Risk::Destructive);
+    }
+    // 作用域收窄：只保留位于 `--root` 之下的项
+    if scope.is_some() {
+        items = scope_items(items, scope);
     }
     // 标注保护：展示但不清除、不计入可回收。
     // ① 运行期 `thin protect` 名单；② 静态安全门（受保护路径 / 个人目录顶层 /
@@ -210,6 +265,21 @@ mod tests {
             protected: false,
             protected_reason: None,
         }
+    }
+
+    #[test]
+    fn scope_items_keeps_only_under_root() {
+        let items = vec![
+            item("/a/proj/target", 10, Risk::Safe, false),
+            item("/a/other/target", 10, Risk::Safe, false),
+            item("/a/proj", 10, Risk::Safe, false),
+        ];
+        let scoped = scope_items(items, Some(std::path::Path::new("/a/proj")));
+        let paths: Vec<String> = scoped
+            .iter()
+            .map(|i| i.path.display().to_string())
+            .collect();
+        assert_eq!(paths, vec!["/a/proj/target", "/a/proj"]);
     }
 
     #[test]

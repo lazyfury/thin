@@ -10,7 +10,7 @@
 
 ```bash
 thin probe                     # 磁盘概览（容量/卷/快照/外接盘）
-thin scan [--all] [--json]     # 扫描已知可清理项
+thin scan [--all] [--json] [--preset P] [--root DIR]  # 扫描已知可清理项（可限定预设/目录）
 thin discover [ROOT] [--json]  # 找出「未被规则覆盖」的大目录
 thin top [ROOT]                # 某目录下最大子项
 thin ls [PATH] [--depth N] [--long] [--all] [--json]  # 浏览并标注用途（学习向，只读）
@@ -18,8 +18,10 @@ thin rules [list|path]         # 规则列表 / 用户规则文件路径
 thin rules add ...             # 新增规则（agent 入口，--dir 写 rules.d/<id>.json）
 thin rules remove <id>         # 删除用户规则
 thin rules export [--new]      # 导出用户规则，便于并入内置 default.json
-thin clean [--apply] [--json]  # 清理（默认 dry-run；--json 输出 approved/skipped 供 agent 消费）
-thin preset list|add|remove    # 清理预设（定时任务只执行用户预设）
+thin clean [--apply] [--json] [--preset P] [--root DIR]  # 清理（默认 dry-run；--json 输出 approved/skipped 供 agent 消费）
+thin plan [--preset P] [--root DIR]  # 只读生成计划 JSON（agent 两阶段契约的第一阶段）
+thin apply --plan <file|-> [--yes]   # 执行已审阅的计划（再过一次安全门）
+thin preset list|add|remove    # 清理预设（内置 default / dev；定时任务只执行用户预设）
 thin protect add|list|remove   # 保护名单：路径及其子目录永不清理（保护在研项目的 target/ 等）
 thin history [--limit N] [--json] [--reconcile]  # 清理历史（--reconcile 回填隔离区遗漏记录）
 thin schedule install|status|run|uninstall   # 定时任务（launchd）
@@ -149,6 +151,28 @@ thin protect remove .     # 解除
 ```
 
 保护是运行期名单（`~/.thin/protected.json`），不会修改或删除规则；显式 `clean --id` 也无法绕过。
+
+---
+
+### 定向清理：开发者与 agent
+
+两个正交维度：**清什么**（`--preset`）× **在哪清**（`--root`）。
+
+```bash
+# 开发者：只清当前项目里的 target/、node_modules/ 等，不动全局缓存
+thin scan  --preset dev --root .
+thin clean --preset dev --root .            # dry-run
+thin clean --preset dev --root . --apply
+
+# agent：两阶段契约，把「扫描 + 决策 + 执行」拆开
+thin plan --preset dev --root . > plan.json   # 只读，输出 approved/skipped/approvedBytes
+thin apply --plan plan.json --yes             # 原样执行；会再次过同一安全门
+```
+
+- `--root` 会让 `findDir` 规则改到该目录下查找，所以任意位置的项目都能命中，
+  且 path 规则只保留位于该目录下的项。`--root` 必须是真实存在的目录。
+- `--preset dev` 内置：只清 `dev-cache`、`safe`+`confirm`、且仅可再生。
+- agent 不要用 `--apply --yes` 裸跑；用 `plan` → 审阅 → `apply --plan`，过期计划也不会误删。
 
 ## 3. 验证与清理
 

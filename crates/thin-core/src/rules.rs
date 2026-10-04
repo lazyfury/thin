@@ -195,6 +195,15 @@ fn base_rules() -> Result<Vec<Rule>> {
 /// 结果统一 `canonicalize`（解析 symlink，如 `/tmp → /private/tmp`）并去重，
 /// 保证后续嵌套去重与安全门前缀判断不会因路径写法不同而失效。
 pub fn expand_rule(rule: &Rule) -> Vec<PathBuf> {
+    expand_rule_scoped(rule, None)
+}
+
+/// 展开规则的命中路径。
+///
+/// `scope=Some(root)` 时，`findDir` 规则改为在 `root` 下查找，使 `--root .` 能发现
+/// 任意位置项目里的 `target/`、`node_modules/` 等产物（否则只会扫内置的 `~/Documents` 等）。
+/// `path` 规则保持原样，随后由 `scan` 的作用域过滤裁掉不属于该 root 的项。
+pub fn expand_rule_scoped(rule: &Rule, scope: Option<&Path>) -> Vec<PathBuf> {
     match &rule.matcher {
         Matcher::Path { paths } => {
             let mut out: Vec<PathBuf> = paths
@@ -213,9 +222,14 @@ pub fn expand_rule(rule: &Rule) -> Vec<PathBuf> {
             require_sibling,
             max_depth,
         } => {
+            // 指定作用域时，只在该根目录下查找
+            let roots: Vec<PathBuf> = if let Some(root) = scope {
+                vec![root.to_path_buf()]
+            } else {
+                roots.iter().filter_map(|r| fsutil::expand(r)).collect()
+            };
             let roots: Vec<PathBuf> = roots
-                .iter()
-                .filter_map(|r| fsutil::expand(r))
+                .into_iter()
                 .filter(|r| r.is_dir())
                 .map(|r| fsutil::canonicalize_or(&r))
                 .collect();
@@ -510,5 +524,41 @@ mod tests {
             *require_sibling = Some("Cargo.toml".into());
         }
         assert!(check_rule_safety(&r).is_ok());
+    }
+
+    #[test]
+    fn expand_rule_scoped_uses_scope_as_find_dir_root() {
+        let base = std::env::temp_dir().join(format!("thin-scope-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let proj = base.join("proj");
+        std::fs::create_dir_all(proj.join("target")).unwrap();
+        std::fs::write(proj.join("Cargo.toml"), b"").unwrap();
+
+        let mut r = make_path_rule(
+            "r".into(),
+            "r".into(),
+            String::new(),
+            Category::DevCache,
+            Risk::Safe,
+            true,
+            "cargo clean".into(),
+            "w".into(),
+            "c".into(),
+            "r".into(),
+        );
+        r.matcher = Matcher::FindDir {
+            roots: vec!["~/thin-marker-does-not-exist".into()],
+            dir_name: "target".into(),
+            require_sibling: Some("Cargo.toml".into()),
+            max_depth: Some(4),
+        };
+        // 无 scope：规则自身 roots 不存在 → 空
+        assert!(expand_rule(&r).is_empty());
+        // 有 scope：在 scope 下查找 → 命中 target
+        let found = expand_rule_scoped(&r, Some(&proj));
+        let want = std::fs::canonicalize(proj.join("target")).unwrap();
+        assert_eq!(found, vec![want]);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

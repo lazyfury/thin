@@ -3,15 +3,7 @@
 //! 采用二分 treemap（binary treemap）：按体积把条目递归二分，沿较长边切分。
 //! 比 slice-and-dice 更方正，实现也足够简单稳健。
 
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::{Color, Style},
-    widgets::{Block, Borders},
-};
-use thin_core::fmt::human;
-
-use crate::text;
+use ratatui::layout::Rect;
 
 /// 计算矩形划分，返回 (矩形, 原索引)，按体积从大到小填充
 pub fn layout(rect: Rect, values: &[u64]) -> Vec<(Rect, usize)> {
@@ -86,45 +78,6 @@ fn split(rect: Rect, items: &[(u64, usize)], out: &mut Vec<(Rect, usize)>) {
         split(top, a, out);
         split(bottom, b, out);
     }
-}
-
-const PALETTE: [Color; 8] = [
-    Color::Cyan,
-    Color::Green,
-    Color::Yellow,
-    Color::Magenta,
-    Color::Blue,
-    Color::Red,
-    Color::LightGreen,
-    Color::LightMagenta,
-];
-
-/// 渲染 treemap。`entries` 为 (标签, 体积)。
-pub fn render(frame: &mut Frame, area: Rect, entries: &[(String, u64)]) {
-    if entries.is_empty() {
-        return;
-    }
-    let values: Vec<u64> = entries.iter().map(|(_, v)| *v).collect();
-    for (rect, idx) in layout(area, &values) {
-        let (label, size) = &entries[idx];
-        let color = PALETTE[idx % PALETTE.len()];
-        if rect.width >= 6 && rect.height >= 3 {
-            let title = format!("{} {}", label, human(*size));
-            let title = truncate(&title, rect.width.saturating_sub(2) as usize);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(color))
-                .title(title);
-            frame.render_widget(block, rect);
-        } else if rect.width >= 2 && rect.height >= 1 {
-            let block = Block::default().style(Style::default().bg(color));
-            frame.render_widget(block, rect);
-        }
-    }
-}
-
-fn truncate(s: &str, width: usize) -> String {
-    text::truncate(s, width)
 }
 
 #[cfg(test)]

@@ -56,6 +56,12 @@ enum Cmd {
     /// 清理：默认 dry-run 预览；--apply 移入隔离区（可恢复）
     Clean(CleanArgs),
 
+    /// 生成清理计划（只读 JSON，供 agent / 审阅后 apply）
+    Plan(PlanArgs),
+
+    /// 执行已审阅的清理计划（--plan 文件或 stdin）
+    Apply(ApplyArgs),
+
     /// 管理隔离区：列出 / 恢复 / 永久删除
     Quarantine(QuarantineArgs),
 
@@ -97,6 +103,14 @@ struct ScanArgs {
     /// 最小体积过滤，如 100MB / 1G
     #[arg(long, default_value = "1MB")]
     min: String,
+
+    /// 按预设筛选（见 thin preset list；如 dev）
+    #[arg(long)]
+    preset: Option<String>,
+
+    /// 只统计指定根目录之下的项（定向清理，如 . 表示当前项目）
+    #[arg(long)]
+    root: Option<String>,
 
     /// 显示指定规则的详细说明（可多次）
     #[arg(long = "detail")]
@@ -303,13 +317,47 @@ struct CleanArgs {
     #[arg(long = "id")]
     ids: Vec<String>,
 
-    /// 按预设筛选清理项（见 thin preset list）
+    /// 按预设筛选清理项（见 thin preset list；如 dev）
     #[arg(long)]
     preset: Option<String>,
+
+    /// 只处理指定根目录之下的项（定向清理，如 . 表示当前项目）
+    #[arg(long)]
+    root: Option<String>,
 
     /// 输出 JSON：dry-run 输出清理计划；--apply 输出账本（需配合 --yes）
     #[arg(long)]
     json: bool,
+}
+
+#[derive(clap::Args)]
+struct PlanArgs {
+    /// 按预设筛选（见 thin preset list；如 dev）
+    #[arg(long)]
+    preset: Option<String>,
+
+    /// 只处理指定根目录之下的项（定向清理，如 . 表示当前项目）
+    #[arg(long)]
+    root: Option<String>,
+
+    /// 连同「需确认」项一起纳入计划（默认只含「安全」项）
+    #[arg(long)]
+    all: bool,
+
+    /// 只纳入指定规则 id（可多次）
+    #[arg(long = "id")]
+    ids: Vec<String>,
+}
+
+#[derive(clap::Args)]
+struct ApplyArgs {
+    /// 要执行的计划 JSON：文件路径，或 `-` 从 stdin 读取（由 `thin plan` 生成）
+    #[arg(long)]
+    plan: String,
+
+    /// 跳过确认（计划会再次过安全门；仍建议先看 thin plan 输出）
+    #[arg(long)]
+    yes: bool,
 }
 
 #[derive(clap::Args)]
@@ -480,6 +528,8 @@ fn main() -> Result<()> {
         Cmd::Rules(args) => cmd_rules(args)?,
         Cmd::Discover(args) => cmd_discover(args)?,
         Cmd::Clean(args) => cmd_clean(args)?,
+        Cmd::Plan(args) => cmd_plan(args)?,
+        Cmd::Apply(args) => cmd_apply(args)?,
         Cmd::Quarantine(args) => cmd_quarantine(args)?,
         Cmd::Large(args) => cmd_large(args)?,
         Cmd::Dupes(args) => cmd_dupes(args)?,
@@ -509,7 +559,12 @@ fn default_entry() -> Result<()> {
 fn cmd_scan(args: ScanArgs) -> Result<()> {
     let min = parse_size_arg(&args.min)?;
     let catalog = rules::load()?;
-    let items = scan::scan(&catalog, args.all, min);
+    let root = args.root.as_deref().map(expand_root);
+    let mut items = scan::scan_scoped(&catalog, args.all, min, root.as_deref());
+    if let Some(pid) = &args.preset {
+        let p = preset::get(pid).ok_or_else(|| anyhow!("未找到预设 {pid}（thin preset list）"))?;
+        items.retain(|it| preset::matches(&p, it));
+    }
     let accounted = scan::accounted_bytes(&items);
     let volume = probe::statfs(&std::env::var("HOME").unwrap_or_else(|_| "/".into()));
 
@@ -840,29 +895,53 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
 /// 按参数筛选清理项
 fn select_items(args: &CleanArgs) -> Result<Vec<thin_core::CleanItem>> {
     let catalog = rules::load()?;
-    let items = scan::scan(&catalog, true, 1_048_576);
+    let root = args.root.as_deref().map(expand_root);
+    let items = scan::scan_scoped(&catalog, true, 1_048_576, root.as_deref());
+    select_scoped(
+        items,
+        args.preset.as_deref(),
+        &args.ids,
+        args.all,
+        args.root.as_deref(),
+    )
+}
 
+/// 统一的清理项筛选：预设 / 规则 id / 风险 / 根目录作用域。
+///
+/// `root` 是「定向清理」的关键：只保留指定目录（含子目录）下的项。
+fn select_scoped(
+    items: Vec<thin_core::CleanItem>,
+    preset_id: Option<&str>,
+    ids: &[String],
+    all: bool,
+    root: Option<&str>,
+) -> Result<Vec<thin_core::CleanItem>> {
     // 预设优先：只处理预设命中的项
-    if let Some(pid) = &args.preset {
+    let selected = if let Some(pid) = preset_id {
         let p = preset::get(pid).ok_or_else(|| anyhow!("未找到预设 {pid}（thin preset list）"))?;
-        return Ok(preset::select(&p, &items));
-    }
+        preset::select(&p, &items)
+    } else {
+        let selected: Vec<thin_core::CleanItem> = items
+            .into_iter()
+            .filter(|it| {
+                if !ids.is_empty() {
+                    return ids.contains(&it.rule_id);
+                }
+                match it.risk {
+                    Risk::Safe => true,
+                    Risk::Confirm => all,
+                    Risk::Destructive => false,
+                }
+            })
+            .collect();
+        // 只处理最顶层项：避免父目录与其子目录重复计数、重复移动
+        scan::top_level(&selected)
+    };
 
-    let selected: Vec<thin_core::CleanItem> = items
-        .into_iter()
-        .filter(|it| {
-            if !args.ids.is_empty() {
-                return args.ids.contains(&it.rule_id);
-            }
-            match it.risk {
-                Risk::Safe => true,
-                Risk::Confirm => args.all,
-                Risk::Destructive => false,
-            }
-        })
-        .collect();
-    // 只处理最顶层项：避免父目录与其子目录重复计数、重复移动
-    Ok(scan::top_level(&selected))
+    if let Some(root) = root {
+        return Ok(scan::scope_items(selected, Some(&expand_root(root))));
+    }
+    Ok(selected)
 }
 
 fn print_plan(plan: &clean::Plan) {
@@ -892,6 +971,93 @@ fn print_plan(plan: &clean::Plan) {
             println!("  - {}：{}", shorten(&s.path), s.reason);
         }
     }
+}
+
+/// `thin plan`：生成清理计划（只读 JSON）。
+///
+/// 这是给 agent / 脚本的两阶段契约的「第一阶段」：agent 先拿到计划，审阅/决策后
+/// 再用 `thin apply --plan` 原样执行。计划中的项会带在 `approved` 里，
+/// 执行时会再次过同一安全门，所以计划过期也不会误删。
+fn cmd_plan(args: PlanArgs) -> Result<()> {
+    let catalog = rules::load()?;
+    let root = args.root.as_deref().map(expand_root);
+    let items = scan::scan_scoped(&catalog, true, 1_048_576, root.as_deref());
+    let selected = select_scoped(
+        items,
+        args.preset.as_deref(),
+        &args.ids,
+        args.all,
+        args.root.as_deref(),
+    )?;
+    let plan = clean::plan(&selected);
+    let out = serde_json::json!({
+        "version": 1,
+        "preset": args.preset,
+        "root": args.root,
+        "approvedBytes": plan.approved_bytes(),
+        "approved": &plan.approved,
+        "skipped": &plan.skipped,
+    });
+    println!("{}", serde_json::to_string_pretty(&out)?);
+    Ok(())
+}
+
+/// `thin apply --plan <file|->`：执行已审阅的计划。
+fn cmd_apply(args: ApplyArgs) -> Result<()> {
+    let raw = if args.plan == "-" {
+        use std::io::Read;
+        let mut s = String::new();
+        std::io::stdin().read_to_string(&mut s)?;
+        s
+    } else {
+        std::fs::read_to_string(&args.plan)
+            .with_context(|| format!("读取计划失败: {}", args.plan))?
+    };
+    let parsed: serde_json::Value =
+        serde_json::from_str(&raw).context("计划不是合法 JSON（应由 thin plan 生成）")?;
+    let approved = parsed
+        .get("approved")
+        .cloned()
+        .ok_or_else(|| anyhow!("计划缺少 approved 字段"))?;
+    let items: Vec<CleanItem> =
+        serde_json::from_value(approved).context("计划 approved 字段解析失败")?;
+    if items.is_empty() {
+        println!("计划中没有可执行项。");
+        return Ok(());
+    }
+
+    // 计划可能已过期：用当前安全门重新校验，只执行仍能通过的项
+    let plan = clean::plan(&items);
+    if plan.approved.is_empty() {
+        println!("计划中的项已全部无法通过当前安全门：");
+        for s in &plan.skipped {
+            println!("  - {}：{}", shorten(&s.path), s.reason);
+        }
+        return Ok(());
+    }
+
+    if !args.yes
+        && !confirm(&format!(
+            "执行计划：将 {} 项移入隔离区？",
+            plan.approved.len()
+        ))?
+    {
+        println!("已取消。");
+        return Ok(());
+    }
+
+    let journal = clean::quarantine(&items, false)?;
+    print_journal(&journal);
+    record_history(
+        "apply",
+        None,
+        items.len(),
+        plan.approved.len(),
+        (0, 0),
+        Some(&journal),
+    );
+    warn_snapshots();
+    Ok(())
 }
 
 fn cmd_protect(args: ProtectArgs) -> Result<()> {
@@ -1622,6 +1788,7 @@ fn cmd_preset(args: PresetArgs) -> Result<()> {
             );
             println!("{}", "-".repeat(84));
             print_preset_row(&preset::Preset::builtin_default(), "内置");
+            print_preset_row(&preset::Preset::builtin_dev(), "内置");
             for p in preset::load()? {
                 print_preset_row(&p, "用户");
             }

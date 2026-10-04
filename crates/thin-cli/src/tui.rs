@@ -17,35 +17,27 @@ use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 use thin_core::apps::AppInfo;
-use thin_core::finder::{DupeGroup, LargeFile};
 use thin_core::fmt::human;
 use thin_core::model::{CleanItem, Risk};
 use thin_core::progress::Progress;
-use thin_core::{apps, clean, finder, fsutil, history, probe, protect, rules, scan, status};
+use thin_core::{apps, clean, history, probe, protect, rules, scan};
 
-use crate::browse::BrowseState;
+use crate::browse::{self, BrowseState};
 use crate::text;
 use crate::toast::{self, Toast};
-use crate::{browse, treemap};
 
-const TABS: [&str; 9] = [
-    "清理",
-    "概览",
-    "大文件",
-    "重复",
-    "应用",
-    "状态",
-    "隔离区",
-    "历史",
-    "浏览",
-];
+const TABS: [&str; 5] = ["清理", "应用", "隔离区", "历史", "浏览"];
 const N_TABS: usize = TABS.len();
+/// 「清理」标签页下标
+const CLEAN_TAB: usize = 0;
+/// 「应用」标签页下标
+const APPS_TAB: usize = 1;
 /// 「隔离区」标签页下标
-const QUARANTINE_TAB: usize = 6;
+const QUARANTINE_TAB: usize = 2;
 /// 「历史」标签页下标
-const HISTORY_TAB: usize = 7;
+const HISTORY_TAB: usize = 3;
 /// 「浏览」标签页下标（独立组件 `crate::browse`）
-const BROWSE_TAB: usize = 8;
+const BROWSE_TAB: usize = 4;
 
 // ---------------------------------------------------------------------------
 // 懒加载状态
@@ -116,19 +108,12 @@ struct App {
     min: u64,
     tab: usize,
     list_states: Vec<ListState>,
-    overview: Load<Vec<(PathBuf, u64)>>,
     clean: Load<Vec<CleanItem>>,
     selected: Vec<bool>,
-    large: Load<Vec<LargeFile>>,
-    dupes: Load<Vec<DupeGroup>>,
     apps: Load<Vec<AppInfo>>,
     quarantine: Load<Vec<clean::Journal>>,
     history: Load<Vec<history::Record>>,
     browse: Option<BrowseState>,
-    sysinfo: Option<status::SystemInfo>,
-    live: Option<status::LiveStats>,
-    cpu: status::CpuSampler,
-    status_at: Option<std::time::Instant>,
     confirm: bool,
     /// 永久删除隔离会话的二次确认（会话 id）
     purge_confirm: Option<String>,
@@ -153,19 +138,12 @@ impl App {
             min,
             tab: 0,
             list_states,
-            overview: Load::Idle,
             clean: Load::Idle,
             selected: Vec::new(),
-            large: Load::Idle,
-            dupes: Load::Idle,
             apps: Load::Idle,
             quarantine: Load::Idle,
             history: Load::Idle,
             browse: None,
-            sysinfo: None,
-            live: None,
-            cpu: status::CpuSampler::new(),
-            status_at: None,
             confirm: false,
             purge_confirm: None,
             uninstall_confirm: None,
@@ -206,44 +184,16 @@ impl App {
                     Ok(scan::scan_progress(&catalog, true, min, p))
                 });
             }
-            1 if self.overview.is_idle() => {
-                self.overview = Load::spawn(move |p| Ok(fsutil::children_sizes_progress(&root, p)));
-            }
-            2 if self.large.is_idle() => {
-                self.large = Load::spawn(move |p| {
-                    Ok(finder::find_large_progress(
-                        &[root],
-                        100 * 1024 * 1024,
-                        300,
-                        p,
-                    ))
-                });
-            }
-            3 if self.dupes.is_idle() => {
-                self.dupes = Load::spawn(move |p| {
-                    Ok(finder::find_duplicates_progress(
-                        &[root],
-                        1024 * 1024,
-                        200,
-                        p,
-                    ))
-                });
-            }
-            4 if self.apps.is_idle() => {
+            APPS_TAB if self.apps.is_idle() => {
                 self.apps = Load::spawn(move |_p| Ok(apps::list_apps()));
             }
-            5 => {
-                if self.sysinfo.is_none() {
-                    self.sysinfo = Some(status::collect_info());
-                }
-            }
-            6 if self.quarantine.is_idle() => {
+            QUARANTINE_TAB if self.quarantine.is_idle() => {
                 self.quarantine = Load::spawn(move |_p| clean::list_journals());
             }
-            7 if self.history.is_idle() => {
+            HISTORY_TAB if self.history.is_idle() => {
                 self.history = Load::spawn(move |_p| history::load(None));
             }
-            8 if self.browse.is_none() => {
+            BROWSE_TAB if self.browse.is_none() => {
                 self.browse = Some(BrowseState::new(root));
             }
             _ => {}
@@ -251,10 +201,7 @@ impl App {
     }
 
     fn poll_loaders(&mut self) {
-        self.overview.poll();
         self.clean.poll();
-        self.large.poll();
-        self.dupes.poll();
         self.apps.poll();
         self.quarantine.poll();
         self.history.poll();
@@ -282,26 +229,7 @@ impl App {
             self.history = Load::Idle;
         }
         self.ensure(self.tab);
-        if self.tab == 5 {
-            self.refresh_status(true);
-        }
         self.status = None;
-    }
-
-    /// 刷新实时状态（仅在状态页，且距上次 >=1s）
-    fn refresh_status(&mut self, force: bool) {
-        if self.tab != 5 {
-            return;
-        }
-        let now = std::time::Instant::now();
-        let due = self
-            .status_at
-            .map(|t| now.duration_since(t) >= Duration::from_millis(1000))
-            .unwrap_or(true);
-        if force || due {
-            self.live = Some(status::collect_live(&mut self.cpu));
-            self.status_at = Some(now);
-        }
     }
 
     fn next_tab(&mut self, delta: isize) {
@@ -312,12 +240,9 @@ impl App {
     fn current_len(&self) -> usize {
         match self.tab {
             0 => self.clean.ready().map_or(0, |v| v.len()),
-            1 => self.overview.ready().map_or(0, |v| v.len()),
-            2 => self.large.ready().map_or(0, |v| v.len()),
-            3 => self.dupes.ready().map_or(0, |v| v.len()),
-            4 => self.apps.ready().map_or(0, |v| v.len()),
-            6 => self.quarantine.ready().map_or(0, |v| v.len()),
-            7 => self.history.ready().map_or(0, |v| v.len()),
+            APPS_TAB => self.apps.ready().map_or(0, |v| v.len()),
+            QUARANTINE_TAB => self.quarantine.ready().map_or(0, |v| v.len()),
+            HISTORY_TAB => self.history.ready().map_or(0, |v| v.len()),
             _ => 0,
         }
     }
@@ -412,12 +337,9 @@ impl App {
                 self.clean = Load::Idle;
                 self.selected.clear();
             }
-            1 => self.overview = Load::Idle,
-            2 => self.large = Load::Idle,
-            3 => self.dupes = Load::Idle,
-            4 => self.apps = Load::Idle,
-            6 => self.quarantine = Load::Idle,
-            7 => self.history = Load::Idle,
+            APPS_TAB => self.apps = Load::Idle,
+            QUARANTINE_TAB => self.quarantine = Load::Idle,
+            HISTORY_TAB => self.history = Load::Idle,
             _ => {}
         }
         self.ensure(self.tab);
@@ -698,30 +620,41 @@ impl App {
         }
 
         if self.tab == BROWSE_TAB {
-            // 浏览页处于输入/模态状态时，普通按键（含 Tab/数字）应交给组件，
-            // 否则 Tab 切页、数字跳页会抢走过滤/跳转的输入。
+            // 浏览页处于输入/模态状态时，普通按键应交给组件，
+            // 否则 Tab 切页、数字跳页、q 退出会抢走过滤输入。
             let modal = self.browse.as_ref().is_some_and(|b| b.captures_input());
             if !modal {
                 match code {
-                    KeyCode::Tab | KeyCode::Char('l') => {
+                    // 与其它标签页一致：q 退出整个 TUI
+                    KeyCode::Char('q') => {
+                        self.quit = true;
+                        return;
+                    }
+                    // 切页只用 Tab/Shift-Tab/数字；l/h 留给浏览页自身导航（进入/上级）
+                    KeyCode::Tab => {
                         self.next_tab(1);
                         return;
                     }
-                    KeyCode::BackTab | KeyCode::Char('h') => {
+                    KeyCode::BackTab => {
                         self.next_tab(-1);
                         return;
                     }
                     KeyCode::Char(c @ '1'..='9') => {
-                        self.switch_tab((c as u8 - b'1') as usize);
+                        let i = (c as u8 - b'1') as usize;
+                        if i < N_TABS {
+                            self.switch_tab(i);
+                        }
                         return;
                     }
                     _ => {}
                 }
             }
+            // 浏览页内部处理 Esc/提示/加载；返回 true 表示「结束浏览上下文」，
+            // 与其它标签页的 Esc 对齐：退出整个 TUI。离开浏览用 Tab/数字切页。
             if let Some(b) = &mut self.browse
                 && b.on_key(code)
             {
-                self.switch_tab(0);
+                self.quit = true;
             }
             return;
         }
@@ -738,7 +671,12 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Char('l') => self.next_tab(1),
             KeyCode::BackTab | KeyCode::Char('h') => self.next_tab(-1),
-            KeyCode::Char(c @ '1'..='9') => self.switch_tab((c as u8 - b'1') as usize),
+            KeyCode::Char(c @ '1'..='9') => {
+                let i = (c as u8 - b'1') as usize;
+                if i < N_TABS {
+                    self.switch_tab(i);
+                }
+            }
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),
             KeyCode::Char('g') | KeyCode::Home => self.list_states[self.tab].select(Some(0)),
@@ -748,12 +686,12 @@ impl App {
                     self.list_states[self.tab].select(Some(len - 1));
                 }
             }
-            KeyCode::Char(' ') if self.tab == 0 => self.toggle(),
-            KeyCode::Char('a') if self.tab == 0 => self.select_kind(true, true),
-            KeyCode::Char('A') if self.tab == 0 => self.select_kind(false, true),
-            KeyCode::Char('n') if self.tab == 0 => self.select_kind(false, false),
-            KeyCode::Char('p') if self.tab == 0 => self.protect_current(),
-            KeyCode::Char('c') if self.tab == 0 => {
+            KeyCode::Char(' ') if self.tab == CLEAN_TAB => self.toggle(),
+            KeyCode::Char('a') if self.tab == CLEAN_TAB => self.select_kind(true, true),
+            KeyCode::Char('A') if self.tab == CLEAN_TAB => self.select_kind(false, true),
+            KeyCode::Char('n') if self.tab == CLEAN_TAB => self.select_kind(false, false),
+            KeyCode::Char('p') if self.tab == CLEAN_TAB => self.protect_current(),
+            KeyCode::Char('c') if self.tab == CLEAN_TAB => {
                 if self.selected_count() > 0 {
                     self.confirm = true;
                 } else {
@@ -763,7 +701,7 @@ impl App {
             KeyCode::Enter if self.tab == QUARANTINE_TAB => self.restore_selected(),
             KeyCode::Char('p') if self.tab == QUARANTINE_TAB => self.purge_selected(),
             KeyCode::Char('c') if self.tab == HISTORY_TAB => self.reconcile_history(),
-            KeyCode::Char('u') if self.tab == 4 => self.begin_uninstall(),
+            KeyCode::Char('u') if self.tab == APPS_TAB => self.begin_uninstall(),
             KeyCode::Char('r') => self.reload_current(),
             KeyCode::Char('?') => self.help = !self.help,
             _ => {}
@@ -798,7 +736,6 @@ fn event_loop(
 ) -> Result<()> {
     while !app.quit {
         app.poll_loaders();
-        app.refresh_status(false);
         app.tick = app.tick.wrapping_add(1);
         terminal.draw(|f| ui(f, app))?;
         if event::poll(Duration::from_millis(80))?
@@ -894,7 +831,7 @@ fn render_header(frame: &mut Frame, area: Rect) {
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  M5 · 预设/历史/定时"),
+        Span::raw("  M6 · 定向清理"),
     ]);
     let line2 = if let Some(v) = disk {
         let pct = v.used_pct();
@@ -944,14 +881,10 @@ fn render_tabs(frame: &mut Frame, app: &App, area: Rect) {
 fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
     match app.tab {
         0 => render_clean(frame, app, area),
-        1 => render_overview(frame, app, area),
-        2 => render_large(frame, app, area),
-        3 => render_dupes(frame, app, area),
-        4 => render_apps(frame, app, area),
-        5 => render_status(frame, app, area),
-        6 => render_quarantine(frame, app, area),
-        7 => render_history(frame, app, area),
-        8 => render_browse(frame, app, area),
+        APPS_TAB => render_apps(frame, app, area),
+        QUARANTINE_TAB => render_quarantine(frame, app, area),
+        HISTORY_TAB => render_history(frame, app, area),
+        BROWSE_TAB => render_browse(frame, app, area),
         _ => {}
     }
 }
@@ -1207,48 +1140,6 @@ fn render_loading(
     }
 }
 
-/// 概览：磁盘占用 treemap
-fn render_overview(frame: &mut Frame, app: &mut App, area: Rect) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!("硬盘占用（{}）", app.root.display()));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    match &app.overview {
-        Load::Ready(children) => {
-            if children.is_empty() {
-                state_msg(frame, inner, "（空）");
-                return;
-            }
-            // 取前 12 项，其余合并为「其他」
-            let mut entries: Vec<(String, u64)> = children
-                .iter()
-                .take(12)
-                .map(|(p, s)| {
-                    let name = p
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| p.display().to_string());
-                    (name, *s)
-                })
-                .collect();
-            if children.len() > 12 {
-                let rest: u64 = children.iter().skip(12).map(|(_, s)| *s).sum();
-                if rest > 0 {
-                    entries.push(("其他".into(), rest));
-                }
-            }
-            treemap::render(frame, inner, &entries);
-        }
-        Load::Loading { progress, .. } => {
-            render_loading(frame, inner, Some(progress), app.tick, "统计目录占用中…")
-        }
-        Load::Failed(e) => state_msg(frame, inner, e),
-        Load::Idle => state_msg(frame, inner, "等待加载"),
-    }
-}
-
 /// 清理：列表 + 详情
 fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
     let parts = Layout::default()
@@ -1383,119 +1274,6 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// 大文件
-fn render_large(frame: &mut Frame, app: &mut App, area: Rect) {
-    let home = home_prefix();
-    match &app.large {
-        Load::Ready(files) => {
-            let items: Vec<ListItem> = files
-                .iter()
-                .map(|f| {
-                    let path = f.path.display().to_string();
-                    let shown = if !home.is_empty() && path.starts_with(&home) {
-                        path.replacen(&home, "~", 1)
-                    } else {
-                        path
-                    };
-                    ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("{:>9} ", human(f.size)),
-                            Style::default().fg(Color::White),
-                        ),
-                        Span::raw(shown),
-                    ]))
-                })
-                .collect();
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .title(format!("大文件 · {} 个", files.len())),
-                )
-                .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-                .highlight_symbol("› ");
-            frame.render_stateful_widget(list, area, &mut app.list_states[app.tab]);
-        }
-        Load::Loading { progress, .. } => {
-            render_loading(frame, area, Some(progress), app.tick, "扫描大文件中…")
-        }
-        Load::Failed(e) => state_msg(frame, area, e),
-        Load::Idle => state_msg(frame, area, "等待加载"),
-    }
-}
-
-/// 重复文件
-fn render_dupes(frame: &mut Frame, app: &mut App, area: Rect) {
-    let home = home_prefix();
-    let parts = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
-        .split(area);
-
-    match &app.dupes {
-        Load::Ready(groups) => {
-            let items: Vec<ListItem> = groups
-                .iter()
-                .map(|g| {
-                    ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("{:>9} ", human(g.wasted())),
-                            Style::default().fg(Color::Yellow),
-                        ),
-                        Span::raw(format!("× {} 同内容", g.paths.len())),
-                    ]))
-                })
-                .collect();
-            let total: u64 = groups.iter().map(|g| g.wasted()).sum();
-            let list = List::new(items)
-                .block(Block::default().borders(Borders::ALL).title(format!(
-                    "重复组 · {} 组 · 可省 {}",
-                    groups.len(),
-                    human(total)
-                )))
-                .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-                .highlight_symbol("› ");
-            frame.render_stateful_widget(list, parts[0], &mut app.list_states[app.tab]);
-
-            let mut text = Vec::new();
-            if let Some(g) = groups.get(app.cursor()) {
-                text.push(Line::from(Span::styled(
-                    format!("{} 个副本 · 每组保留首个", g.paths.len()),
-                    Style::default().add_modifier(Modifier::BOLD),
-                )));
-                text.push(Line::from(""));
-                for p in &g.paths {
-                    let s = p.display().to_string();
-                    let shown = if !home.is_empty() && s.starts_with(&home) {
-                        s.replacen(&home, "~", 1)
-                    } else {
-                        s
-                    };
-                    text.push(Line::from(shown));
-                }
-            }
-            frame.render_widget(
-                Paragraph::new(text)
-                    .block(Block::default().borders(Borders::ALL).title("副本"))
-                    .wrap(Wrap { trim: true }),
-                parts[1],
-            );
-        }
-        Load::Loading { progress, .. } => {
-            render_loading(
-                frame,
-                parts[0],
-                Some(progress),
-                app.tick,
-                "检测重复中…（需读取内容）",
-            );
-            state_msg(frame, parts[1], "");
-        }
-        Load::Failed(e) => state_msg(frame, parts[0], e),
-        Load::Idle => state_msg(frame, parts[0], "等待加载"),
-    }
-}
-
 /// 应用
 fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
     let home = home_prefix();
@@ -1579,128 +1357,6 @@ fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// 实时状态 + 基本信息
-fn render_status(frame: &mut Frame, app: &mut App, area: Rect) {
-    let parts = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
-        .split(area);
-
-    // 左：基本信息
-    let mut info: Vec<Line> = Vec::new();
-    if let Some(i) = &app.sysinfo {
-        info.push(field("型号", &i.model));
-        info.push(field("芯片", &i.chip));
-        info.push(field(
-            "核心",
-            &format!("{} 物理 / {} 逻辑", i.physical_cores, i.logical_cores),
-        ));
-        info.push(field(
-            "系统",
-            &format!("macOS {} ({})", i.os_version, i.os_build),
-        ));
-        info.push(field("主机名", &i.hostname));
-        info.push(field("运行时间", &status::format_uptime(i.uptime_secs)));
-        info.push(Line::from(""));
-        info.push(field("内存总量", &human(i.mem_total)));
-    } else {
-        info.push(Line::from("采集失败"));
-    }
-    frame.render_widget(
-        Paragraph::new(info)
-            .block(Block::default().borders(Borders::ALL).title("基本信息"))
-            .wrap(Wrap { trim: true }),
-        parts[0],
-    );
-
-    // 右：实时指标
-    let mut lines: Vec<Line> = Vec::new();
-    if let Some(l) = &app.live {
-        lines.push(metric_line(
-            "CPU",
-            l.cpu_usage / 100.0,
-            Some(format!("{:.1}%", l.cpu_usage)),
-        ));
-        let mem_ratio = if l.mem_total > 0 {
-            l.mem_used as f64 / l.mem_total as f64
-        } else {
-            0.0
-        };
-        lines.push(metric_line(
-            "内存",
-            mem_ratio,
-            Some(format!("{} / {}", human(l.mem_used), human(l.mem_total))),
-        ));
-        let disk_ratio = if l.disk_total > 0 {
-            l.disk_used as f64 / l.disk_total as f64
-        } else {
-            0.0
-        };
-        lines.push(metric_line(
-            "磁盘",
-            disk_ratio,
-            Some(format!("{} / {}", human(l.disk_used), human(l.disk_total))),
-        ));
-        lines.push(Line::from(""));
-        lines.push(Line::from(format!(
-            "负载     {:.2}  {:.2}  {:.2}",
-            l.load1, l.load5, l.load15
-        )));
-        lines.push(Line::from(format!(
-            "有线内存 {}    压缩内存 {}",
-            human(l.mem_wired),
-            human(l.mem_compressed)
-        )));
-        if l.swap_total > 0 {
-            lines.push(Line::from(format!(
-                "交换空间 {} / {}",
-                human(l.swap_used),
-                human(l.swap_total)
-            )));
-        }
-        if let Some(b) = &l.battery {
-            lines.push(Line::from(format!(
-                "电池     {}%  {}",
-                b.percent,
-                if b.charging { "充电中" } else { "使用中" }
-            )));
-        }
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "每 1s 刷新",
-            Style::default().fg(Color::DarkGray),
-        )));
-    } else {
-        lines.push(Line::from("采集中…"));
-    }
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(Block::default().borders(Borders::ALL).title("实时状态"))
-            .wrap(Wrap { trim: true }),
-        parts[1],
-    );
-}
-
-/// 带颜色的指标行：名称 + 进度条 + 数值
-fn metric_line(name: &str, ratio: f64, value: Option<String>) -> Line<'static> {
-    let pct = ratio * 100.0;
-    let color = if pct > 90.0 {
-        Color::Red
-    } else if pct > 75.0 {
-        Color::Yellow
-    } else {
-        Color::Green
-    };
-    let mut spans = vec![
-        Span::raw(format!("{name:<4} ")),
-        Span::styled(bar(ratio, 22), Style::default().fg(color)),
-    ];
-    if let Some(v) = value {
-        spans.push(Span::raw(format!("  {v}")));
-    }
-    Line::from(spans)
-}
-
 /// 基本信息的一行：标签 + 值
 fn field(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
@@ -1734,10 +1390,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             0 => {
                 " Tab 切页 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · c 清理 · r 重载 · ? 帮助 · q 退出"
             }
+            APPS_TAB => " ↑↓/jk 移动 · u 卸载 · r 重载 · ? 帮助 · q 退出",
             QUARANTINE_TAB => " ↑↓/jk 移动 · Enter 恢复 · p 永久删除 · r 重载 · ? 帮助 · q 退出",
             HISTORY_TAB => " ↑↓/jk 移动 · c 回填隔离区遗漏记录 · r 重载 · ? 帮助 · q 退出",
-            4 => " ↑↓/jk 移动 · u 卸载 · r 重载 · ? 帮助 · q 退出",
-            _ => " 1-9/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
+            _ => " 1-5/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
         };
         (hint.to_string(), toast::bar_style())
     };
@@ -1988,9 +1644,6 @@ mod tests {
             app.tab = tab;
             // 直接塞 Ready 空数据，避免 ensure 启动线程
             app.clean = Load::Ready(vec![]);
-            app.overview = Load::Ready(vec![]);
-            app.large = Load::Ready(vec![]);
-            app.dupes = Load::Ready(vec![]);
             app.apps = Load::Ready(vec![]);
             app.quarantine = Load::Ready(vec![]);
             app.history = Load::Ready(vec![]);
@@ -2069,7 +1722,7 @@ mod tests {
 
         // 卸载 App
         let mut app = test_app();
-        app.tab = 4;
+        app.tab = APPS_TAB;
         app.apps = Load::Ready(vec![app_info("Foo", Some("com.example.foo"))]);
         app.uninstall_confirm = Some(PendingUninstall {
             app_name: "Foo".into(),
@@ -2089,7 +1742,7 @@ mod tests {
     #[test]
     fn apps_tab_hint_mentions_uninstall() {
         let mut app = test_app();
-        app.tab = 4;
+        app.tab = APPS_TAB;
         app.apps = Load::Ready(vec![app_info("Foo", Some("com.example.foo"))]);
         assert!(render(&mut app, 120, 30).contains("u 卸载"));
     }
@@ -2108,7 +1761,7 @@ mod tests {
     #[test]
     fn uninstall_refuses_system_app() {
         let mut app = test_app();
-        app.tab = 4;
+        app.tab = APPS_TAB;
         app.apps = Load::Ready(vec![app_info("Safari", Some("com.apple.Safari"))]);
         app.on_key(KeyEvent::from(KeyCode::Char('u')));
         assert!(app.uninstall_confirm.is_none());
@@ -2117,9 +1770,18 @@ mod tests {
     }
 
     #[test]
+    fn q_quits_everywhere_including_browse() {
+        let mut app = test_app();
+        app.tab = BROWSE_TAB;
+        app.browse = Some(BrowseState::new(PathBuf::from("/")));
+        app.on_key(KeyEvent::from(KeyCode::Char('q')));
+        assert!(app.quit, "浏览页按 q 应退出整个 TUI");
+    }
+
+    #[test]
     fn n_key_cancels_uninstall_confirm() {
         let mut app = test_app();
-        app.tab = 4;
+        app.tab = APPS_TAB;
         app.uninstall_confirm = Some(PendingUninstall {
             app_name: "Foo".into(),
             app_path: PathBuf::from("/Applications/Foo.app"),

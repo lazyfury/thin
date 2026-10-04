@@ -1,9 +1,8 @@
-//! 文件浏览组件：主 TUI「浏览」标签页（键 7）。
+//! 文件浏览组件：主 TUI「浏览」标签页（键 5）。
 //!
 //! 一步步下钻，进入某目录才计算其直接子项的大小，并把能识别的目录标注用途。
 //! 只读；`c` 可在确认后移入隔离区。按 `?` 查看快捷键。
 
-use anyhow::Result;
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
@@ -83,15 +82,9 @@ pub struct BrowseState {
     filter: String,
     filtering: bool,
     confirm: bool,
-    bookmarks: Vec<PathBuf>,
-    bookmark_pick: bool,
-    bookmark_sel: usize,
     help: bool,
     tick: usize,
     toast: Option<Toast>,
-    /// `:` 跳转输入框内容
-    goto: String,
-    gotoing: bool,
 }
 
 impl BrowseState {
@@ -111,14 +104,9 @@ impl BrowseState {
             filter: String::new(),
             filtering: false,
             confirm: false,
-            bookmarks: load_bookmarks(),
-            bookmark_pick: false,
-            bookmark_sel: 0,
             help: false,
             tick: 0,
             toast: None,
-            goto: String::new(),
-            gotoing: false,
         };
         app.load();
         app
@@ -275,72 +263,7 @@ impl BrowseState {
     /// 是否处于会消费普通字符的输入/模态状态。
     /// 主 TUI 据此决定是否把 Tab/数字等按键原样交给浏览页。
     pub fn captures_input(&self) -> bool {
-        self.confirm || self.bookmark_pick || self.filtering || self.gotoing || self.help
-    }
-
-    /// `:` 打开跳转输入框
-    fn start_goto(&mut self) {
-        self.gotoing = true;
-        self.goto.clear();
-    }
-
-    /// 解析输入并跳转（支持 `~` 与相对当前目录的路径）
-    fn apply_goto(&mut self) {
-        let raw = self.goto.trim().to_string();
-        if raw.is_empty() {
-            return;
-        }
-        match resolve_dir(&raw, self.cwd()) {
-            Some(dir) => {
-                self.stack = vec![dir.clone()];
-                self.load();
-                self.info(format!("已跳转到 {}", shorten(&dir, &home_prefix())));
-            }
-            None => self.error(format!("目录不存在：{raw}")),
-        }
-    }
-
-    /// 按 Tab 补全当前输入路径的目录名（只列目录，隐藏项需以 . 开头）
-    fn complete_goto(&mut self) {
-        let raw = self.goto.clone();
-        if raw.is_empty() {
-            return;
-        }
-        let (dir_raw, prefix) = match raw.rfind('/') {
-            Some(i) => (raw[..=i].to_string(), raw[i + 1..].to_string()),
-            None => (String::new(), raw.clone()),
-        };
-        let dir_fs = expand_tilde(&dir_raw);
-        let dir_path = if dir_fs.is_empty() {
-            self.cwd().to_path_buf()
-        } else {
-            PathBuf::from(&dir_fs)
-        };
-        let dir_path = if dir_path.is_absolute() {
-            dir_path
-        } else {
-            self.cwd().join(dir_path)
-        };
-        let Ok(rd) = std::fs::read_dir(&dir_path) else {
-            return;
-        };
-        let show_hidden = prefix.starts_with('.');
-        let mut names: Vec<String> = rd
-            .flatten()
-            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
-            .filter_map(|e| e.file_name().into_string().ok())
-            .filter(|n| n.starts_with(&prefix) && (show_hidden || !n.starts_with('.')))
-            .collect();
-        names.sort();
-        if names.is_empty() {
-            return;
-        }
-        let completion = if names.len() == 1 {
-            format!("{}/", names[0])
-        } else {
-            common_prefix(&names)
-        };
-        self.goto = format!("{dir_raw}{completion}");
+        self.confirm || self.filtering || self.help
     }
 
     /// 把当前项移入隔离区（复用 clean 安全门）
@@ -411,55 +334,6 @@ impl BrowseState {
             }
             return false;
         }
-        if self.bookmark_pick {
-            match code {
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if !self.bookmarks.is_empty() {
-                        self.bookmark_sel = (self.bookmark_sel + 1).min(self.bookmarks.len() - 1);
-                    }
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.bookmark_sel = self.bookmark_sel.saturating_sub(1);
-                }
-                KeyCode::Enter => {
-                    if let Some(p) = self.bookmarks.get(self.bookmark_sel).cloned() {
-                        self.bookmark_pick = false;
-                        self.stack = vec![p];
-                        self.load();
-                    }
-                }
-                KeyCode::Char('d') => {
-                    if self.bookmark_sel < self.bookmarks.len() {
-                        self.bookmarks.remove(self.bookmark_sel);
-                        if self.bookmark_sel >= self.bookmarks.len() {
-                            self.bookmark_sel = self.bookmarks.len().saturating_sub(1);
-                        }
-                        let _ = save_bookmarks(&self.bookmarks);
-                    }
-                }
-                KeyCode::Char('B') | KeyCode::Esc | KeyCode::Char('q') => {
-                    self.bookmark_pick = false
-                }
-                _ => {}
-            }
-            return false;
-        }
-        if self.gotoing {
-            match code {
-                KeyCode::Enter => {
-                    self.gotoing = false;
-                    self.apply_goto();
-                }
-                KeyCode::Esc => self.gotoing = false,
-                KeyCode::Tab => self.complete_goto(),
-                KeyCode::Backspace => {
-                    self.goto.pop();
-                }
-                KeyCode::Char(c) => self.goto.push(c),
-                _ => {}
-            }
-            return false;
-        }
         if self.filtering {
             match code {
                 KeyCode::Enter => self.filtering = false,
@@ -480,7 +354,8 @@ impl BrowseState {
             }
             return false;
         }
-        if self.help && !matches!(code, KeyCode::Char('?') | KeyCode::Esc | KeyCode::Char('q')) {
+        // 帮助层：任意键先关闭帮助（含 Esc），避免 Esc 直接退出
+        if self.help {
             self.help = false;
             return false;
         }
@@ -490,13 +365,13 @@ impl BrowseState {
             self.info("已取消加载");
             return false;
         }
-        // Esc：先关闭底部提示，再按一次才离开浏览页
+        // Esc：先关闭底部提示，再按一次才退出（与其它标签页一致）
         if matches!(code, KeyCode::Esc) && self.toast.is_some() {
             self.clear_status();
             return false;
         }
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => return true,
+            KeyCode::Esc => return true,
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),
             KeyCode::Char('g') | KeyCode::Home => {
@@ -517,27 +392,11 @@ impl BrowseState {
                 self.rebuild_visible();
             }
             KeyCode::Char('/') => self.filtering = true,
-            KeyCode::Char(':') => self.start_goto(),
             KeyCode::Char('t') => self.show_treemap = !self.show_treemap,
             KeyCode::Char('s') => {
                 self.sort = self.sort.next();
                 self.rebuild_visible();
                 self.info(format!("排序：{}", self.sort.label()));
-            }
-            KeyCode::Char('b') => {
-                let dir = self.cwd().to_path_buf();
-                if let Some(pos) = self.bookmarks.iter().position(|p| *p == dir) {
-                    self.bookmarks.remove(pos);
-                    self.info("已取消书签");
-                } else {
-                    self.bookmarks.push(dir);
-                    self.info("已加书签（B 打开列表）");
-                }
-                let _ = save_bookmarks(&self.bookmarks);
-            }
-            KeyCode::Char('B') => {
-                self.bookmark_pick = true;
-                self.bookmark_sel = 0;
             }
             KeyCode::Char('c') => {
                 if let Some(row) = self.current() {
@@ -601,9 +460,6 @@ pub fn render(frame: &mut Frame, state: &mut BrowseState, area: Rect) {
     }
     if state.confirm {
         render_confirm(frame, state);
-    }
-    if state.bookmark_pick {
-        render_bookmarks(frame, state);
     }
 }
 
@@ -792,19 +648,9 @@ fn render_footer(frame: &mut Frame, app: &BrowseState, area: Rect) {
             " 移入隔离区？ y 确认 · n/Esc 取消".to_string(),
             toast::style(toast::Kind::Warn),
         )
-    } else if app.bookmark_pick {
-        (
-            " 书签：j/k 选择 · Enter 跳转 · d 删除 · Esc 关闭".to_string(),
-            toast::bar_style(),
-        )
     } else if app.filtering {
         (
             format!(" 过滤：{}▏   Enter 确认 · Esc 清除", app.filter),
-            toast::bar_style(),
-        )
-    } else if app.gotoing {
-        (
-            format!(" 跳转：{}▏   Enter 跳转 · Tab 补全 · Esc 取消", app.goto),
             toast::bar_style(),
         )
     } else if let Some(t) = &app.toast {
@@ -816,7 +662,7 @@ fn render_footer(frame: &mut Frame, app: &BrowseState, area: Rect) {
         (" 加载中…   Esc 取消".to_string(), toast::bar_style())
     } else {
         (
-            " ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · : 跳转 · s 排序 · t 占用图 · b 书签 · c 清理 · q 返回"
+            " ↑↓/jk 移动 · Enter/l 进入 · Backspace/h 上级 · / 过滤 · s 排序 · t 占用图 · c 清理 · q 退出"
                 .to_string(),
             toast::bar_style(),
         )
@@ -862,39 +708,6 @@ fn render_loading(
     }
 }
 
-fn render_bookmarks(frame: &mut Frame, app: &BrowseState) {
-    let a = centered_rect(72, 60, frame.area());
-    frame.render_widget(Clear, a);
-    let lines: Vec<Line> = if app.bookmarks.is_empty() {
-        vec![Line::from(Span::styled(
-            "（暂无书签，按 b 把当前目录加入）",
-            Style::default().fg(Color::DarkGray),
-        ))]
-    } else {
-        app.bookmarks
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                let mark = if i == app.bookmark_sel { "› " } else { "  " };
-                let style = if i == app.bookmark_sel {
-                    Style::default().add_modifier(Modifier::REVERSED)
-                } else {
-                    Style::default()
-                };
-                Line::from(Span::styled(format!("{mark}{}", p.display()), style))
-            })
-            .collect()
-    };
-    frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("书签  Enter 跳转 · d 删除 · Esc 关闭"),
-        ),
-        a,
-    );
-}
-
 fn render_confirm(frame: &mut Frame, app: &BrowseState) {
     let Some(row) = app.current() else {
         return;
@@ -937,19 +750,18 @@ fn render_help(frame: &mut Frame, area: Rect) {
         )),
         Line::from(""),
         Line::from("  ↑↓ / j k    移动"),
-        Line::from("  Enter / →    进入目录"),
-        Line::from("  Backspace / ← 返回上级"),
+        Line::from("  Enter / → / l  进入目录"),
+        Line::from("  Backspace / ← / h  返回上级"),
         Line::from("  g / G        跳到顶部 / 底部"),
         Line::from("  /            过滤（按名称/用途）"),
-        Line::from("  :            跳转目录（支持 ~ 与相对路径，Tab 补全）"),
         Line::from("  s            切换排序（大小/名称/类型）"),
         Line::from("  t            占用图切换"),
-        Line::from("  b / B        加/删当前目录书签 · 打开书签列表"),
         Line::from("  c            把当前可清理项移入隔离区（需确认）"),
         Line::from("  r            重新计算当前目录"),
         Line::from("  .            显示/隐藏 . 开头项"),
-        Line::from("  Esc          取消加载 / 退出"),
+        Line::from("  Esc          关提示/取消加载；无提示时退出"),
         Line::from("  q            退出"),
+        Line::from("  Tab / 1-5    切换标签页"),
         Line::from(""),
         Line::from(Span::styled(
             "浏览只读；只有显式按 c 并确认才会移入隔离区（可恢复）。",
@@ -990,26 +802,6 @@ fn kind_rank(kind: EntryKind) -> u8 {
         EntryKind::Symlink => 3,
         EntryKind::Inaccessible => 4,
     }
-}
-
-fn bookmarks_path() -> PathBuf {
-    clean::thin_home().join("bookmarks.json")
-}
-
-fn load_bookmarks() -> Vec<PathBuf> {
-    std::fs::read_to_string(bookmarks_path())
-        .ok()
-        .and_then(|s| serde_json::from_str::<Vec<PathBuf>>(&s).ok())
-        .unwrap_or_default()
-}
-
-fn save_bookmarks(list: &[PathBuf]) -> Result<()> {
-    let p = bookmarks_path();
-    if let Some(dir) = p.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(p, serde_json::to_vec_pretty(list)?)?;
-    Ok(())
 }
 
 fn row_matches(r: &Row, needle: &str) -> bool {
@@ -1101,43 +893,6 @@ fn shorten(path: &Path, home: &str) -> String {
     }
 }
 
-/// 展开开头的 `~`（`~` 或 `~/...`）
-fn expand_tilde(p: &str) -> String {
-    if p == "~" {
-        home_prefix()
-    } else if let Some(rest) = p.strip_prefix("~/") {
-        format!("{}/{}", home_prefix(), rest)
-    } else {
-        p.to_string()
-    }
-}
-
-/// 解析跳转输入：展开 `~`、相对路径基于 `cwd`，返回规范化的目录
-fn resolve_dir(input: &str, cwd: &Path) -> Option<PathBuf> {
-    let expanded = expand_tilde(input);
-    let p = PathBuf::from(expanded);
-    let p = if p.is_absolute() { p } else { cwd.join(p) };
-    let canon = std::fs::canonicalize(&p).ok()?;
-    canon.is_dir().then_some(canon)
-}
-
-/// 一组字符串的最长公共前缀
-fn common_prefix(names: &[String]) -> String {
-    let Some(first) = names.first() else {
-        return String::new();
-    };
-    let mut pref = first.clone();
-    for n in &names[1..] {
-        while !n.starts_with(&pref) {
-            pref.pop();
-            if pref.is_empty() {
-                return pref;
-            }
-        }
-    }
-    pref
-}
-
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -1163,6 +918,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn esc_quits_but_q_is_left_to_main_tui() {
+        let mut st = BrowseState::new(std::env::temp_dir());
+        st.loader = None;
+        st.toast = None;
+        // q 不再由浏览页处理，统一由主 TUI 退出
+        assert!(!st.on_key(KeyCode::Char('q')));
+        // 无提示/加载时 Esc 请求结束浏览上下文
+        assert!(st.on_key(KeyCode::Esc));
+    }
+
+    #[test]
+    fn esc_closes_help_before_quitting() {
+        let mut st = BrowseState::new(std::env::temp_dir());
+        st.loader = None;
+        st.help = true;
+        assert!(!st.on_key(KeyCode::Esc), "Esc 应先关闭帮助");
+        assert!(!st.help);
+        assert!(st.on_key(KeyCode::Esc), "再按才退出");
+    }
+
+    #[test]
     fn hidden_and_truncate() {
         assert!(is_hidden(Path::new("/a/.vol")));
         assert!(!is_hidden(Path::new("/a/bin")));
@@ -1181,35 +957,5 @@ mod tests {
         assert_eq!(size_cell(&mk(EntryKind::Symlink)), "—");
         assert_eq!(size_cell(&mk(EntryKind::Mount)), "—");
         assert_eq!(size_cell(&mk(EntryKind::Dir)), "0 B");
-    }
-
-    #[test]
-    fn common_prefix_works() {
-        let names = vec![
-            "Documents".to_string(),
-            "Downloads".to_string(),
-            "Docker".to_string(),
-        ];
-        assert_eq!(common_prefix(&names), "Do");
-        assert_eq!(common_prefix(&["a".to_string()]), "a");
-        assert!(common_prefix(&[]).is_empty());
-    }
-
-    #[test]
-    fn resolve_dir_handles_relative_and_missing() {
-        let base = std::env::temp_dir().join(format!("thin-goto-test-{}", std::process::id()));
-        let sub = base.join("child");
-        std::fs::create_dir_all(&sub).unwrap();
-        std::fs::write(base.join("file.txt"), b"x").unwrap();
-
-        assert_eq!(
-            resolve_dir("child", &base),
-            Some(std::fs::canonicalize(&sub).unwrap())
-        );
-        // 普通文件不是目录
-        assert_eq!(resolve_dir("file.txt", &base), None);
-        assert_eq!(resolve_dir("missing", &base), None);
-
-        let _ = std::fs::remove_dir_all(&base);
     }
 }

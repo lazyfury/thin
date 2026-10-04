@@ -86,10 +86,11 @@ $ thin clean
 （dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）
 ```
 
-> TUI：`thin` 进入，七个标签 —— 清理 / 概览（硬盘占用图）/ 大文件 / 重复 / 应用 / 状态（实时）/ **浏览**（逐步下钻 + 用途标注）。
+> TUI：`thin` 进入，五个标签 —— **清理 / 应用 / 隔离区 / 历史 / 浏览**（逐步下钻 + 用途标注，键 5）。
 > 加载与扫描带进度：确定进度用进度条，不确定用 spinner。
 > 底部状态栏区分反馈：信息/提示数秒后自动消失；**错误会保留到按 Esc 关闭**；
-> Esc 在无提示时退出 TUI（在「浏览」标签页则返回上级标签）。
+> Esc 在无提示时退出；浏览页用 `Tab`/`Shift-Tab`/数字键切换标签（`l`/`h` 留给进入/上级）。
+> `q` 在任意标签页都退出整个 TUI；`Esc` 先关闭提示/模态，无提示时退出。
 
 ## 命令速查
 
@@ -103,6 +104,8 @@ thin scan --all                   # 额外显示不可再生项（虚拟机等�
 thin scan --min 100MB             # 最小体积过滤
 thin scan --json                  # 机器可读输出
 thin scan --detail rust-target    # 查看某规则详细解释
+thin scan --preset dev            # 只看开发缓存
+thin scan --preset dev --root .   # 只看当前项目下的开发产物（target/、node_modules/ …）
 thin top ~/Library --limit 20     # 某目录下最大的子项（类似 du -sh | sort -rh）
 thin discover --min 1G            # 找出「未被规则覆盖」的大目录
 thin discover --json              # 机器可读
@@ -112,17 +115,34 @@ thin ls /                         # 根目录：每个 Unix 风格目录的用�
 thin ls ~/Library -l              # -l 显示说明与参考(如 man hier)
 thin ls /private --depth 2        # 递归两层
 thin ls /System/Volumes --json    # 机器可读
-# 交互式浏览在主 TUI 的「浏览」标签页（键 7）：↑↓ 移动 · Enter 进入 · / 过滤 · : 跳转 · s 排序 · t 占用图 · b 书签 · c 清理
+# 交互式浏览在主 TUI 的「浏览」标签页（键 5）：↑↓ 移动 · Enter 进入 · / 过滤 · s 排序 · t 占用图 · c 清理
 
 thin                              # 无参数：进入交互式 TUI
-thin tui                          # 显式进入 TUI（含「浏览」标签页，键 7）
+thin tui                          # 显式进入 TUI（含「浏览」标签页，键 5）
 thin tui --min 100MB
 ```
 
 </details>
 
 <details open>
-<summary><b>清理与隔离区</b></summary>
+<summary><b>开发者 / Agent 定向清理</b></summary>
+
+两个正交的维度：**清什么**（`--preset`）× **在哪清**（`--root`）。
+
+```bash
+# 开发者：只清当前项目里的 target/、node_modules/ 等（不动全局缓存）
+thin scan  --preset dev --root .   # 先看
+thin clean --preset dev --root .   # dry-run
+thin clean --preset dev --root . --apply
+
+# Agent：两阶段契约 —— 先生成计划，审阅后再原样执行
+thin plan --preset dev --root . > plan.json
+thin apply --plan plan.json --yes
+```
+
+`plan` 输出的 `approved` 是完整清理项；`apply` 会**再次过同一安全门**，所以过期的计划也不会误删。
+
+</details>
 
 ```bash
 thin clean                        # dry-run 预览（默认「安全」项）
@@ -130,6 +150,7 @@ thin clean --apply                # 移入隔离区（二次确认）
 thin clean --apply --yes          # 跳过确认
 thin clean --apply --all          # 连「需确认」项一起处理
 thin clean --apply --id rust-target --id chrome-optguide-model
+thin clean --preset dev --root .  # 定向清理：只清当前项目的开发产物
 thin clean --json                 # 机器可读计划：approved / skipped / approvedBytes / protectedBytes
 thin clean --apply --json --yes   # 执行并输出账本 JSON
 
@@ -331,9 +352,10 @@ crates/
 - **M1** 安全清理：隔离区 + Journal + 恢复/永久删除 + TUI 交互 ✅
 - **M2** 大文件查找 / 重复文件检测 / App 卸载（均复用隔离区）✅
 - **M3** 规则热更新（用户规则文件）+ 异常大目录归因 + agent 规则写入入口 ✅
-- **M4** TUI 多标签页（清理 / 概览占用图 / 大文件 / 重复 / 应用，懒加载 + 进度条/spinner）✅
-- **M5（当前）** 清理预设 + 历史记录 + 定时任务（launchd）+ 保护名单 + 统一安全门口径 + agent JSON ✅
-- **M6** SwiftUI 前端
+- **M4** TUI 多标签页（清理 / 应用 / 隔离区 / 历史 / 浏览，懒加载 + 进度条/spinner）✅
+- **M5** 清理预设 + 历史记录 + 定时任务（launchd）+ 保护名单 + 统一安全门口径 + agent JSON ✅
+- **M6（当前）** 定向清理：`--preset dev` × `--root .`，以及 agent 两阶段 `plan` / `apply` ✅
+- **M7** SwiftUI 前端
 
 ## 开发
 

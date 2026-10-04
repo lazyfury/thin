@@ -97,7 +97,7 @@ pub struct Rule {
 }
 
 /// 扫描命中的一条可清理项
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CleanItem {
     pub rule_id: String,
     pub name: String,
