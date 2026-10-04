@@ -38,7 +38,11 @@ macOS 的「系统数据 / 系统缓存」是个兜底分类，会把虚拟机�
 
 ```bash
 # 从 Git 安装（需要 Rust 1.85+，edition 2024）
+# 注意：包名是 thin-cli，安装出的二进制名是 thin；默认装到 ~/.cargo/bin/thin
 cargo install --git https://github.com/lazyfury/thin.git thin-cli
+
+# 升级到最新（覆盖已安装的同名版本）
+cargo install --git https://github.com/lazyfury/thin.git thin-cli --force
 
 # 或本地构建
 git clone https://github.com/lazyfury/thin.git && cd thin
