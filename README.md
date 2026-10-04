@@ -1,94 +1,149 @@
+<div align="center">
+
 # thin
 
-macOS 系统空间扫描与安全清理 CLI + TUI（M3 · 规则可扩展）。
+**macOS 系统空间扫描与安全清理 CLI + TUI**
 
-> 设计文档见 [DESIGN.md](./DESIGN.md)。清理默认**不真正删除**，而是移入**隔离区**（`~/.thin/quarantine`），
-> 写入 Journal，可随时 `restore`；只有显式 `purge` 才永久删除。
-> Agent 工作流见 [AGENTS.md](./AGENTS.md)。
+> 清理 = 移入隔离区，而不是删除。每一项都说清「这是什么 / 删了会怎样 / 能不能恢复」。
 
-## 为什么做这个
+![platform](https://img.shields.io/badge/platform-macOS-000000?logo=apple&logoColor=white)
+![rust](https://img.shields.io/badge/rust-1.85%2B-dea584?logo=rust&logoColor=white)
+![license](https://img.shields.io/badge/license-MIT-blue)
+![PRs](https://img.shields.io/badge/PRs-welcome-brightgreen)
 
-macOS 的「系统数据 / 系统缓存」是个兜底分类，会把虚拟机、系统卷、缓存、Homebrew 等统统算在一起，
-动辄显示几十 GB，却说不清是什么。thin 的做法相反：
+[为什么做 thin](#为什么做-thin) · [快速开始](#快速开始) · [命令速查](#命令速查) · [安全模型](#安全模型) · [规则系统](#规则系统) · [路线图](#路线图)
 
-- **还原真实路径**，每一项都注明「这是什么 / 删了会怎样 / 能否恢复」
-- **诚实核算**：按实际分配块统计（稀疏文件不虚高）、按 inode 去重（硬链接不重复）、排除嵌套重复路径
-- **风险分级**：`安全` / `需确认` / `不可再生`，默认只把前两类计入「可回收」
-- **可恢复**：清理 = 移入隔离区，随时可撤回；永久删除需显式操作
+设计文档 [DESIGN.md](./DESIGN.md) · Agent 工作流 [AGENTS.md](./AGENTS.md)
 
-## 工作区结构
+</div>
 
-```
-crates/
-  thin-core/     核心库：磁盘探测、规则、扫描、核算、安全清理、查找（无 UI 依赖）
-    src/{lib,model,fsutil,probe,rules,scan,clean,finder,apps,discover,fmt}.rs
-    rules/default.json
-  thin-cli/      前端：CLI (clap) + TUI (ratatui)
-    src/{main,report,top,tui,treemap}.rs
-```
+---
 
-分层目的：核心逻辑可被 CLI、TUI、未来的 SwiftUI GUI 或测试复用。
+## 为什么做 thin
 
-## 构建
+macOS 的「系统数据 / 系统缓存」是个兜底分类，会把虚拟机、系统卷、缓存、Homebrew 全算在一起，
+动辄显示几十 GB，却说不清是什么。thin 反着来：
 
-```bash
-cargo build --release
-# 产物: target/release/thin
-```
+- 🧭 **还原真实路径** —— 每一项都注明「这是什么 / 删了会怎样 / 能否恢复」
+- 🧮 **诚实核算** —— 按实际分配块统计（稀疏文件不虚高）、按 inode 去重（硬链接不重复）、排除嵌套重复路径
+- 🎚️ **风险分级** —— `安全` / `需确认` / `不可再生`，默认只把前两类计入「可回收」
+- ♻️ **默认可恢复** —— 清理 = 移入 `~/.thin/quarantine`，随时 `restore`；只有显式 `purge` 才永久删除
+- 🛡️ **安全门** —— 受保护路径 / 裸顶层目录 / 卷隔离 / 需 sudo 项自动跳过
+- 📌 **保护在研项目** —— `thin protect add .` 让正在开发的 `target/`、`node_modules/` 不再被清理
+- 🤖 **Agent 友好** —— 关键命令都有 `--json`，`discover → rules add → clean` 可非交互跑通
 
-## 命令
+## 快速开始
+
+### 安装
 
 ```bash
-# 磁盘概览：容量、卷、快照、外接盘
-thin probe
+# 从 Git 安装（需要 Rust 1.85+，edition 2024）
+cargo install --git https://github.com/lazyfury/thin.git thin-cli
 
-# 扫描已知可清理项并估算可回收空间
-thin scan                 # 默认显示 safe + confirm
-thin scan --all           # 额外显示不可再生项（虚拟机等）
-thin scan --min 100MB     # 最小体积过滤
-thin scan --json          # 机器可读输出
-thin scan --detail rust-target   # 查看某规则详细解释
+# 或本地构建
+git clone https://github.com/lazyfury/thin.git && cd thin
+cargo build --release        # 产物 target/release/thin
+```
 
-# 列出某目录下最大的子项（类似 du -sh PATH/* | sort -rh）
-thin top ~/Library --limit 20
+### 30 秒上手
 
-# 无参数：直接进入交互式 TUI（非 TTY 时会打印帮助）
-thin
-thin tui                       # 显式进入 TUI
+```bash
+thin probe                     # 磁盘概览：容量 / 卷 / 快照 / 外接盘
+thin scan                      # 扫描已知可清理项，按体积排序
+thin clean                     # 默认 dry-run 预览，不执行任何操作
+thin clean --apply             # 确认后移入隔离区（可恢复）
+thin quarantine list           # 查看隔离会话
+thin quarantine restore <会话>  # 撤回
+thin                            # 无参数：进入交互式 TUI
+```
+
+> 在项目根执行 `thin protect add .`，即可保护该项目（含 `target/`、`node_modules/` 等）不被清理，
+> 避免每次 `cargo install` 全量重编。
+
+## 演示
+
+```text
+$ thin scan
+        大小  风险       类别      名称                        路径
+    4.4 GB  需确认    应用缓存   Ollama 模型                 ~/.ollama/models
+    1.8 GB  需确认    开发缓存   Android SDK               ~/Library/Android/sdk
+    1.6 GB  需确认    开发缓存   Rust 工具链 (toolchains)     ~/.rustup/toolchains
+  947.4 MB  需确认    日志      符号缓存 (uuidtext)          /private/var/db/uuidtext
+  688.3 MB  安全     开发缓存   Rust 编译产物 (target/)      ~/proj/target
+  ...
+
+可回收总计: 8.7 GB （安全 688.3 MB / 需确认 8.0 GB / 需手动 2.2 GB）
+
+$ thin clean
+• Chrome 缓存    110.1 MB   →  移入隔离区（可恢复）
+• Homebrew 缓存   22.3 MB   →  移入隔离区（可恢复）
+
+共 2 项，预计可释放 132.4 MB
+（dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）
+```
+
+> TUI：`thin` 进入，六个标签 —— 清理 / 概览（硬盘占用图）/ 大文件 / 重复 / 应用 / 状态（实时）。
+> 加载与扫描带进度：确定进度用进度条，不确定用 spinner。
+
+## 命令速查
+
+<details open>
+<summary><b>扫描与归因</b></summary>
+
+```bash
+thin probe                        # 磁盘概览：容量、卷、快照、外接盘
+thin scan                         # 已知可清理项（默认 safe + confirm）
+thin scan --all                   # 额外显示不可再生项（虚拟机等）
+thin scan --min 100MB             # 最小体积过滤
+thin scan --json                  # 机器可读输出
+thin scan --detail rust-target    # 查看某规则详细解释
+thin top ~/Library --limit 20     # 某目录下最大的子项（类似 du -sh | sort -rh）
+thin discover --min 1G            # 找出「未被规则覆盖」的大目录
+thin discover --json              # 机器可读
+
+thin                              # 无参数：进入交互式 TUI
+thin tui                          # 显式进入 TUI
 thin tui --min 100MB
-# 标签: 清理 / 概览(硬盘占用图) / 大文件 / 重复 / 应用 / 状态(实时)
-# 加载与扫描带进度：确定进度用进度条(Gauge)，不确定用 spinner 动画
+```
 
-# 规则 / 归因 / agent 入口
-thin rules                          # 列出所有规则
-thin rules path                     # 用户规则文件路径
-thin rules add --path "~/..." --risk safe --regenerable
-thin rules remove <id>
-thin discover --min 1G              # 找出未被规则覆盖的大目录
-thin discover --json                # 机器可读
+</details>
 
-# 清理：默认只预览；--apply 才真正移入隔离区
-thin clean                          # dry-run 预览（默认「安全」项）
-thin clean --apply                  # 移入隔离区（会二次确认）
-thin clean --apply --yes            # 跳过确认
-thin clean --apply --all            # 连「需确认」项一起处理
+<details open>
+<summary><b>清理与隔离区</b></summary>
+
+```bash
+thin clean                        # dry-run 预览（默认「安全」项）
+thin clean --apply                # 移入隔离区（二次确认）
+thin clean --apply --yes          # 跳过确认
+thin clean --apply --all          # 连「需确认」项一起处理
 thin clean --apply --id rust-target --id chrome-optguide-model
-thin clean --json                    # 机器可读计划: approved / skipped / approvedBytes / protectedBytes
-thin clean --apply --json --yes      # 执行并输出账本 JSON
+thin clean --json                 # 机器可读计划：approved / skipped / approvedBytes / protectedBytes
+thin clean --apply --json --yes   # 执行并输出账本 JSON
 
-# 保护名单：正在开发的项目的构建产物不被清理（含所有子目录）
-thin protect add .                  # 在项目根执行即可保护整个项目（target/、node_modules/…）
-thin protect list                   # 查看
-thin protect remove .               # 解除保护
-
-# 隔离区管理
-thin quarantine list                # 查看所有会话
-thin quarantine restore             # 恢复最近一次
-thin quarantine restore --all       # 恢复全部
-thin quarantine purge <session>     # 永久删除
+thin quarantine list              # 查看所有会话
+thin quarantine restore           # 恢复最近一次
+thin quarantine restore --all     # 恢复全部
+thin quarantine purge <会话>       # 永久删除
 thin quarantine purge --older-than 7d
+```
 
-# 大文件 / 重复文件 / App 管理
+</details>
+
+<details open>
+<summary><b>保护名单</b></summary>
+
+```bash
+thin protect add .                # 保护当前项目（含所有子目录）
+thin protect list                 # 查看
+thin protect remove .             # 解除
+```
+
+</details>
+
+<details>
+<summary><b>大文件 / 重复文件 / App 管理</b></summary>
+
+```bash
 thin large ~/Documents --min 100MB --limit 30
 thin large ~/Documents --min 100MB --json      # 机器可读（含 protected 标记）
 thin dupes ~/Downloads --min 10MB              # 只读报告（受保护副本标 [已保护]，不计入可回收）
@@ -98,54 +153,37 @@ thin apps                                      # 列出全部 App（含关联残
 thin apps --min 500MB                          # 只看大件
 thin uninstall <名称>                           # 预览卸载计划
 thin uninstall <名称> --apply                   # 卸载并移入隔离区
-
-# 预设 / 历史 / 定时任务（详见下方「定时清理」）
-thin preset list                               # 内置默认 + 用户预设
-thin preset add nightly                        # 新建预设（默认只选 cache 类）
-thin preset add big --category app-cache --category dev-cache --risk safe --purge-after-days 3
-thin clean --preset nightly                    # 按预设筛选（dry-run）
-thin history --limit 20                        # 清理历史
-thin history --json                            # 机器可读
-thin history --reconcile                       # 用隔离区账本回填旧版本遗漏的历史
-thin schedule install --preset nightly --weekly --hour 3 --dry-run   # 安全预览 plist
-thin schedule install --preset nightly --weekly --hour 3             # 安装 launchd 任务
-thin schedule status                           # 查看状态
-thin schedule run --preset nightly --dry-run   # 预览将清理的项（不 purge/不隔离）
-thin schedule run --preset nightly             # 立即按预设跑一次（真实清理）
-thin schedule uninstall                        # 卸载
 ```
 
-## 定时清理
+</details>
 
-纯 CLI 不需要 App，用 macOS 原生 launchd（LaunchAgent），以当前用户身份运行：
+<details>
+<summary><b>规则 / 预设 / 历史 / 定时任务</b></summary>
 
-- **只能执行用户自定义预设**：`thin schedule install` 要求 `--preset` 是 `thin preset add` 创建的；
-  内置 `default` 预设仅供手动 `thin clean --preset default`。
-- **内置默认预设只处理 cache 类**：`system-cache / app-cache / dev-cache`，且仅 `safe` + 可再生 + 非 sudo。
-- **清理 + 回收两步**：隔离同卷改名**不释放空间**，所以定时任务先 `quarantine purge` 早于预设
-  `purgeAfterDays` 的旧会话，再隔离本次新项。
-- **历史记录**：每次实际清理写入 `~/.thin/history.jsonl`（触发方式、预设、项数、释放/跳过字节、purged 字节），
-  `thin history` 查看。
-- **Full Disk Access**：定时任务要读受保护目录，需在「系统设置 → 隐私与安全 → 完全磁盘访问权限」
-  里把 thin 二进制加入；Homebrew 升级会替换二进制导致授权失效，建议装到稳定路径。
+```bash
+thin rules                          # 列出所有规则（带【内置/用户】来源）
+thin rules path                     # 用户规则文件路径
+thin rules add --path "~/..." --risk safe --regenerable
+thin rules remove <id>
+thin rules export --new             # 导出未并入内置的用户规则
 
-定时任务由 launchd 调起 `thin schedule run --preset <id>`，日志在 `~/.thin/schedule.log` / `schedule.err`。
+thin preset list                    # 内置默认 + 用户预设
+thin preset add nightly             # 新建预设（默认只选 cache 类）
+thin clean --preset nightly         # 按预设筛选（dry-run）
 
-## App 残留调查
+thin history --limit 20             # 清理历史
+thin history --json                 # 机器可读
+thin history --reconcile            # 用隔离区账本回填遗漏的历史
 
-`thin apps` / `thin uninstall` 的残留探测覆盖常见写入位置：
+thin schedule install --preset nightly --weekly --hour 3 --dry-run   # 预览 plist
+thin schedule install --preset nightly --weekly --hour 3             # 安装 launchd 任务
+thin schedule status
+thin schedule run --preset nightly --dry-run   # 预览将清理的项（不 purge/不隔离）
+thin schedule run --preset nightly             # 立即按预设跑一次
+thin schedule uninstall
+```
 
-- **用户 `~/Library/`**：Application Support、Caches、Logs、Containers、Group Containers、
-  Application Scripts、WebKit、HTTPStorages、Preferences（含 ByHost）、LaunchAgents、
-  Saved Application State、Cookies；
-- **主目录点目录 / XDG**：`~/.<name>`、`~/.config/<name>`、`~/.cache/<name>`、`~/.local/share|state/<name>`；
-- **系统级 `/Library/`**：Application Support、Caches、Logs、Preferences、LaunchAgents、
-  LaunchDaemons、PrivilegedHelperTools、Application Scripts（标记 **需 sudo**，安全门跳过并提示手动）。
-
-目录名只用强证据：完整 bundle id、bundle 末段（非通用词）、显示名/归一化名，以及精确匹配的
-提示表（如 VS Code→`Code`、Chrome→`Google`、Docker→`Docker`）。**不用** bundle 中间段做泛匹配，
-避免误删同厂商其它 App 的数据；大小写不敏感用真实路径去重。`pkgutil` 命中的安装包 id 会一并列出，
-便于 `sudo pkgutil --forget`。
+</details>
 
 ## 安全模型
 
@@ -154,9 +192,11 @@ thin schedule uninstall                        # 卸载
 | 默认可恢复 | 清理 = 移动到 `~/.thin/quarantine/<会话>/`（同卷内为改名，**不立即释放空间**；`quarantine purge` 后才真正释放） |
 | Journal | 每次清理写入账本（原始路径、隔离路径、大小、规则），支持精确回滚 |
 | 受保护白名单 | `/`、`/System`、`/usr`、`/etc`、`/private/var/vm`、`/private/var/db`、`/Library/Apple`、Keychains、iCloud、CloudStorage —— 永不触碰 |
+| 个人目录顶层 | `~/Documents`、`~/Desktop`、`~/Library` 等**本身**不可整体清理，但其内部具体缓存/项目产物仍可清 |
 | 裸顶层目录 | `/Applications`、`/Library`、`/opt`、`/Volumes`、`/Users`、`/private/var` 等目录**本身**永不被删 |
+| 保护名单 | `thin protect` 标记的路径及其子目录永不清理（`scan` 标「已保护」、不计入可回收，`clean` 跳过） |
 | 路径校验 | 拒绝空路径、控制字符、`..` 组件；符号链接先解析再判定 |
-| 预演=执行 | `clean` 的 dry-run 与 `--apply` 共用同一安全门，跳过项不计入可释放 |
+| 预演=执行 | `clean` / `dupes` / `uninstall` 的 dry-run 与 `--apply` 共用同一安全门，跳过项不计入可释放 |
 | 卷隔离 | 目标必须与隔离区（`~/.thin`）同卷；外接盘/其他挂载被拒绝，避免跨卷复制 |
 | App 保护 | 运行中的 App 拒绝卸载（探测超时视为运行中）；系统关键 App 禁止卸载 |
 | 超时 | `tmutil`/`plutil`/`pgrep`/`mount`/`date` 均带超时，不会挂死 |
@@ -170,17 +210,40 @@ thin schedule uninstall                        # 卸载
 | 稀疏文件（如 `Docker.raw` 逻辑 228GB / 实占 74MB） | 按实际分配块统计 ✅ |
 | 硬链接（如 Rust `.a` 文件） | 按 (dev, inode) 去重 ✅ |
 | 跨挂载点 / 外接盘 | 不跨越文件系统边界，外接卷单独标注 ✅ |
-| 父子路径重复（`~/Library/Caches` 与其子目录） | 汇总时排除嵌套项 ✅ |
+| 父子路径重复（`~/Library/Caches` 与其子目录） | 汇总时按风险分层去重，safe 子项不被 confirm 父项吞掉 ✅ |
 | APFS 克隆共享块 | 已知局限，暂无法在此层面拆分 ⚠️ |
 
-## 规则目录
+## 定时清理
 
-所有可清理项声明在 [`rules/default.json`](./crates/thin-core/rules/default.json)，编译期嵌入，可随版本更新。
-内置约 70 条，覆盖常见 `~/Library` 缓存、以及大量 `~/.xx` / `~/.cache/*` 开发缓存
+纯 CLI 不需要常驻 App，用 macOS 原生 launchd（LaunchAgent），以当前用户身份运行。
+
+<details>
+<summary><b>展开：设计要点</b></summary>
+
+- **只能执行用户自定义预设**：`thin schedule install` 要求 `--preset` 是 `thin preset add` 创建的；
+  内置 `default` 预设仅供手动 `thin clean --preset default`。
+- **内置默认预设只处理 cache 类**：`system-cache / app-cache / dev-cache`，且仅 `safe` + 可再生 + 非 sudo。
+- **清理 + 回收两步**：隔离同卷改名**不释放空间**，所以定时任务先 `quarantine purge` 早于预设
+  `purgeAfterDays` 的旧会话，再隔离本次新项。
+- **历史记录**：每次实际清理写入 `~/.thin/history.jsonl`（触发方式、预设、项数、释放/跳过字节、purged 字节）。
+- **Full Disk Access**：定时任务要读受保护目录，需在「系统设置 → 隐私与安全 → 完全磁盘访问权限」
+  里把 thin 二进制加入；Homebrew 升级会替换二进制导致授权失效，建议装到稳定路径。
+
+定时任务由 launchd 调起 `thin schedule run --preset <id>`，日志在 `~/.thin/schedule.log` / `schedule.err`。
+
+</details>
+
+## 规则系统
+
+所有可清理项声明在 [`rules/default.json`](./crates/thin-core/rules/default.json)，编译期嵌入。
+内置 **70 条**，覆盖常见 `~/Library` 缓存、大量 `~/.xx` / `~/.cache/*` 开发缓存
 （pip/uv/yarn/pnpm/bun、Go、Maven、NuGet、CocoaPods/SwiftPM、Playwright、HuggingFace 等）
-和 Xcode 大件（DeviceSupport/模拟器缓存）。
+以及 Xcode 大件（DeviceSupport / 模拟器缓存）。
 
-支持两种匹配方式：
+<details>
+<summary><b>展开：匹配方式与用户规则</b></summary>
+
+两种匹配方式：
 
 ```jsonc
 { "matcher": { "kind": "path", "paths": ["~/Library/Caches"] } }
@@ -196,55 +259,73 @@ thin schedule uninstall                        # 卸载
 
 用 `THIN_RULES=/path/to/rules.json thin scan` 可覆盖内置规则。
 
-### 用户规则（可热更新）
-
-内置规则之外，可把自己的发现写入用户规则，与内置规则按 id 合并、**用户优先**。
-两个来源（加载顺序：内置 → `rules.json` → `rules.d/*.json` 按文件名）：
+**用户规则（可热更新）** —— 与内置规则按 id 合并、用户优先。加载顺序：内置 → `rules.json` → `rules.d/*.json`（按文件名）。
 
 - `~/.thin/rules.json` —— 主文件（`thin rules add` 默认写这里）
-- `~/.thin/rules.d/*.json` —— 可放多个文件，**每个文件为单条规则或规则数组**，适合逐步添加/管理；
-  `thin rules add --dir` 会写成一规则一文件 `rules.d/<id>.json`
+- `~/.thin/rules.d/*.json` —— 每个文件为单条规则或规则数组，适合逐步添加；`thin rules add --dir` 写 `rules.d/<id>.json`
 
 ```bash
 thin rules path                             # 显示两个位置
 thin rules add --path "~/Library/.../SomeApp/Cache" --risk safe --regenerable --dir
 cat rule.json | thin rules add --json -     # 或用完整 JSON
-thin rules list                             # 带【内置/用户】来源列
-thin rules remove custom-someapp            # 同时清理 rules.json 与 rules.d/<id>.json
+thin scan --detail custom-someapp           # 验证命中
+thin rules export --new                     # 导出未并入内置的规则，合进 default.json 后重新构建
 ```
 
-**先打包，再逐步增规则，最后提升到代码**（持续演进的推荐流程）：
+</details>
 
-```bash
-# 1. 先发布，用户/自己在 ~/.thin 里逐步加规则验证效果
-thin rules add --path "~/Library/.../SomeApp/Cache" --id custom-someapp --dir
+## App 残留调查
 
-# 2. 验证命中
-thin scan --detail custom-someapp
+`thin apps` / `thin uninstall` 的残留探测覆盖常见写入位置：
 
-# 3. 规则稳定后，导出为 JSON 并入内置 default.json，随版本发布
-thin rules export --new            # 只导出内置里没有的规则，方便直接合并
+<details>
+<summary><b>展开：探测范围</b></summary>
+
+- **用户 `~/Library/`**：Application Support、Caches、Logs、Containers、Group Containers、
+  Application Scripts、WebKit、HTTPStorages、Preferences（含 ByHost）、LaunchAgents、
+  Saved Application State、Cookies；
+- **主目录点目录 / XDG**：`~/.<name>`、`~/.config/<name>`、`~/.cache/<name>`、`~/.local/share|state/<name>`；
+- **系统级 `/Library/`**：Application Support、Caches、Logs、Preferences、LaunchAgents、
+  LaunchDaemons、PrivilegedHelperTools、Application Scripts（标记 **需 sudo**，安全门跳过并提示手动）。
+
+目录名只用强证据：完整 bundle id、bundle 末段（非通用词）、显示名/归一化名，以及精确匹配的
+提示表（如 VS Code→`Code`、Chrome→`Google`、Docker→`Docker`）。**不用** bundle 中间段做泛匹配，
+避免误删同厂商其它 App 的数据；大小写不敏感用真实路径去重。`pkgutil` 命中的安装包 id 会一并列出，
+便于 `sudo pkgutil --forget`。
+
+</details>
+
+## 项目结构
+
+```
+crates/
+  thin-core/     核心库：磁盘探测、规则、扫描、核算、安全清理、查找（无 UI 依赖）
+    src/{lib,model,fsutil,probe,rules,scan,clean,protect,discover,finder,
+         apps,preset,history,schedule,status,progress,proc,fmt}.rs
+    rules/default.json
+  thin-cli/      前端：CLI (clap) + TUI (ratatui)
+    src/{main,report,top,tui,treemap}.rs
 ```
 
-`thin rules export` 输出的是一个 JSON 数组，合进
-[`crates/thin-core/rules/default.json`](./crates/thin-core/rules/default.json) 后重新构建即可；
-因为用户规则按 id 覆盖内置，提升后可从 `~/.thin` 删除对应规则。
-
-`thin discover` 会标注每个大目录的归因（已归类 / 部分 / 未归类）并直接给出补规则的命令。
-完整 agent 流程见 [AGENTS.md](./AGENTS.md)。
+分层目的：核心逻辑可被 CLI、TUI、未来的 SwiftUI GUI 或测试复用。
 
 ## 路线图
 
 - **M0** CLI 只读扫描 + 诚实核算 + dry-run ✅
 - **M1** 安全清理：隔离区 + Journal + 恢复/永久删除 + TUI 交互 ✅
 - **M2** 大文件查找 / 重复文件检测 / App 卸载（均复用隔离区）✅
-- **M3** 规则热更新（用户规则文件）+ 异常大目录归因 + **agent 规则写入入口** ✅
-- **M4** TUI 多标签页（清理/概览占用图/大文件/重复/应用，懒加载 + 进度条/spinner）✅
-- **M5（当前）** 清理预设 + 历史记录 + 定时任务（launchd，仅执行用户预设）+ TUI 状态页（基本信息/实时）✅
-- M6 SwiftUI 前端
+- **M3** 规则热更新（用户规则文件）+ 异常大目录归因 + agent 规则写入入口 ✅
+- **M4** TUI 多标签页（清理 / 概览占用图 / 大文件 / 重复 / 应用，懒加载 + 进度条/spinner）✅
+- **M5（当前）** 清理预设 + 历史记录 + 定时任务（launchd）+ 保护名单 + 统一安全门口径 + agent JSON ✅
+- **M6** SwiftUI 前端
 
-## 测试
+## 开发
 
 ```bash
+cargo build --release
 cargo test
 ```
+
+## 许可
+
+MIT © [lazyfury](https://github.com/lazyfury)

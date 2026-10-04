@@ -3,6 +3,7 @@ name = "thin-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 description = "thin 命令行与 TUI 前端"
 
 [[bin]]
