@@ -10,11 +10,15 @@ pub mod discover;
 pub mod finder;
 pub mod fmt;
 pub mod fsutil;
+pub mod history;
 pub mod model;
+pub mod preset;
 pub mod probe;
 pub mod proc;
 pub mod progress;
 pub mod rules;
 pub mod scan;
+pub mod schedule;
+pub mod status;
 
 pub use model::{Category, CleanItem, Explain, Matcher, ReclaimSummary, Risk, Rule};

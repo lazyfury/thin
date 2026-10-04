@@ -17,6 +17,9 @@ thin rules [list|path]         # 规则列表 / 用户规则文件路径
 thin rules add ...             # 新增规则（agent 入口）
 thin rules remove <id>         # 删除用户规则
 thin clean [--apply]           # 清理（默认 dry-run）
+thin preset list|add|remove    # 清理预设（定时任务只执行用户预设）
+thin history [--limit N]       # 清理历史记录
+thin schedule install|status|run|uninstall   # 定时任务（launchd）
 thin quarantine list|restore|purge
 thin large [ROOT] --min --limit
 thin dupes [ROOT] --min [--apply]

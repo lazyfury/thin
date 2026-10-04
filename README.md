@@ -52,10 +52,11 @@ thin scan --detail rust-target   # 查看某规则详细解释
 # 列出某目录下最大的子项（类似 du -sh PATH/* | sort -rh）
 thin top ~/Library --limit 20
 
-# 交互式 TUI（首页=清理；1-5 / Tab 切换标签）
-thin tui
+# 无参数：直接进入交互式 TUI（非 TTY 时会打印帮助）
+thin
+thin tui                       # 显式进入 TUI
 thin tui --min 100MB
-# 标签: 清理 / 概览(硬盘占用图) / 大文件 / 重复 / 应用
+# 标签: 清理 / 概览(硬盘占用图) / 大文件 / 重复 / 应用 / 状态(实时)
 # 加载与扫描带进度：确定进度用进度条(Gauge)，不确定用 spinner 动画
 
 # 规则 / 归因 / agent 入口
@@ -88,7 +89,51 @@ thin apps                                      # 列出全部 App（含关联残
 thin apps --min 500MB                          # 只看大件
 thin uninstall <名称>                           # 预览卸载计划
 thin uninstall <名称> --apply                   # 卸载并移入隔离区
+
+# 预设 / 历史 / 定时任务（详见下方「定时清理」）
+thin preset list                               # 内置默认 + 用户预设
+thin preset add nightly                        # 新建预设（默认只选 cache 类）
+thin preset add big --category app-cache --category dev-cache --risk safe --purge-after-days 3
+thin clean --preset nightly                    # 按预设筛选（dry-run）
+thin history --limit 20                        # 清理历史
+thin schedule install --preset nightly --weekly --hour 3 --dry-run   # 安全预览 plist
+thin schedule install --preset nightly --weekly --hour 3             # 安装 launchd 任务
+thin schedule status                           # 查看状态
+thin schedule run --preset nightly             # 立即按预设跑一次
+thin schedule uninstall                        # 卸载
 ```
+
+## 定时清理
+
+纯 CLI 不需要 App，用 macOS 原生 launchd（LaunchAgent），以当前用户身份运行：
+
+- **只能执行用户自定义预设**：`thin schedule install` 要求 `--preset` 是 `thin preset add` 创建的；
+  内置 `default` 预设仅供手动 `thin clean --preset default`。
+- **内置默认预设只处理 cache 类**：`system-cache / app-cache / dev-cache`，且仅 `safe` + 可再生 + 非 sudo。
+- **清理 + 回收两步**：隔离同卷改名**不释放空间**，所以定时任务先 `quarantine purge` 早于预设
+  `purgeAfterDays` 的旧会话，再隔离本次新项。
+- **历史记录**：每次实际清理写入 `~/.thin/history.jsonl`（触发方式、预设、项数、释放/跳过字节、purged 字节），
+  `thin history` 查看。
+- **Full Disk Access**：定时任务要读受保护目录，需在「系统设置 → 隐私与安全 → 完全磁盘访问权限」
+  里把 thin 二进制加入；Homebrew 升级会替换二进制导致授权失效，建议装到稳定路径。
+
+定时任务由 launchd 调起 `thin schedule run --preset <id>`，日志在 `~/.thin/schedule.log` / `schedule.err`。
+
+## App 残留调查
+
+`thin apps` / `thin uninstall` 的残留探测覆盖常见写入位置：
+
+- **用户 `~/Library/`**：Application Support、Caches、Logs、Containers、Group Containers、
+  Application Scripts、WebKit、HTTPStorages、Preferences（含 ByHost）、LaunchAgents、
+  Saved Application State、Cookies；
+- **主目录点目录 / XDG**：`~/.<name>`、`~/.config/<name>`、`~/.cache/<name>`、`~/.local/share|state/<name>`；
+- **系统级 `/Library/`**：Application Support、Caches、Logs、Preferences、LaunchAgents、
+  LaunchDaemons、PrivilegedHelperTools、Application Scripts（标记 **需 sudo**，安全门跳过并提示手动）。
+
+目录名只用强证据：完整 bundle id、bundle 末段（非通用词）、显示名/归一化名，以及精确匹配的
+提示表（如 VS Code→`Code`、Chrome→`Google`、Docker→`Docker`）。**不用** bundle 中间段做泛匹配，
+避免误删同厂商其它 App 的数据；大小写不敏感用真实路径去重。`pkgutil` 命中的安装包 id 会一并列出，
+便于 `sudo pkgutil --forget`。
 
 ## 安全模型
 
@@ -156,8 +201,9 @@ thin rules remove custom-someapp
 - **M1** 安全清理：隔离区 + Journal + 恢复/永久删除 + TUI 交互 ✅
 - **M2** 大文件查找 / 重复文件检测 / App 卸载（均复用隔离区）✅
 - **M3** 规则热更新（用户规则文件）+ 异常大目录归因 + **agent 规则写入入口** ✅
-- **M4（当前）** TUI 多标签页（清理/概览占用图/大文件/重复/应用，懒加载 + 进度条/spinner）✅
-- M5 SwiftUI 前端
+- **M4** TUI 多标签页（清理/概览占用图/大文件/重复/应用，懒加载 + 进度条/spinner）✅
+- **M5（当前）** 清理预设 + 历史记录 + 定时任务（launchd，仅执行用户预设）+ TUI 状态页（基本信息/实时）✅
+- M6 SwiftUI 前端
 
 ## 测试
 

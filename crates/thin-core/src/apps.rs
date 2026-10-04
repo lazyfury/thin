@@ -10,13 +10,22 @@ pub struct AppInfo {
     pub path: PathBuf,
     pub bundle_id: Option<String>,
     pub size: u64,
-    /// 关联残留：(路径, 大小)
-    pub leftovers: Vec<(PathBuf, u64)>,
+    /// 关联残留
+    pub leftovers: Vec<Leftover>,
+}
+
+/// 一条关联残留
+#[derive(Debug, Clone)]
+pub struct Leftover {
+    pub path: PathBuf,
+    pub size: u64,
+    /// 位于系统目录（/Library 等），删除需 root
+    pub sudo: bool,
 }
 
 impl AppInfo {
     pub fn leftovers_size(&self) -> u64 {
-        self.leftovers.iter().map(|(_, s)| *s).sum()
+        self.leftovers.iter().map(|l| l.size).sum()
     }
 
     pub fn total(&self) -> u64 {
@@ -75,7 +84,8 @@ pub fn list_apps() -> Vec<AppInfo> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|s| s.to_str()) == Some("app") {
-                app_paths.push(path);
+                // 规范化大小写/符号链接，便于去重与显示
+                app_paths.push(std::fs::canonicalize(&path).unwrap_or(path));
             }
         }
     }
@@ -89,16 +99,7 @@ pub fn list_apps() -> Vec<AppInfo> {
                 .unwrap_or_default();
             let size = crate::fsutil::dir_size(&path);
             let bundle_id = bundle_id(&path);
-            let leftovers: Vec<(PathBuf, u64)> = bundle_id
-                .as_deref()
-                .map(find_leftovers)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|p| {
-                    let s = crate::fsutil::size_of(&p);
-                    (p, s)
-                })
-                .collect();
+            let leftovers = find_leftovers(&name, bundle_id.as_deref(), &path);
             AppInfo {
                 name,
                 path,
@@ -187,25 +188,235 @@ pub fn bundle_id(app: &Path) -> Option<String> {
     if s.is_empty() { None } else { Some(s) }
 }
 
-/// 查找某个 bundle id 在用户库中的关联残留
-pub fn find_leftovers(bundle_id: &str) -> Vec<PathBuf> {
-    let home = match std::env::var("HOME") {
-        Ok(h) => PathBuf::from(h),
-        Err(_) => return Vec::new(),
-    };
+/// 少量常见 App 的目录名提示（bundle id 精确匹配）。
+///
+/// 有些 App 的数据目录名与显示名/ bundle id 无关（如 VS Code → `Code`、
+/// Chrome → `Google`），这里做精确映射，避免用弱名称做竞配。
+const APP_HINTS: &[(&str, &[&str])] = &[
+    ("com.microsoft.VSCode", &["Code"]),
+    ("com.microsoft.VSCodeInsiders", &["Code - Insiders"]),
+    ("com.google.Chrome", &["Google"]),
+    ("com.google.Chrome.canary", &["Google"]),
+    ("com.brave.Browser", &["BraveSoftware", "Brave Browser"]),
+    ("com.docker.docker", &["Docker"]),
+    ("com.electron.docker-frontend", &["Docker Desktop"]),
+    ("com.tinyspeck.slackmacgap", &["Slack"]),
+    ("org.mozilla.firefox", &["Firefox"]),
+    ("com.spotify.client", &["Spotify"]),
+    ("com.hnc.Discord", &["discord"]),
+];
+
+/// 把名字归一化为 alnum 小写，用于目录名匹配
+fn normalize_token(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+/// 过于通用、不适合单独作为目录 token 的段（避免误配）
+const GENERIC_TOKENS: &[&str] = &[
+    "app", "apps", "com", "org", "net", "mac", "macos", "osx", "desktop", "client", "helper",
+    "service", "main", "core", "pro", "lite",
+];
+
+/// 从显示名 / bundle id 推导可能的数据目录名。
+///
+/// 只用强证据：完整 bundle id、bundle 末段（非通用词）、显示名、归一化显示名，
+/// 以及精确匹配的提示表。**不用** bundle 中间段（如 `google`）做竞配，
+/// 避免误删其它同厂商 App 的数据。
+fn name_tokens(name: &str, bundle_id: Option<&str>) -> Vec<String> {
+    let mut v: Vec<String> = Vec::new();
+    let n = name.trim();
+    if !n.is_empty() {
+        v.push(n.to_string());
+    }
+    let norm = normalize_token(n);
+    if norm.len() >= 3 {
+        v.push(norm);
+    }
+    if let Some(b) = bundle_id {
+        let bl = b.to_lowercase();
+        v.push(bl.clone());
+        if let Some(last) = bl.rsplit('.').next() {
+            if last.len() >= 3 && !GENERIC_TOKENS.contains(&last) {
+                v.push(last.to_string());
+            }
+        }
+        for (bid, hints) in APP_HINTS {
+            if bid.eq_ignore_ascii_case(b) {
+                for h in *hints {
+                    v.push((*h).to_string());
+                }
+            }
+        }
+    }
+    v.retain(|t| t.len() >= 3 && !t.chars().all(|c| c == '.'));
+    v.sort();
+    v.dedup();
+    v
+}
+
+/// 生成所有候选残留路径（path, sudo）
+fn candidate_paths(home: &Path, tokens: &[String]) -> Vec<(PathBuf, bool)> {
+    let mut out: Vec<(PathBuf, bool)> = Vec::new();
     let lib = home.join("Library");
-    let candidates = [
-        lib.join("Application Support").join(bundle_id),
-        lib.join("Caches").join(bundle_id),
-        lib.join("Logs").join(bundle_id),
-        lib.join("Containers").join(bundle_id),
-        lib.join("WebKit").join(bundle_id),
-        lib.join("HTTPStorages").join(bundle_id),
-        lib.join("Saved Application State")
-            .join(format!("{bundle_id}.savedState")),
-        lib.join("Preferences").join(format!("{bundle_id}.plist")),
-    ];
-    candidates.into_iter().filter(|p| p.exists()).collect()
+
+    // 用户 Library 子目录
+    for sub in [
+        "Application Support",
+        "Caches",
+        "Logs",
+        "Containers",
+        "Application Scripts",
+        "WebKit",
+        "HTTPStorages",
+        "Preferences",
+        "LaunchAgents",
+        "Saved Application State",
+        "Group Containers",
+    ] {
+        for t in tokens {
+            out.push((lib.join(sub).join(t), false));
+        }
+    }
+    // 带后缀的常见形式
+    for t in tokens {
+        out.push((lib.join("Preferences").join(format!("{t}.plist")), false));
+        out.push((lib.join("LaunchAgents").join(format!("{t}.plist")), false));
+        out.push((
+            lib.join("Saved Application State")
+                .join(format!("{t}.savedState")),
+            false,
+        ));
+        out.push((
+            lib.join("Cookies").join(format!("{t}.binarycookies")),
+            false,
+        ));
+    }
+
+    // 主目录点目录 / XDG
+    for base in [".config", ".cache", ".local/share", ".local/state"] {
+        for t in tokens {
+            out.push((home.join(base).join(t), false));
+        }
+    }
+    for t in tokens {
+        out.push((home.join(format!(".{t}")), false));
+    }
+
+    // 系统级 /Library（需 sudo）
+    let sys = Path::new("/Library");
+    for sub in [
+        "Application Support",
+        "Caches",
+        "Logs",
+        "Preferences",
+        "LaunchAgents",
+        "LaunchDaemons",
+        "PrivilegedHelperTools",
+        "Application Scripts",
+    ] {
+        for t in tokens {
+            out.push((sys.join(sub).join(t), true));
+        }
+    }
+    for t in tokens {
+        out.push((sys.join("Preferences").join(format!("{t}.plist")), true));
+        out.push((sys.join("LaunchAgents").join(format!("{t}.plist")), true));
+        out.push((sys.join("LaunchDaemons").join(format!("{t}.plist")), true));
+    }
+    out
+}
+
+/// 查找某个 App 的关联残留。
+///
+/// 覆盖：用户 `~/Library` 各子目录、主目录点目录/XDG、以及系统级 `/Library`
+/// （后者标记 `sudo=true`，安全门会跳过并提示手动处理）。仅返回真实存在的路径。
+pub fn find_leftovers(name: &str, bundle_id: Option<&str>, app_path: &Path) -> Vec<Leftover> {
+    let Ok(home) = std::env::var("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let tokens = name_tokens(name, bundle_id);
+    let mut candidates = candidate_paths(&home, &tokens);
+
+    // ByHost 偏好：<bundle>.<uuid>.plist
+    if let Some(b) = bundle_id {
+        let byhost = home.join("Library/Preferences/ByHost");
+        if let Ok(rd) = std::fs::read_dir(&byhost) {
+            for e in rd.flatten() {
+                if e.file_name().to_string_lossy().starts_with(b) {
+                    candidates.push((e.path(), false));
+                }
+            }
+        }
+
+        // Group Containers：目录名通常含 bundle 前缀（如 group.com.docker）。
+        // 用“去掉末段的 bundle 前缀”做强匹配，避免泛词误配。
+        let bl = b.to_lowercase();
+        let prefix = bl
+            .rsplit_once('.')
+            .map(|(p, _)| p.to_string())
+            .unwrap_or_else(|| bl.clone());
+        let gc = home.join("Library/Group Containers");
+        if let Ok(rd) = std::fs::read_dir(&gc) {
+            for e in rd.flatten() {
+                let fname = e.file_name().to_string_lossy().to_lowercase();
+                if fname.contains(&bl) || (prefix.len() >= 6 && fname.contains(&prefix)) {
+                    candidates.push((e.path(), false));
+                }
+            }
+        }
+    }
+
+    let mut seen = std::collections::HashSet::new();
+    let mut out: Vec<Leftover> = Vec::new();
+    for (p, sudo) in candidates {
+        if !p.exists() || p == app_path || p.starts_with(app_path) {
+            continue;
+        }
+        // APFS 默认大小写不敏感：`Demo` 与 `demo` 可能是同一目录，
+        // 用真实路径（大小写以磁盘为准）去重并存储，避免重复与错误大小写
+        let real = std::fs::canonicalize(&p).unwrap_or_else(|_| p.clone());
+        if !seen.insert(real.clone()) {
+            continue;
+        }
+        out.push(Leftover {
+            size: crate::fsutil::size_of(&real),
+            path: real,
+            sudo,
+        });
+    }
+    out.sort_by(|a, b| b.size.cmp(&a.size));
+    out
+}
+
+/// 匹配与 App 相关的安装包 receipt id（供 `sudo pkgutil --forget` 参考）。
+pub fn pkg_receipt_ids(bundle_id: Option<&str>, name: &str) -> Vec<String> {
+    let Some(out) =
+        crate::proc::output_with_timeout("pkgutil", &["--pkgs"], Duration::from_secs(10))
+    else {
+        return Vec::new();
+    };
+    let norm = normalize_token(name);
+    let mut matched: Vec<String> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .filter(|id| {
+            let l = id.to_lowercase();
+            if let Some(b) = bundle_id {
+                if l == b.to_lowercase() {
+                    return true;
+                }
+            }
+            // 名称匹配需要足够长，避免泛词误报
+            norm.len() >= 5 && l.replace(['.', '-', '_'], "").contains(&norm)
+        })
+        .collect();
+    matched.sort();
+    matched.dedup();
+    matched
 }
 
 #[cfg(test)]
@@ -216,8 +427,53 @@ mod tests {
     #[test]
     fn leftovers_only_existing() {
         // 几乎不可能存在的 bundle id
-        let v = find_leftovers("com.thin.definitely-not-installed-xyz");
+        let v = find_leftovers(
+            "DefinitelyNotInstalledXyz",
+            Some("com.thin.definitely-not-installed-xyz"),
+            Path::new("/Applications/DefinitelyNotInstalledXyz.app"),
+        );
         assert!(v.is_empty());
+    }
+
+    #[test]
+    fn tokens_are_strong_only() {
+        let t = name_tokens("Docker", Some("com.docker.docker"));
+        assert!(t.contains(&"docker".to_string()));
+        assert!(t.contains(&"com.docker.docker".to_string()));
+        assert!(t.contains(&"Docker".to_string()));
+        // 不用 bundle 中间段（避免误删同厂商其它 App 数据）
+        let g = name_tokens("Foo", Some("com.google.foo"));
+        assert!(!g.contains(&"google".to_string()));
+    }
+
+    #[test]
+    fn hints_add_directory_names() {
+        let t = name_tokens("Visual Studio Code", Some("com.microsoft.VSCode"));
+        assert!(t.contains(&"Code".to_string()));
+        let c = name_tokens("Google Chrome", Some("com.google.Chrome"));
+        assert!(c.contains(&"Google".to_string()));
+    }
+
+    #[test]
+    fn candidates_cover_system_and_dotdirs() {
+        let home = Path::new("/Users/x");
+        let tokens = vec!["docker".to_string()];
+        let c = candidate_paths(home, &tokens);
+        // 用户点目录
+        assert!(c.iter().any(|(p, _)| p == Path::new("/Users/x/.docker")));
+        assert!(
+            c.iter()
+                .any(|(p, _)| p == Path::new("/Users/x/.config/docker"))
+        );
+        // 系统级 /Library（标记 sudo）
+        assert!(
+            c.iter()
+                .any(|(p, s)| p == Path::new("/Library/Application Support/docker") && *s)
+        );
+        assert!(
+            c.iter()
+                .any(|(p, s)| p == Path::new("/Library/LaunchDaemons/docker.plist") && *s)
+        );
     }
 
     #[test]

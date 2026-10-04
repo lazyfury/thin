@@ -3,22 +3,25 @@ mod top;
 mod treemap;
 mod tui;
 
-use anyhow::{Result, anyhow};
-use clap::{Parser, Subcommand};
+use anyhow::{Context, Result, anyhow};
+use clap::{CommandFactory, Parser, Subcommand};
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use thin_core::fmt::human;
 use thin_core::model::{Category, Risk};
-use thin_core::{CleanItem, apps, clean, discover, finder, fsutil, probe, rules, scan};
+use thin_core::{
+    CleanItem, apps, clean, discover, finder, fsutil, history, preset, probe, rules, scan, schedule,
+};
 
 #[derive(Parser)]
 #[command(
     name = "thin",
-    about = "macOS 系统空间扫描与安全清理 (M4 · 多标签 TUI)",
+    about = "macOS 系统空间扫描与安全清理 (M5 · 预设/历史/定时)",
     version
 )]
 struct Cli {
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
@@ -58,6 +61,15 @@ enum Cmd {
 
     /// 卸载 App（App 及其残留一并移入隔离区）
     Uninstall(UninstallArgs),
+
+    /// 清理预设：列出 / 查看 / 新增 / 删除（定时任务只执行用户预设）
+    Preset(PresetArgs),
+
+    /// 清理历史记录
+    History(HistoryArgs),
+
+    /// 定时任务：安装 / 卸载 / 状态 / 立即运行（launchd）
+    Schedule(ScheduleArgs),
 }
 
 #[derive(clap::Args)]
@@ -233,6 +245,111 @@ struct CleanArgs {
     /// 只处理指定规则 id（可多次；可用于不可再生项）
     #[arg(long = "id")]
     ids: Vec<String>,
+
+    /// 按预设筛选清理项（见 thin preset list）
+    #[arg(long)]
+    preset: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct PresetArgs {
+    #[command(subcommand)]
+    cmd: Option<PresetCmd>,
+}
+
+#[derive(Subcommand)]
+enum PresetCmd {
+    /// 列出预设（内置默认 + 用户自定义）
+    List,
+    /// 查看某预设详情
+    Show { id: String },
+    /// 新增/覆盖一条用户预设（默认只选 cache 类）
+    Add(PresetAddArgs),
+    /// 删除一条用户预设
+    Remove { id: String },
+}
+
+#[derive(clap::Args)]
+struct PresetAddArgs {
+    id: String,
+    #[arg(long)]
+    name: Option<String>,
+    /// 类别，可多次；不指定则默认 system-cache/app-cache/dev-cache
+    #[arg(long = "category")]
+    categories: Vec<String>,
+    /// 允许的风险等级，可多次（默认 safe）
+    #[arg(long = "risk")]
+    risks: Vec<String>,
+    /// 只处理可再生项
+    #[arg(long)]
+    regenerable_only: bool,
+    /// 仅处理这些规则 id，可多次
+    #[arg(long = "include")]
+    include: Vec<String>,
+    /// 排除这些规则 id，可多次
+    #[arg(long = "exclude")]
+    exclude: Vec<String>,
+    /// 隔离保留天数（定时运行先 purge 早于该天数的会话）
+    #[arg(long)]
+    purge_after_days: Option<u64>,
+}
+
+#[derive(clap::Args)]
+struct HistoryArgs {
+    /// 显示条数
+    #[arg(short, long, default_value_t = 20)]
+    limit: usize,
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args)]
+struct ScheduleArgs {
+    #[command(subcommand)]
+    cmd: ScheduleCmd,
+}
+
+#[derive(Subcommand)]
+enum ScheduleCmd {
+    /// 安装/更新定时任务（仅限用户自定义预设）
+    Install(ScheduleInstallArgs),
+    /// 卸载定时任务
+    Uninstall,
+    /// 查看定时任务状态
+    Status,
+    /// 立即按预设运行一次（launchd 也调用这个）
+    Run {
+        #[arg(long)]
+        preset: String,
+    },
+}
+
+#[derive(clap::Args)]
+struct ScheduleInstallArgs {
+    /// 要执行的预设 id（必须先用 thin preset add 创建）
+    #[arg(long)]
+    preset: String,
+    /// 每天
+    #[arg(long)]
+    daily: bool,
+    /// 每周
+    #[arg(long)]
+    weekly: bool,
+    /// 小时 0-23
+    #[arg(long, default_value_t = 10)]
+    hour: u32,
+    /// 分钟 0-59
+    #[arg(long, default_value_t = 0)]
+    minute: u32,
+    /// 周几（0/7=周日），仅 --weekly 有效
+    #[arg(long, default_value_t = 0)]
+    weekday: u32,
+    /// 固定间隔秒数（与 daily/weekly 二选一）
+    #[arg(long)]
+    interval: Option<u64>,
+    /// 只生成并打印 plist，不加载（安全预览）
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(clap::Args)]
@@ -274,7 +391,11 @@ struct PurgeArgs {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.cmd {
+    // 无子命令：默认进入 TUI（非交互环境下退化为打印帮助）
+    let Some(cmd) = cli.cmd else {
+        return default_entry();
+    };
+    match cmd {
         Cmd::Probe => probe::probe_summary()?,
         Cmd::Scan(args) => cmd_scan(args)?,
         Cmd::Top(args) => {
@@ -290,8 +411,24 @@ fn main() -> Result<()> {
         Cmd::Dupes(args) => cmd_dupes(args)?,
         Cmd::Apps(args) => cmd_apps(args)?,
         Cmd::Uninstall(args) => cmd_uninstall(args)?,
+        Cmd::Preset(args) => cmd_preset(args)?,
+        Cmd::History(args) => cmd_history(args)?,
+        Cmd::Schedule(args) => cmd_schedule(args)?,
     }
     Ok(())
+}
+
+/// 无子命令时的默认入口：TTY 下直接进 TUI，否则打印帮助（便于脚本/管道不会卡住）
+fn default_entry() -> Result<()> {
+    if std::io::stdout().is_terminal() {
+        cmd_tui(TuiArgs {
+            min: "1MB".to_string(),
+        })
+    } else {
+        Cli::command().print_help()?;
+        println!();
+        Ok(())
+    }
 }
 
 fn cmd_scan(args: ScanArgs) -> Result<()> {
@@ -553,6 +690,13 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
 fn select_items(args: &CleanArgs) -> Result<Vec<thin_core::CleanItem>> {
     let catalog = rules::load()?;
     let items = scan::scan(&catalog, true, 1_048_576);
+
+    // 预设优先：只处理预设命中的项
+    if let Some(pid) = &args.preset {
+        let p = preset::get(pid).ok_or_else(|| anyhow!("未找到预设 {pid}（thin preset list）"))?;
+        return Ok(preset::select(&p, &items));
+    }
+
     let selected: Vec<thin_core::CleanItem> = items
         .into_iter()
         .filter(|it| {
@@ -631,6 +775,14 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
     // 传原始候选项：quarantine 内部复用同一安全门，并如实记录被跳过项
     let journal = clean::quarantine(&selected, false)?;
     print_journal(&journal);
+    record_history(
+        "manual",
+        args.preset.as_deref(),
+        selected.len(),
+        plan.approved.len(),
+        (0, 0),
+        Some(&journal),
+    );
     warn_snapshots();
     Ok(())
 }
@@ -735,12 +887,16 @@ fn expand_root(s: &str) -> PathBuf {
 /// 把家目录前缀显示为 ~
 fn shorten(path: &PathBuf) -> String {
     let s = path.display().to_string();
-    let home = std::env::var("HOME").unwrap_or_default();
-    if !home.is_empty() && s.starts_with(&home) {
-        s.replacen(&home, "~", 1)
-    } else {
-        s
+    let raw = std::env::var("HOME").unwrap_or_default();
+    let canon = std::fs::canonicalize(&raw)
+        .ok()
+        .map(|p| p.to_string_lossy().to_string());
+    for h in [raw.as_str(), canon.as_deref().unwrap_or("")] {
+        if !h.is_empty() && s.starts_with(h) {
+            return s.replacen(h, "~", 1);
+        }
     }
+    s
 }
 
 fn truncate(s: &str, width: usize) -> String {
@@ -889,25 +1045,45 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         &app.name,
         Risk::Confirm,
     )];
-    for (p, s) in &app.leftovers {
-        items.push(CleanItem::synthetic(
-            p.clone(),
-            *s,
+    for l in &app.leftovers {
+        let mut it = CleanItem::synthetic(
+            l.path.clone(),
+            l.size,
             "app-leftover",
             &format!("{} 残留", app.name),
             Risk::Confirm,
-        ));
+        );
+        // 系统级残留（/Library 等）需 root，交给安全门跳过并提示手动处理
+        it.sudo = l.sudo;
+        items.push(it);
     }
 
     println!("\n\x1b[1m卸载计划: {}\x1b[0m\n", app.name);
     for it in &items {
-        println!("• {:<44} {:>10}", shorten(&it.path), human(it.size));
+        let tag = if it.sudo {
+            "  \x1b[33m需 sudo\x1b[0m"
+        } else {
+            ""
+        };
+        println!("• {:<44} {:>10}{}", shorten(&it.path), human(it.size), tag);
     }
+    let manual: Vec<&CleanItem> = items.iter().filter(|i| i.sudo).collect();
+    let removable: u64 = items.iter().filter(|i| !i.sudo).map(|i| i.size).sum();
     println!(
-        "\n共 {} 项，预计可释放 \x1b[1m{}\x1b[0m",
+        "\n共 {} 项，可自动释放 \x1b[1m{}\x1b[0m（另有 {} 项需 sudo 手动处理）",
         items.len(),
-        human(app.total())
+        human(removable),
+        manual.len()
     );
+
+    // 安装包记录（informational）
+    let pkgs = apps::pkg_receipt_ids(app.bundle_id.as_deref(), &app.name);
+    if !pkgs.is_empty() {
+        println!("\n\x1b[1m安装包记录\x1b[0m（如需彻底清除: sudo pkgutil --forget <id>）");
+        for p in &pkgs {
+            println!("  {p}");
+        }
+    }
 
     if !args.apply {
         println!("（预览；加 --apply 移入隔离区，可恢复）");
@@ -930,6 +1106,363 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
     print_journal(&journal);
     warn_snapshots();
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 预设 / 历史 / 定时任务
+// ---------------------------------------------------------------------------
+
+fn print_preset_row(p: &preset::Preset, source: &str) {
+    let cats = if p.categories.is_empty() {
+        "全部".to_string()
+    } else {
+        p.categories
+            .iter()
+            .map(|c| c.label())
+            .collect::<Vec<_>>()
+            .join("/")
+    };
+    let risks = p
+        .risks
+        .iter()
+        .map(|r| r.label())
+        .collect::<Vec<_>>()
+        .join("/");
+    println!(
+        "{:<18} {:<10} {:<6} {:<6} {} [{}]{}",
+        p.id,
+        truncate(&p.name, 10),
+        source,
+        format!("{}d", p.purge_after_days),
+        cats,
+        risks,
+        if p.regenerable_only { " 可再生" } else { "" }
+    );
+}
+
+fn print_preset_detail(p: &preset::Preset) {
+    println!("\x1b[1m{}\x1b[0m  ({})", p.name, p.id);
+    println!(
+        "  类别:     {}",
+        if p.categories.is_empty() {
+            "全部".to_string()
+        } else {
+            p.categories
+                .iter()
+                .map(|c| c.label())
+                .collect::<Vec<_>>()
+                .join(" / ")
+        }
+    );
+    println!(
+        "  风险:     {}",
+        p.risks
+            .iter()
+            .map(|r| r.label())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    );
+    println!(
+        "  仅可再生: {}",
+        if p.regenerable_only { "是" } else { "否" }
+    );
+    println!("  保留天数: {}d", p.purge_after_days);
+    if !p.include_ids.is_empty() {
+        println!("  仅包含:   {}", p.include_ids.join(", "));
+    }
+    if !p.exclude_ids.is_empty() {
+        println!("  排除:     {}", p.exclude_ids.join(", "));
+    }
+}
+
+fn build_preset(a: PresetAddArgs) -> Result<preset::Preset> {
+    let name = a.name.unwrap_or_else(|| a.id.clone());
+
+    // 未指定类别/包含列表 → 默认只处理 cache 类
+    if a.categories.is_empty() && a.include.is_empty() {
+        let mut p = preset::Preset::new_cache_only(a.id, name);
+        p.exclude_ids = a.exclude;
+        if let Some(d) = a.purge_after_days {
+            p.purge_after_days = d;
+        }
+        return Ok(p);
+    }
+
+    let mut categories = Vec::new();
+    for c in &a.categories {
+        categories.push(rules::parse_category(c).ok_or_else(|| anyhow!("未知类别: {c}"))?);
+    }
+    let mut risks = Vec::new();
+    for r in &a.risks {
+        risks.push(rules::parse_risk(r).ok_or_else(|| anyhow!("未知风险: {r}"))?);
+    }
+    if risks.is_empty() {
+        risks.push(Risk::Safe);
+    }
+    Ok(preset::Preset {
+        id: a.id,
+        name,
+        categories,
+        risks,
+        regenerable_only: a.regenerable_only,
+        include_ids: a.include,
+        exclude_ids: a.exclude,
+        purge_after_days: a.purge_after_days.unwrap_or(7),
+    })
+}
+
+fn cmd_preset(args: PresetArgs) -> Result<()> {
+    match args.cmd {
+        None | Some(PresetCmd::List) => {
+            println!(
+                "{:<18} {:<10} {:<6} {:<6} {}",
+                "id", "名称", "来源", "保留", "类别 [风险]"
+            );
+            println!("{}", "-".repeat(84));
+            print_preset_row(&preset::Preset::builtin_default(), "内置");
+            for p in preset::load()? {
+                print_preset_row(&p, "用户");
+            }
+            println!("\n预设文件: {}", preset::presets_path().display());
+            println!("定时任务只能执行【用户】预设: thin schedule install --preset <id> --weekly");
+        }
+        Some(PresetCmd::Show { id }) => {
+            let p = preset::get(&id).ok_or_else(|| anyhow!("未找到预设 {id}"))?;
+            print_preset_detail(&p);
+        }
+        Some(PresetCmd::Add(a)) => {
+            let p = build_preset(a)?;
+            let saved = preset::upsert(p.clone())?;
+            println!("已写入预设 \x1b[1m{}\x1b[0m → {}", p.id, saved.display());
+            print_preset_detail(&p);
+        }
+        Some(PresetCmd::Remove { id }) => {
+            if preset::remove(&id)? {
+                println!("已删除预设 {id}");
+            } else {
+                println!("未找到用户预设 {id}（内置 default 不可删除）");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn cmd_history(args: HistoryArgs) -> Result<()> {
+    let list = history::load(Some(args.limit))?;
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&list)?);
+        return Ok(());
+    }
+    if list.is_empty() {
+        println!("暂无历史记录。");
+        return Ok(());
+    }
+    println!(
+        "{:<20} {:<10} {:<16} {:>6} {:>10} {:>6} {:>10}",
+        "时间", "触发", "预设", "项", "释放", "跳过", "purged"
+    );
+    println!("{}", "-".repeat(88));
+    for r in list {
+        println!(
+            "{:<20} {:<10} {:<16} {:>6} {:>10} {:>6} {:>10}",
+            history::format_ts(r.timestamp),
+            r.trigger,
+            r.preset.unwrap_or_else(|| "-".into()),
+            r.moved,
+            human(r.moved_bytes),
+            r.skipped,
+            human(r.purged_bytes)
+        );
+    }
+    Ok(())
+}
+
+fn build_schedule(a: &ScheduleInstallArgs) -> Result<schedule::Schedule> {
+    if let Some(secs) = a.interval {
+        if secs == 0 {
+            return Err(anyhow!("--interval 必须大于 0"));
+        }
+        return Ok(schedule::Schedule::Interval { seconds: secs });
+    }
+    if a.hour > 23 || a.minute > 59 {
+        return Err(anyhow!("时间非法: {}:{}", a.hour, a.minute));
+    }
+    if a.weekly {
+        Ok(schedule::Schedule::Weekly {
+            weekday: a.weekday,
+            hour: a.hour,
+            minute: a.minute,
+        })
+    } else {
+        Ok(schedule::Schedule::Daily {
+            hour: a.hour,
+            minute: a.minute,
+        })
+    }
+}
+
+fn describe_schedule(s: &schedule::Schedule) -> String {
+    match s {
+        schedule::Schedule::Daily { hour, minute } => format!("每天 {hour:02}:{minute:02}"),
+        schedule::Schedule::Weekly {
+            weekday,
+            hour,
+            minute,
+        } => {
+            let names = ["日", "一", "二", "三", "四", "五", "六", "日"];
+            let w = names.get(*weekday as usize).copied().unwrap_or("?");
+            format!("每周{w} {hour:02}:{minute:02}")
+        }
+        schedule::Schedule::Interval { seconds } => format!("每 {seconds}s"),
+    }
+}
+
+fn extract_preset(plist: &str) -> Option<String> {
+    let marker = "<string>--preset</string>";
+    let idx = plist.find(marker)? + marker.len();
+    let rest = &plist[idx..];
+    let s = rest.find("<string>")? + "<string>".len();
+    let rest = &rest[s..];
+    let e = rest.find("</string>")?;
+    Some(rest[..e].to_string())
+}
+
+fn cmd_schedule(args: ScheduleArgs) -> Result<()> {
+    match args.cmd {
+        ScheduleCmd::Install(a) => {
+            if !preset::is_user_defined(&a.preset) {
+                return Err(anyhow!(
+                    "预设 '{}' 不是用户自定义预设；定时任务只执行用户预设。\n请先创建: thin preset add {}",
+                    a.preset,
+                    a.preset
+                ));
+            }
+            let sch = build_schedule(&a)?;
+            let bin = std::env::current_exe().context("无法确定 thin 可执行文件路径")?;
+            if a.dry_run {
+                println!("{}", schedule::render_plist(&bin, &a.preset, &sch));
+                println!("# 将写入: {}", schedule::plist_path().display());
+                return Ok(());
+            }
+            let path = schedule::install(&bin, &a.preset, &sch)?;
+            println!("已安装定时任务: {}", path.display());
+            println!("预设: {}  |  周期: {}", a.preset, describe_schedule(&sch));
+            println!(
+                "\n\x1b[33m注意\x1b[0m: 需在 系统设置 → 隐私与安全 → 完全磁盘访问权限 中把\n  {}\n加入，否则读不到受保护目录。",
+                bin.display()
+            );
+            println!("日志: ~/.thin/schedule.log / schedule.err");
+            println!("查看: thin schedule status    卸载: thin schedule uninstall");
+        }
+        ScheduleCmd::Uninstall => {
+            if schedule::uninstall()? {
+                println!("已卸载定时任务。");
+            } else {
+                println!("未安装定时任务。");
+            }
+        }
+        ScheduleCmd::Status => {
+            let path = schedule::plist_path();
+            let exists = path.exists();
+            println!(
+                "plist:  {} ({})",
+                path.display(),
+                if exists { "存在" } else { "不存在" }
+            );
+            println!(
+                "已加载: {}",
+                if schedule::is_loaded() { "是" } else { "否" }
+            );
+            if exists {
+                if let Ok(s) = std::fs::read_to_string(&path) {
+                    if let Some(p) = extract_preset(&s) {
+                        println!("预设:   {p}");
+                    }
+                }
+            }
+        }
+        ScheduleCmd::Run { preset: pid } => run_preset(&pid, "schedule")?,
+    }
+    Ok(())
+}
+
+/// 按预设执行一次清理（先回收旧会话，再隔离新项），并写入历史
+fn run_preset(preset_id: &str, trigger: &str) -> Result<()> {
+    let p = preset::get(preset_id).ok_or_else(|| anyhow!("未找到预设 {preset_id}"))?;
+
+    // 1) 先永久删除早于保留期的旧会话（否则隔离不释放空间）
+    let (purged_sessions, purged_bytes) =
+        clean::purge_older_than(p.purge_after_days).unwrap_or((0, 0));
+    if purged_sessions > 0 {
+        println!(
+            "已永久删除 {purged_sessions} 个旧会话，释放 {}",
+            human(purged_bytes)
+        );
+    }
+
+    // 2) 扫描 + 预设筛选 + 安全门
+    let catalog = rules::load()?;
+    let items = scan::scan(&catalog, true, 1_048_576);
+    let selected = preset::select(&p, &items);
+    let plan = clean::plan(&selected);
+    println!(
+        "预设 {}：候选 {}，通过安全门 {}",
+        p.id,
+        selected.len(),
+        plan.approved.len()
+    );
+
+    if plan.approved.is_empty() {
+        println!("没有可清理项。");
+        record_history(
+            trigger,
+            Some(&p.id),
+            selected.len(),
+            0,
+            (purged_sessions, purged_bytes),
+            None,
+        );
+        return Ok(());
+    }
+
+    // 3) 移入隔离区
+    let journal = clean::quarantine(&selected, false)?;
+    print_journal(&journal);
+    record_history(
+        trigger,
+        Some(&p.id),
+        selected.len(),
+        plan.approved.len(),
+        (purged_sessions, purged_bytes),
+        Some(&journal),
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn record_history(
+    trigger: &str,
+    preset: Option<&str>,
+    scanned: usize,
+    approved: usize,
+    purged: (usize, u64),
+    journal: Option<&clean::Journal>,
+) {
+    let mut r = history::Record::new(trigger);
+    r.preset = preset.map(str::to_string);
+    r.scanned = scanned;
+    r.approved = approved;
+    r.purged_sessions = purged.0;
+    r.purged_bytes = purged.1;
+    if let Some(j) = journal {
+        r.session = Some(j.session.clone());
+        r.moved = j.entries.len();
+        r.moved_bytes = j.total_size();
+        r.skipped = j.skipped.len();
+    }
+    if let Err(e) = history::append(&r) {
+        eprintln!("\x1b[33m写入历史失败: {e:#}\x1b[0m");
+    }
 }
 
 fn print_journal(journal: &clean::Journal) {

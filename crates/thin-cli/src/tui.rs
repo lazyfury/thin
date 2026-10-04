@@ -21,11 +21,11 @@ use thin_core::finder::{DupeGroup, LargeFile};
 use thin_core::fmt::human;
 use thin_core::model::{CleanItem, Risk};
 use thin_core::progress::Progress;
-use thin_core::{apps, clean, finder, fsutil, probe, rules, scan};
+use thin_core::{apps, clean, finder, fsutil, probe, rules, scan, status};
 
 use crate::treemap;
 
-const TABS: [&str; 5] = ["清理", "概览", "大文件", "重复", "应用"];
+const TABS: [&str; 6] = ["清理", "概览", "大文件", "重复", "应用", "状态"];
 const N_TABS: usize = TABS.len();
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,10 @@ struct App {
     large: Load<Vec<LargeFile>>,
     dupes: Load<Vec<DupeGroup>>,
     apps: Load<Vec<AppInfo>>,
+    sysinfo: Option<status::SystemInfo>,
+    live: Option<status::LiveStats>,
+    cpu: status::CpuSampler,
+    status_at: Option<std::time::Instant>,
     confirm: bool,
     status: Option<String>,
     help: bool,
@@ -120,6 +124,10 @@ impl App {
             large: Load::Idle,
             dupes: Load::Idle,
             apps: Load::Idle,
+            sysinfo: None,
+            live: None,
+            cpu: status::CpuSampler::new(),
+            status_at: None,
             confirm: false,
             status: None,
             help: false,
@@ -164,6 +172,11 @@ impl App {
             4 if self.apps.is_idle() => {
                 self.apps = Load::spawn(move |_p| Ok(apps::list_apps()));
             }
+            5 => {
+                if self.sysinfo.is_none() {
+                    self.sysinfo = Some(status::collect_info());
+                }
+            }
             _ => {}
         }
     }
@@ -184,7 +197,26 @@ impl App {
     fn switch_tab(&mut self, tab: usize) {
         self.tab = tab % N_TABS;
         self.ensure(self.tab);
+        if self.tab == 5 {
+            self.refresh_status(true);
+        }
         self.status = None;
+    }
+
+    /// 刷新实时状态（仅在状态页，且距上次 >=1s）
+    fn refresh_status(&mut self, force: bool) {
+        if self.tab != 5 {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let due = self
+            .status_at
+            .map(|t| now.duration_since(t) >= Duration::from_millis(1000))
+            .unwrap_or(true);
+        if force || due {
+            self.live = Some(status::collect_live(&mut self.cpu));
+            self.status_at = Some(now);
+        }
     }
 
     fn next_tab(&mut self, delta: isize) {
@@ -342,7 +374,7 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
             KeyCode::Tab | KeyCode::Char('l') => self.next_tab(1),
             KeyCode::BackTab | KeyCode::Char('h') => self.next_tab(-1),
-            KeyCode::Char(c @ '1'..='5') => self.switch_tab((c as u8 - b'1') as usize),
+            KeyCode::Char(c @ '1'..='6') => self.switch_tab((c as u8 - b'1') as usize),
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),
             KeyCode::Char('g') | KeyCode::Home => self.list_states[self.tab].select(Some(0)),
@@ -397,6 +429,7 @@ fn event_loop(
 ) -> Result<()> {
     while !app.quit {
         app.poll_loaders();
+        app.refresh_status(false);
         app.tick = app.tick.wrapping_add(1);
         terminal.draw(|f| ui(f, app))?;
         if event::poll(Duration::from_millis(80))? {
@@ -435,6 +468,17 @@ fn bar(ratio: f64, width: usize) -> String {
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
 }
 
+/// HOME 前缀（canonicalize，兼容 `/var` → `/private/var` 等符号链接）
+fn home_prefix() -> String {
+    let raw = std::env::var("HOME").unwrap_or_default();
+    if raw.is_empty() {
+        return raw;
+    }
+    std::fs::canonicalize(&raw)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or(raw)
+}
+
 fn ui(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -466,7 +510,7 @@ fn render_header(frame: &mut Frame, area: Rect) {
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw("  M4 · 多标签"),
+        Span::raw("  M5 · 预设/历史/定时"),
     ]);
     let line2 = if let Some(v) = disk {
         let pct = v.used_pct();
@@ -520,6 +564,7 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
         2 => render_large(frame, app, area),
         3 => render_dupes(frame, app, area),
         4 => render_apps(frame, app, area),
+        5 => render_status(frame, app, area),
         _ => {}
     }
 }
@@ -614,7 +659,7 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(64), Constraint::Percentage(36)])
         .split(area);
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = home_prefix();
 
     match &app.clean {
         Load::Ready(items) => {
@@ -714,7 +759,7 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// 大文件
 fn render_large(frame: &mut Frame, app: &mut App, area: Rect) {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = home_prefix();
     match &app.large {
         Load::Ready(files) => {
             let items: Vec<ListItem> = files
@@ -755,7 +800,7 @@ fn render_large(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// 重复文件
 fn render_dupes(frame: &mut Frame, app: &mut App, area: Rect) {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = home_prefix();
     let parts = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
@@ -827,7 +872,7 @@ fn render_dupes(frame: &mut Frame, app: &mut App, area: Rect) {
 
 /// 应用
 fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
-    let home = std::env::var("HOME").unwrap_or_default();
+    let home = home_prefix();
     let parts = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
@@ -881,14 +926,15 @@ fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
                     text.push(Line::from(format!("Bundle ID: {bid}")));
                 }
                 text.push(Line::from(""));
-                for (p, s) in &a.leftovers {
-                    let sp = p.display().to_string();
+                for l in &a.leftovers {
+                    let sp = l.path.display().to_string();
                     let shown = if !home.is_empty() && sp.starts_with(&home) {
                         sp.replacen(&home, "~", 1)
                     } else {
                         sp
                     };
-                    text.push(Line::from(format!("{:<9} {}", human(*s), shown)));
+                    let tag = if l.sudo { "  需 sudo" } else { "" };
+                    text.push(Line::from(format!("{:<9} {}{}", human(l.size), shown, tag)));
                 }
             }
             frame.render_widget(
@@ -907,16 +953,146 @@ fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// 实时状态 + 基本信息
+fn render_status(frame: &mut Frame, app: &mut App, area: Rect) {
+    let parts = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
+        .split(area);
+
+    // 左：基本信息
+    let mut info: Vec<Line> = Vec::new();
+    if let Some(i) = &app.sysinfo {
+        info.push(field("型号", &i.model));
+        info.push(field("芯片", &i.chip));
+        info.push(field(
+            "核心",
+            &format!("{} 物理 / {} 逻辑", i.physical_cores, i.logical_cores),
+        ));
+        info.push(field(
+            "系统",
+            &format!("macOS {} ({})", i.os_version, i.os_build),
+        ));
+        info.push(field("主机名", &i.hostname));
+        info.push(field("运行时间", &status::format_uptime(i.uptime_secs)));
+        info.push(Line::from(""));
+        info.push(field("内存总量", &human(i.mem_total)));
+    } else {
+        info.push(Line::from("采集失败"));
+    }
+    frame.render_widget(
+        Paragraph::new(info)
+            .block(Block::default().borders(Borders::ALL).title("基本信息"))
+            .wrap(Wrap { trim: true }),
+        parts[0],
+    );
+
+    // 右：实时指标
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(l) = &app.live {
+        lines.push(metric_line(
+            "CPU",
+            l.cpu_usage / 100.0,
+            Some(format!("{:.1}%", l.cpu_usage)),
+        ));
+        let mem_ratio = if l.mem_total > 0 {
+            l.mem_used as f64 / l.mem_total as f64
+        } else {
+            0.0
+        };
+        lines.push(metric_line(
+            "内存",
+            mem_ratio,
+            Some(format!("{} / {}", human(l.mem_used), human(l.mem_total))),
+        ));
+        let disk_ratio = if l.disk_total > 0 {
+            l.disk_used as f64 / l.disk_total as f64
+        } else {
+            0.0
+        };
+        lines.push(metric_line(
+            "磁盘",
+            disk_ratio,
+            Some(format!("{} / {}", human(l.disk_used), human(l.disk_total))),
+        ));
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!(
+            "负载     {:.2}  {:.2}  {:.2}",
+            l.load1, l.load5, l.load15
+        )));
+        lines.push(Line::from(format!(
+            "有线内存 {}    压缩内存 {}",
+            human(l.mem_wired),
+            human(l.mem_compressed)
+        )));
+        if l.swap_total > 0 {
+            lines.push(Line::from(format!(
+                "交换空间 {} / {}",
+                human(l.swap_used),
+                human(l.swap_total)
+            )));
+        }
+        if let Some(b) = &l.battery {
+            lines.push(Line::from(format!(
+                "电池     {}%  {}",
+                b.percent,
+                if b.charging { "充电中" } else { "使用中" }
+            )));
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(Span::styled(
+            "每 1s 刷新",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        lines.push(Line::from("采集中…"));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(Block::default().borders(Borders::ALL).title("实时状态"))
+            .wrap(Wrap { trim: true }),
+        parts[1],
+    );
+}
+
+/// 带颜色的指标行：名称 + 进度条 + 数值
+fn metric_line(name: &str, ratio: f64, value: Option<String>) -> Line<'static> {
+    let pct = ratio * 100.0;
+    let color = if pct > 90.0 {
+        Color::Red
+    } else if pct > 75.0 {
+        Color::Yellow
+    } else {
+        Color::Green
+    };
+    let mut spans = vec![
+        Span::raw(format!("{name:<4} ")),
+        Span::styled(bar(ratio, 22), Style::default().fg(color)),
+    ];
+    if let Some(v) = value {
+        spans.push(Span::raw(format!("  {v}")));
+    }
+    Line::from(spans)
+}
+
+/// 基本信息的一行：标签 + 值
+fn field(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(format!("{label:<10}"), Style::default().fg(Color::DarkGray)),
+        Span::raw(value.to_string()),
+    ])
+}
+
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let text = if let Some(s) = &app.status {
         s.clone()
     } else if app.help {
-        " 1-5/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · r 重载 · c 清理 · q 退出"
+        " 1-6/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · r 重载 · c 清理 · q 退出"
             .into()
     } else {
         match app.tab {
             0 => " Tab 切页 · ↑↓ 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · c 移入隔离区 · r 重载 · ? 帮助 · q 退出",
-            _ => " 1-5/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
+            _ => " 1-6/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
         }
         .into()
     };
