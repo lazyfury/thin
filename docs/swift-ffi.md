@@ -1,8 +1,8 @@
 # Swift FFI 落地计划（方向 A：Swift 提供 macOS 底层能力给 Rust CLI）
 
-> 状态：**M0 / M1 已落地**（`swift/ThinKit` + `crates/thin-sys` + `thin-core/src/platform.rs`）。
-> `thin probe` 显示 purgeable 与 FDA 状态；App 运行判断/ bundle id 已接入 NSWorkspace/Bundle。
-> POC 回归样例保留在 `experiments/swift-ffi/`。
+> 状态：**M0 / M1 / M2 已落地**（`swift/ThinKit` + `crates/thin-sys` + `thin-core/src/platform.rs`）。
+> `thin probe` 显示 purgeable 与 FDA 状态；App 状态/bundle id 接入 NSWorkspace/Bundle；
+> `thin discover` 用批量目录用量显示实际占用与 iCloud 云占位。POC 回归样例保留在 `experiments/swift-ffi/`。
 
 ## 0. 目标
 
@@ -143,12 +143,21 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
 - objc2 备选：`objc2-app-kit` / `objc2-foundation` 可完全覆盖；FDA 纯 Rust 即可。
 - ABI 升至 2。
 
-### M2 · 容量核算更诚实
-- `totalFileAllocatedSizeKey` / `getattrlistbulk` 取**实际占用**，感知 APFS 压缩、稀疏、clone。
-- iCloud：`isUbiquitousItem` + `ubiquitousItemDownloadingStatus`，dataless 占位文件不计入可回收。
-- 接入 `fsutil::size_of` 与 `scan::summarize`。
-- 验收：`scan` 体积与 Finder 信息一致；iCloud 占位不再被算作可回收。
-- objc2 备选：`getattrlistbulk` 可直接用 Rust syscall，未必需要 Swift。
+### M2 · 容量核算更诚实 ✅
+- ✅ `thin_dir_usage_json`：**一次 FFI 调用走完整个目录**（不逐文件跨 FFI），返回
+  `{allocated, logical, dataless, files, datalessCount}`；`allocated` 取
+  `totalFileAllocatedSize`（感知压缩/稀疏），硬链接按 resource identifier 去重，不跨卷、不跟符号链接。
+- ✅ `thin-core`：`fsutil::Usage` + `fsutil::usage()`；`Platform::dir_usage()`（Libc 回退为
+  `size_of`/`logical_size`）。
+- ✅ `discover` 接入：展示每项的「云占位」与合计 iCloud 未下载占用。
+- **实测校验**：Swift `allocated` 与 `du -sk` **完全一致**：
+  - `target` → 2 733 776 896 B = 2 669 704 KB = `du`
+  - `/System/Applications` → 726 589 440 B = 709 560 KB = `du`
+- **实测 iCloud**：`~/Library/Mobile Documents` allocated=613.3 MB、logical=818.8 MB、
+  dataless=235.1 MB；`discover` 正确把 `com~apple~CloudDocs` 的 197 MB 标为「云占位」且不计入合计。
+- **scan 热路径不替换**（有意取舍）：`st_blocks` 已等价于 allocated 且更快；`usage()` 保留给需要
+  iCloud/逻辑体积的场景（discover、未来面板）。ABI 升至 3。
+- objc2 备选：`getattrlistbulk` 可直接用 Rust syscall，未必需要 Swift；iCloud 状态仍需 Foundation。
 
 ### M3 · 卸载与删除语义
 - 沙盒容器残留：`~/Library/Containers/<bundle-id>`、`Group Containers`、`Saved Application State`。
@@ -185,10 +194,10 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
 5. ✅ POC 保留为 `experiments/swift-ffi/thin-sys-demo` 回归样例；`thin-sys` 内另有 `#[test]`。
 6. ✅ `README.md` 增加构建前置说明（Swift 可选、缺失自动降级）。
 
-### 后续 M2 预备
-- 真实占用：`totalFileAllocatedSizeKey` / `getattrlistbulk`，感知 APFS 压缩、稀疏、clone。
-- iCloud：`isUbiquitousItem` + `ubiquitousItemDownloadingStatus`，dataless 占位不计入可回收。
-- 列表类接口按约定走整批 JSON，不逐文件跨 FFI。
+### 后续 M3 预备
+- 沙盒容器残留：`~/Library/Containers/<bundle-id>`、`Group Containers`、`Saved Application State`。
+- `FileManager.trashItem` 作为「移到废纸篓」模式；`NSFileCoordinator` 协调占用中文件。
+- 列表类接口继续走整批 JSON（M2 的 `thin_dir_usage_json` 已示范该模式）。
 
 ## 8. 风险与回退
 

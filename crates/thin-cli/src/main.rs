@@ -855,6 +855,7 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
                 serde_json::json!({
                     "path": f.path,
                     "size": f.size,
+                    "dataless": f.dataless,
                     "coverage": f.coverage.label(),
                     "uncovered": f.coverage.is_uncovered(),
                 })
@@ -866,6 +867,7 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
             "covered": report.covered,
             "partial": report.partial,
             "uncovered": report.uncovered,
+            "dataless": report.dataless,
             "coverageRatio": report.coverage_ratio(),
             "findings": findings,
         });
@@ -886,7 +888,18 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
         } else {
             f.coverage.label()
         };
-        println!("{:>10}  {:<20} {}", human(f.size), tag, shorten(&f.path));
+        let cloud = if f.dataless > 0 {
+            format!("  \x1b[90m云占位 {}\x1b[0m", human(f.dataless))
+        } else {
+            String::new()
+        };
+        println!(
+            "{:>10}  {:<20} {}{}",
+            human(f.size),
+            tag,
+            shorten(&f.path),
+            cloud
+        );
     }
 
     let none: Vec<_> = report
@@ -948,6 +961,12 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
         human(report.uncovered),
         report.coverage_ratio() * 100.0
     );
+    if report.dataless > 0 {
+        println!(
+            "  \x1b[90miCloud 未下载占位 {}（仅云端，本地不占空间，不计入合计）\x1b[0m",
+            human(report.dataless)
+        );
+    }
     Ok(())
 }
 

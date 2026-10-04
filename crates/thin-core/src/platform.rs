@@ -6,6 +6,7 @@
 //!
 //! 具体能力的语义与回退见各方法注释，FFI 约定见 `docs/swift-ffi.md`。
 
+use crate::fsutil::Usage;
 use crate::probe::{Capacity, CapacitySource};
 use std::path::Path;
 
@@ -22,6 +23,9 @@ pub trait Platform: Send + Sync {
 
     /// 完全磁盘访问权限自检；`None` 表示无法判断。
     fn full_disk_access(&self) -> Option<bool>;
+
+    /// 路径用量（实际占用 / 逻辑 / iCloud 占位）；`None` 表示无法统计。
+    fn dir_usage(&self, path: &Path) -> Option<Usage>;
 }
 
 /// 纯 Rust 回退实现：卷容量用 `statfs`，其余能力不可用。
@@ -48,6 +52,15 @@ impl Platform for LibcPlatform {
 
     fn full_disk_access(&self) -> Option<bool> {
         None
+    }
+
+    fn dir_usage(&self, path: &Path) -> Option<Usage> {
+        Some(Usage {
+            allocated: crate::fsutil::size_of(path),
+            logical: crate::fsutil::logical_size(path),
+            dataless: 0,
+            files: 0,
+        })
     }
 }
 
@@ -80,6 +93,18 @@ impl Platform for SwiftPlatform {
 
     fn full_disk_access(&self) -> Option<bool> {
         thin_sys::full_disk_access()
+    }
+
+    fn dir_usage(&self, path: &Path) -> Option<Usage> {
+        if let Some(u) = thin_sys::dir_usage(path) {
+            return Some(Usage {
+                allocated: u.allocated,
+                logical: u.logical,
+                dataless: u.dataless,
+                files: u.files,
+            });
+        }
+        LibcPlatform.dir_usage(path)
     }
 }
 

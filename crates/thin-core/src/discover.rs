@@ -32,7 +32,10 @@ impl Coverage {
 #[derive(Debug, Clone)]
 pub struct Finding {
     pub path: PathBuf,
+    /// 实际占用（不含云占位）
     pub size: u64,
+    /// iCloud 未下载占位的逻辑字节（本地不占空间）
+    pub dataless: u64,
     pub coverage: Coverage,
 }
 
@@ -49,6 +52,8 @@ pub struct Report {
     pub partial: u64,
     /// 完全未归类的占用
     pub uncovered: u64,
+    /// 直接子项中 iCloud 未下载占位的逻辑字节合计
+    pub dataless: u64,
 }
 
 impl Report {
@@ -80,17 +85,19 @@ pub fn analyze(root: &Path, min_size: u64, catalog: &[Rule]) -> Report {
         Err(_) => return Report::default(),
     };
 
-    // 并行统计各子项占用（io 密集）
-    let sized: Vec<(PathBuf, u64)> = paths
+    // 并行统计各子项占用（io 密集）；`usage` 含实际占用与 iCloud 占位
+    let sized: Vec<(PathBuf, fsutil::Usage)> = paths
         .into_par_iter()
         .map(|path| {
-            let size = fsutil::size_of(&path);
-            (path, size)
+            let usage = fsutil::usage(&path);
+            (path, usage)
         })
         .collect();
 
     let mut report = Report::default();
-    for (path, size) in sized {
+    for (path, usage) in sized {
+        let size = usage.allocated;
+        report.dataless = report.dataless.saturating_add(usage.dataless);
         report.total = report.total.saturating_add(size);
         let coverage = classify(&path, &rule_paths);
         match &coverage {
@@ -102,6 +109,7 @@ pub fn analyze(root: &Path, min_size: u64, catalog: &[Rule]) -> Report {
             report.findings.push(Finding {
                 path,
                 size,
+                dataless: usage.dataless,
                 coverage,
             });
         }
@@ -161,6 +169,7 @@ mod tests {
             covered: 400,
             partial: 100,
             uncovered: 500,
+            dataless: 0,
         };
         assert!((r.coverage_ratio() - 0.5).abs() < 1e-9);
         let empty = Report::default();

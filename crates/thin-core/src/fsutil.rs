@@ -149,6 +149,31 @@ pub fn logical_size(path: &Path) -> u64 {
     total
 }
 
+/// 路径用量：实际占用 + 逻辑大小 + iCloud 占位。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Usage {
+    /// 实际分配字节（`st_blocks`，感知压缩/稀疏；Swift 后端用 `totalFileAllocatedSize`）
+    pub allocated: u64,
+    /// 逻辑字节（所有文件大小之和）
+    pub logical: u64,
+    /// iCloud 未下载占位字节（本地不占空间）
+    pub dataless: u64,
+    /// 文件数（Swift 后端去重硬链接；回退为 0）
+    pub files: u64,
+}
+
+/// 统一的路径用量查询：优先平台后端（含 iCloud 感知），缺失时回退纯 Rust 遍历。
+pub fn usage(path: &Path) -> Usage {
+    crate::platform::platform()
+        .dir_usage(path)
+        .unwrap_or_else(|| Usage {
+            allocated: size_of(path),
+            logical: logical_size(path),
+            dataless: 0,
+            files: 0,
+        })
+}
+
 /// 列出目录下各直接子项的大小（降序，并行统计）
 pub fn children_sizes(root: &Path) -> Vec<(PathBuf, u64)> {
     children_sizes_progress(root, &crate::progress::Progress::new())

@@ -7,5 +7,7 @@ repository.workspace = true
 description = "thin 的 macOS 底层能力 FFI 绑定（Swift/ThinKit；缺失工具链时优雅降级）"
 
 [dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
 
 [build-dependencies]

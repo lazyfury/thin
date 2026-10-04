@@ -10,7 +10,7 @@
 use std::path::Path;
 
 /// FFI ABI 版本；与 Swift 端 `thin_abi_version` 对齐，不一致即视为后端不可用。
-pub const ABI_VERSION: u32 = 2;
+pub const ABI_VERSION: u32 = 3;
 
 /// 卷容量（含 purgeable 信息）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,6 +23,22 @@ pub struct VolumeCapacity {
     pub important: u64,
     /// 机会性可用容量（更激进，含可被自愿回收的空间）
     pub opportunistic: u64,
+}
+
+/// 目录用量（一次批量统计，不逐文件跨 FFI）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub struct DirUsage {
+    /// 实际分配字节（感知 APFS 压缩/稀疏）
+    pub allocated: u64,
+    /// 逻辑字节（所有文件大小之和）
+    pub logical: u64,
+    /// iCloud 未下载占位的逻辑字节（本地不占空间）
+    pub dataless: u64,
+    /// 文件数（硬链接去重）
+    pub files: u64,
+    /// 未下载占位文件数
+    #[serde(rename = "datalessCount", default)]
+    pub dataless_count: u64,
 }
 
 /// 是否已连上可用的 Swift 后端（目标为 macOS 且 ABI 匹配）。
@@ -55,9 +71,14 @@ pub fn full_disk_access() -> Option<bool> {
     imp::full_disk_access()
 }
 
+/// 批量统计目录用量（Swift 枚举器一次走完）；后端不可用或路径不存在时返回 `None`。
+pub fn dir_usage(path: &Path) -> Option<DirUsage> {
+    imp::dir_usage(path)
+}
+
 #[cfg(all(target_os = "macos", thin_sys_swift))]
 mod imp {
-    use super::{ABI_VERSION, VolumeCapacity};
+    use super::{ABI_VERSION, DirUsage, VolumeCapacity};
     use std::ffi::{CStr, CString};
     use std::os::raw::c_char;
     use std::path::Path;
@@ -76,6 +97,7 @@ mod imp {
         fn thin_is_app_running(path: *const c_char) -> i32;
         fn thin_bundle_id(path: *const c_char) -> *mut c_char;
         fn thin_full_disk_access() -> i32;
+        fn thin_dir_usage_json(path: *const c_char) -> *mut c_char;
     }
 
     pub fn backend_available() -> bool {
@@ -161,6 +183,23 @@ mod imp {
             _ => None,
         }
     }
+
+    pub fn dir_usage(path: &Path) -> Option<DirUsage> {
+        if !backend_available() {
+            return None;
+        }
+        let c = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+        // SAFETY: 返回 `strdup` 的 JSON C 字符串或 NULL，所有权随后归还。
+        unsafe {
+            let p = thin_dir_usage_json(c.as_ptr());
+            if p.is_null() {
+                return None;
+            }
+            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+            thin_string_free(p);
+            serde_json::from_str(&s).ok()
+        }
+    }
 }
 
 #[cfg(not(all(target_os = "macos", thin_sys_swift)))]
@@ -189,6 +228,10 @@ mod imp {
     }
 
     pub fn full_disk_access() -> Option<bool> {
+        None
+    }
+
+    pub fn dir_usage(_path: &Path) -> Option<DirUsage> {
         None
     }
 }
@@ -233,6 +276,25 @@ mod tests {
         if calc.exists() {
             assert_eq!(bundle_id(calc).as_deref(), Some("com.apple.calculator"));
         }
+    }
+
+    #[test]
+    fn dir_usage_matches_small_tree() {
+        if !backend_available() {
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("thin-usage-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("a")).unwrap();
+        std::fs::write(base.join("a/x.bin"), vec![0u8; 4096]).unwrap();
+        std::fs::write(base.join("y.bin"), vec![0u8; 8192]).unwrap();
+
+        let u = dir_usage(&base).expect("目录用量应可用");
+        assert_eq!(u.files, 2);
+        assert!(u.logical >= 12288, "逻辑至少 12KB，实得 {}", u.logical);
+        assert!(u.allocated > 0);
+        assert_eq!(u.dataless, 0, "本地文件不应算作云占位");
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
