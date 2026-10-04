@@ -18,6 +18,10 @@ pub struct JournalEntry {
     pub rule_id: String,
     pub name: String,
     pub risk: Risk,
+    /// true：原目录带 macOS `deny delete` ACL，无法整体移动，只搬走了它的内容
+    /// （原目录仍在原位，恢复时把内容移回）。默认 false = 整体移动。
+    #[serde(default)]
+    pub contents_only: bool,
 }
 
 /// 被跳过的项及原因
@@ -373,6 +377,68 @@ fn move_path(src: &Path, dst: &Path) -> Result<()> {
     }
 }
 
+/// 一次移动的结果。
+enum Moved {
+    /// 整个路径被移走（原路径不复存在）。
+    Whole,
+    /// 只搬走了目录内容：原目录因 `deny delete` ACL 无法整体移动，仍在原位。
+    Contents {
+        bytes: u64,
+        failed: Vec<(PathBuf, String)>,
+    },
+}
+
+/// 把 `src` 移入隔离区。优先整体 `rename`；若目录带 macOS `deny delete` ACL
+/// （如 `~/Library/Caches`、`~/Library/Logs`）导致整体移动被拒，则退化为
+/// 「只搬内容」——逐个把子项移入 `stored`，原目录留在原位。语义等价于这些
+/// 规则 `reclaim` 里写的 `rm -rf <dir>/*`。
+fn move_into(src: &Path, stored: &Path) -> Result<Moved> {
+    match move_path(src, stored) {
+        Ok(()) => Ok(Moved::Whole),
+        Err(e) if src.is_dir() && is_delete_denied(&e) => {
+            std::fs::create_dir_all(stored).context("创建隔离目录失败")?;
+            let mut moved = 0usize;
+            let mut bytes = 0u64;
+            let mut failed = Vec::new();
+            let mut first_err: Option<anyhow::Error> = None;
+            for entry in std::fs::read_dir(src)
+                .with_context(|| format!("读取目录失败: {}", src.display()))?
+            {
+                let entry = entry?;
+                let child = entry.path();
+                let dest = stored.join(entry.file_name());
+                match move_path(&child, &dest) {
+                    Ok(()) => {
+                        moved += 1;
+                        bytes = bytes.saturating_add(crate::fsutil::size_of(&dest));
+                    }
+                    Err(ce) => {
+                        failed.push((child, describe_move_error(&ce)));
+                        first_err.get_or_insert(ce);
+                    }
+                }
+            }
+            if moved == 0 {
+                // 内容也搬不动，回报原始错误
+                return Err(first_err.unwrap_or(e));
+            }
+            Ok(Moved::Contents { bytes, failed })
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// 移动失败是否因为目标带 `deny delete` ACL（EPERM / EACCES）。
+fn is_delete_denied(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| {
+        matches!(
+            c.downcast_ref::<std::io::Error>()
+                .and_then(|io| io.raw_os_error()),
+            Some(libc::EPERM) | Some(libc::EACCES)
+        )
+    })
+}
+
 fn copy_recursive(src: &Path, dst: &Path) -> Result<()> {
     if src.is_dir() {
         std::fs::create_dir_all(dst)?;
@@ -490,22 +556,38 @@ pub fn quarantine_into(home: &Path, items: &[CleanItem], dry_run: bool) -> Resul
             .unwrap_or_else(|| format!("item{i}"));
         let stored = payload.join(format!("{:04}-{}", i, sanitize(&base)));
 
-        if !dry_run && let Err(e) = move_path(&it.path, &stored) {
-            journal.skipped.push(SkippedItem {
-                path: it.path.clone(),
-                reason: describe_move_error(&e),
-            });
-            continue;
+        let mut size = it.size;
+        let mut contents_only = false;
+        if !dry_run {
+            match move_into(&it.path, &stored) {
+                Ok(Moved::Whole) => {}
+                Ok(Moved::Contents { bytes, failed }) => {
+                    // 只搬了内容：如实记录实际搬走的体积，失败子项单独记入跳过。
+                    size = bytes;
+                    contents_only = true;
+                    for (path, reason) in failed {
+                        journal.skipped.push(SkippedItem { path, reason });
+                    }
+                }
+                Err(e) => {
+                    journal.skipped.push(SkippedItem {
+                        path: it.path.clone(),
+                        reason: describe_move_error(&e),
+                    });
+                    continue;
+                }
+            }
         }
 
         journal.entries.push(JournalEntry {
             index: i,
             original: it.path.clone(),
             stored,
-            size: it.size,
+            size,
             rule_id: it.rule_id.clone(),
             name: it.name.clone(),
             risk: it.risk,
+            contents_only,
         });
     }
 
@@ -594,6 +676,26 @@ pub fn restore_session_in(home: &Path, session: &str) -> Result<RestoreReport> {
     for entry in &journal.entries {
         if !entry.stored.exists() {
             report.missing.push(entry.original.clone());
+            continue;
+        }
+        if entry.contents_only {
+            // 原目录还在（只搬了内容）：把隔离内容逐个移回原目录。
+            std::fs::create_dir_all(&entry.original)
+                .with_context(|| format!("创建目录失败: {}", entry.original.display()))?;
+            let mut restored_any = false;
+            for child in std::fs::read_dir(&entry.stored)? {
+                let child = child?;
+                let dest = entry.original.join(child.file_name());
+                if dest.exists() {
+                    report.conflicts.push(dest);
+                    continue;
+                }
+                move_path(&child.path(), &dest)?;
+                restored_any = true;
+            }
+            if restored_any {
+                report.restored += 1;
+            }
             continue;
         }
         if entry.original.exists() {
@@ -775,6 +877,53 @@ mod tests {
         assert!(target.exists(), "恢复后原路径应存在");
         assert!(target.join("a.bin").exists());
 
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// `~/Library/Caches` 这类带 `deny delete` ACL 的目录无法整体 rename；
+    /// 应退化为「只搬内容」，且恢复时能把内容移回原目录。
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn quarantine_falls_back_to_contents_on_deny_delete_acl() {
+        use std::process::Command;
+        let base = std::env::temp_dir().join(format!("thin-deny-{}", std::process::id()));
+        let data_home = base.join("data");
+        let work = base.join("work");
+        let cache = work.join("Caches");
+        std::fs::create_dir_all(cache.join("a")).unwrap();
+        std::fs::write(cache.join("a").join("x.bin"), vec![0u8; 1024]).unwrap();
+        std::fs::write(cache.join("b.bin"), vec![0u8; 512]).unwrap();
+
+        // 加 `deny delete` ACL：整体 rename 会被拒，触发退化路径。
+        let acl = Command::new("chmod")
+            .args(["+a", "group:everyone deny delete"])
+            .arg(&cache)
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        if !acl {
+            let _ = std::fs::remove_dir_all(&base);
+            return; // 环境不支持 ACL，跳过
+        }
+
+        let j = quarantine_into(&data_home, &[item(cache.clone(), 1536)], false).unwrap();
+        assert_eq!(j.entries.len(), 1);
+        assert!(j.entries[0].contents_only, "应退化为只搬内容");
+        assert!(cache.exists(), "原目录因 ACL 仍在原位");
+        assert!(!cache.join("a").exists(), "子目录应已被移走");
+        assert!(!cache.join("b.bin").exists(), "子文件应已被移走");
+        assert!(j.entries[0].stored.join("a").exists());
+        assert!(j.entries[0].stored.join("b.bin").exists());
+
+        let report = restore_session_in(&data_home, &j.session).unwrap();
+        assert_eq!(report.restored, 1);
+        assert!(cache.join("a").join("x.bin").exists());
+        assert!(cache.join("b.bin").exists());
+
+        let _ = Command::new("chmod")
+            .args(["-a", "group:everyone deny delete"])
+            .arg(&cache)
+            .status();
         let _ = std::fs::remove_dir_all(&base);
     }
 

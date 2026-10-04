@@ -850,7 +850,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
             Constraint::Length(2),
             Constraint::Length(1),
             Constraint::Min(6),
-            Constraint::Length(1),
+            Constraint::Length(2),
         ])
         .split(frame.area());
 
@@ -1454,7 +1454,12 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         };
         (hint.to_string(), toast::bar_style())
     };
-    frame.render_widget(Paragraph::new(text).style(style), area);
+    frame.render_widget(
+        Paragraph::new(text)
+            .style(style)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
 }
 
 fn render_confirm(frame: &mut Frame, app: &App) {
@@ -1664,6 +1669,7 @@ mod tests {
                 rule_id: "test".into(),
                 name: "测试缓存".into(),
                 risk: Risk::Safe,
+                contents_only: false,
             }],
             skipped: vec![],
         }
@@ -1709,6 +1715,23 @@ mod tests {
         // 小窗口也不能 panic
         app.tab = QUARANTINE_TAB;
         let _ = render(&mut app, 40, 12);
+    }
+
+    #[test]
+    fn footer_hint_wraps_to_two_lines() {
+        let mut app = test_app();
+        app.tab = CLEAN_TAB;
+        let out = render(&mut app, 80, 24);
+        let lines: Vec<&str> = out.lines().collect();
+        let n = lines.len();
+        let first = lines[n - 2];
+        let both = format!("{}{}", first, lines[n - 1]);
+        assert!(both.contains("space 勾选"), "页脚应含勾选提示: {both:?}");
+        assert!(both.contains("q 退出"), "页脚应含退出提示: {both:?}");
+        assert!(
+            !first.contains("q 退出"),
+            "窄宽度下提示应换行到第二行: {first:?}"
+        );
     }
 
     #[test]
