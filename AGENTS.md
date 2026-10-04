@@ -53,7 +53,12 @@ thin large ~/Library --min 500MB --limit 30
 - `部分(<规则id>)` —— 目录内有规则，但本身还有未归类数据
 - `未归类` —— 完全没有规则
 
-`discover` 文本输出末尾会直接给出下一步可执行的 `thin rule add ...` 命令。
+`discover` 文本输出末尾会直接给出下一步可执行的 `thin rule add ...` 命令，并附**覆盖率自检**
+（直接子项合计 / 已归类 / 部分覆盖 / 未归类）。`--json` 输出对象：
+`{ root, total, covered, partial, uncovered, coverageRatio, findings: [...] }`。
+
+`scan --json` 额外返回 `accountedBytes`（规则命中总量，含嵌套去重）与 `volume`（主卷 total/used/avail），
+用于说明「已知可清理项」占已用的比例（**不等于「未归类」**，后者用 `discover`）。
 
 ---
 
@@ -143,7 +148,9 @@ thin quarantine purge --older-than 7d
    - `safe`：可自动处理（可再生成）
    - `confirm`：需人工确认（`--all` 才纳入）
    - `destructive`：只能 `--id` 显式指定
-4. **受保护路径**（永不可动）：`/`、`/System`、`/private/var/vm`、Keychains、iCloud、挂载点、整个主目录。
+4. **受保护路径**（永不可动）：`/`、`/System`、`/private/var/vm`、`/Library/Apple`、Keychains、iCloud、`~/Library/CloudStorage`、挂载点、整个主目录。
+5. **卷隔离**：目标必须与隔离区（`~/.thin`）同卷；外接盘/其他挂载会被安全门拒绝，避免跨卷复制。
+6. **运行中的 App**：`thin uninstall --apply` 会先检测，App 正在运行则拒绝卸载。
 5. **写规则前先确认路径真实存在且可清理**；`regenerable=false` 的项风险应设为 `confirm` 或 `destructive`。
 6. 不确定时，宁可 `risk=confirm` 且 `--dry-run` 先看结果。
 

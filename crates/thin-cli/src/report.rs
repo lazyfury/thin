@@ -55,11 +55,12 @@ pub fn print_summary(items: &[CleanItem]) {
     let nested = thin_core::scan::nested_count(items);
     println!();
     println!(
-        "\x1b[1m可回收总计: {}\x1b[0m  （安全 {} / 需确认 {} / 不可再生 {})",
+        "\x1b[1m可回收总计: {}\x1b[0m  （安全 {} / 需确认 {} / 不可再生 {} / 需手动 {})",
         human(s.total_reclaimable()),
         human(s.safe),
         human(s.confirm),
-        human(s.destructive)
+        human(s.destructive),
+        human(s.manual)
     );
     let extra = if nested > 0 {
         format!("，已排除 {nested} 个嵌套重复项")
@@ -67,7 +68,7 @@ pub fn print_summary(items: &[CleanItem]) {
         String::new()
     };
     println!(
-        "共 {} 项{extra}。默认仅「安全+需确认」计入可回收。",
+        "共 {} 项{extra}。默认仅「安全+需确认」计入可回收；需 sudo 项需手动处理。",
         items.len()
     );
 }
@@ -86,5 +87,6 @@ pub fn print_detail(it: &CleanItem) {
     println!("  这是什么: {}", it.explain.what);
     println!("  删了会怎样: {}", it.explain.cost);
     println!("  能否恢复: {}", it.explain.recover);
-    println!("  清理方式: {}", it.reclaim);
+    println!("  官方方式: {}", it.reclaim);
+    println!("  thin 动作: 移入隔离区（可恢复）");
 }

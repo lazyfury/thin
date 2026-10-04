@@ -1,5 +1,6 @@
 //! App 列表与卸载（含关联残留）（M2）。
 
+use rayon::prelude::*;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -64,7 +65,8 @@ fn app_roots() -> Vec<PathBuf> {
 
 /// 列出已安装的 App（按总占用降序）
 pub fn list_apps() -> Vec<AppInfo> {
-    let mut apps = Vec::new();
+    // 先收集所有 .app 路径，再并行统计体积（含 plutil 子进程与递归目录）
+    let mut app_paths: Vec<PathBuf> = Vec::new();
     for root in app_roots() {
         let entries = match std::fs::read_dir(&root) {
             Ok(e) => e,
@@ -72,9 +74,15 @@ pub fn list_apps() -> Vec<AppInfo> {
         };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("app") {
-                continue;
+            if path.extension().and_then(|s| s.to_str()) == Some("app") {
+                app_paths.push(path);
             }
+        }
+    }
+
+    let mut apps: Vec<AppInfo> = app_paths
+        .into_par_iter()
+        .map(|path| {
             let name = path
                 .file_stem()
                 .map(|s| s.to_string_lossy().to_string())
@@ -91,15 +99,15 @@ pub fn list_apps() -> Vec<AppInfo> {
                     (p, s)
                 })
                 .collect();
-            apps.push(AppInfo {
+            AppInfo {
                 name,
                 path,
                 bundle_id,
                 size,
                 leftovers,
-            });
-        }
-    }
+            }
+        })
+        .collect();
     apps.sort_by(|a, b| b.total().cmp(&a.total()));
     apps
 }
@@ -111,6 +119,17 @@ pub fn find_app(query: &str) -> Vec<AppInfo> {
         .into_iter()
         .filter(|a| a.name.to_lowercase().contains(&q))
         .collect()
+}
+
+/// 判断某个 .app 当前是否在运行（其可执行文件位于 Contents/MacOS）。
+pub fn is_running(app: &Path) -> bool {
+    let needle = app.join("Contents/MacOS");
+    let pattern = format!("{}/", needle.to_string_lossy());
+    Command::new("pgrep")
+        .args(["-f", &pattern])
+        .output()
+        .map(|o| o.status.success() && !o.stdout.is_empty())
+        .unwrap_or(false)
 }
 
 /// 读取 .app 的 CFBundleIdentifier
@@ -165,5 +184,25 @@ mod tests {
         assert_eq!(tier(2 * 1024 * 1024 * 1024), Tier::Large);
         assert_eq!(tier(200 * 1024 * 1024), Tier::Medium);
         assert_eq!(tier(50 * 1024 * 1024), Tier::Small);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn detects_running_app() {
+        let app = std::env::temp_dir().join(format!("thin-run-{}.app", std::process::id()));
+        let macos = app.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+
+        let mut child = Command::new("bash")
+            .arg("-c")
+            .arg(format!("exec -a '{}/Foo' sleep 5", macos.display()))
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(is_running(&app), "应检测到正在运行的 App");
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&app);
     }
 }

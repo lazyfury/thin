@@ -393,21 +393,6 @@
     }
   },
   {
-    "id": "sleepimage",
-    "name": "休眠镜像 (sleepimage)",
-    "category": "system-cache",
-    "risk": "confirm",
-    "regenerable": true,
-    "sudo": true,
-    "matcher": { "kind": "path", "paths": ["/private/var/vm/sleepimage"] },
-    "reclaim": "sudo rm /private/var/vm/sleepimage",
-    "explain": {
-      "what": "休眠时保存内存的镜像文件（约等于内存大小）",
-      "cost": "休眠功能受影响，普通睡眠不受影响",
-      "recover": "系统会按需重建"
-    }
-  },
-  {
     "id": "trash",
     "name": "废纸篓",
     "category": "trash",

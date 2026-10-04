@@ -63,11 +63,16 @@ fn is_nested<'a>(path: &std::path::Path, all: &'a [CleanItem]) -> Option<&'a Cle
         .find(|o| o.path != path && path.starts_with(&o.path))
 }
 
-/// 汇总可回收空间（排除嵌套重复项，避免父子路径重复计算）
+/// 汇总可回收空间（排除嵌套重复项与需 sudo 的项，避免虚高与不可执行）
 pub fn summarize(items: &[CleanItem]) -> ReclaimSummary {
     let mut s = ReclaimSummary::default();
     for it in items {
         if is_nested(&it.path, items).is_some() {
+            continue;
+        }
+        // 需 sudo 的项清理时会被安全门跳过，不能算作可回收
+        if it.sudo {
+            s.manual = s.manual.saturating_add(it.size);
             continue;
         }
         match it.risk {
@@ -79,10 +84,129 @@ pub fn summarize(items: &[CleanItem]) -> ReclaimSummary {
     s
 }
 
+/// 只保留最顶层的项（排除被其它项包含的嵌套项），保持输入顺序。
+///
+/// 清理时用它去重：若同时选中 `~/Library/Caches` 与其子目录，只处理父目录即可，
+/// 否则会重复计数、且子项会在父项被移走后报「路径不存在」。
+pub fn top_level(items: &[CleanItem]) -> Vec<CleanItem> {
+    items
+        .iter()
+        .filter(|it| is_nested(&it.path, items).is_none())
+        .cloned()
+        .collect()
+}
+
+/// 一组「将真正执行」的项预计可释放的字节数。
+///
+/// 与 [`summarize`] 的区别：这里按清理实际会发生的情况计算，
+/// 排除需 sudo 的项与嵌套重复项，但不区分 risk（供 `--id` 显式指定 destructive 时使用）。
+pub fn planned_bytes(items: &[CleanItem]) -> u64 {
+    items
+        .iter()
+        .filter(|it| !it.sudo)
+        .filter(|it| is_nested(&it.path, items).is_none())
+        .fold(0u64, |acc, it| acc.saturating_add(it.size))
+}
+
+/// 规则命中的总量（去除嵌套重复项，含所有风险等级）。
+///
+/// 用于覆盖率自检：与卷已用量对比，说明「已知可清理项」只占已用空间的一小部分，
+/// 其余为系统/应用/用户数据。注意：它**不等于**「未归类」——未归类需用 `discover` 局部归因。
+pub fn accounted_bytes(items: &[CleanItem]) -> u64 {
+    items
+        .iter()
+        .filter(|it| is_nested(&it.path, items).is_none())
+        .fold(0u64, |acc, it| acc.saturating_add(it.size))
+}
+
 /// 统计被嵌套（重复）的项数
 pub fn nested_count(items: &[CleanItem]) -> usize {
     items
         .iter()
         .filter(|it| is_nested(&it.path, items).is_some())
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{Category, CleanItem, Explain, Risk};
+    use std::path::PathBuf;
+
+    fn item(path: &str, size: u64, risk: Risk, sudo: bool) -> CleanItem {
+        CleanItem {
+            rule_id: "test".into(),
+            name: "测试项".into(),
+            path: PathBuf::from(path),
+            category: Category::DevCache,
+            risk,
+            regenerable: true,
+            sudo,
+            size,
+            reclaim: "手动删除".into(),
+            explain: Explain {
+                what: "测试".into(),
+                cost: "无".into(),
+                recover: "重新生成".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn summarize_excludes_nested_children() {
+        let items = vec![
+            item("/a/caches", 1000, Risk::Safe, false),
+            item("/a/caches/homebrew", 400, Risk::Safe, false),
+        ];
+        let s = summarize(&items);
+        assert_eq!(s.safe, 1000, "子目录不应重复计入");
+        assert_eq!(s.confirm, 0);
+        assert_eq!(nested_count(&items), 1);
+        assert_eq!(top_level(&items).len(), 1);
+        assert_eq!(planned_bytes(&items), 1000);
+    }
+
+    #[test]
+    fn summarize_buckets_sudo_as_manual() {
+        let items = vec![
+            item("/a/safe", 1000, Risk::Safe, false),
+            item("/a/logs", 2000, Risk::Safe, true),
+        ];
+        let s = summarize(&items);
+        assert_eq!(s.safe, 1000);
+        assert_eq!(s.manual, 2000);
+        assert_eq!(s.total_reclaimable(), 1000, "sudo 项不计入可回收");
+    }
+
+    #[test]
+    fn planned_bytes_keeps_destructive_but_drops_sudo() {
+        let items = vec![
+            item("/a/vm", 5000, Risk::Destructive, false),
+            item("/a/logs", 2000, Risk::Safe, true),
+        ];
+        // 显式指定 destructive 时仍应计入预计释放；sudo 始终排除
+        assert_eq!(planned_bytes(&items), 5000);
+    }
+
+    #[test]
+    fn nested_sudo_child_is_suppressed_by_parent() {
+        let items = vec![
+            item("/a/caches", 1000, Risk::Confirm, false),
+            item("/a/caches/sys", 800, Risk::Safe, true),
+        ];
+        let s = summarize(&items);
+        assert_eq!(s.confirm, 1000);
+        assert_eq!(s.manual, 0, "被父项覆盖的 sudo 子项不单独计入 manual");
+    }
+
+    #[test]
+    fn accounted_bytes_dedupes_nested_regardless_of_risk() {
+        let items = vec![
+            item("/a/caches", 1000, Risk::Safe, false),
+            item("/a/caches/homebrew", 400, Risk::Safe, false),
+            item("/a/vm", 5000, Risk::Destructive, false),
+            item("/a/logs", 2000, Risk::Safe, true),
+        ];
+        assert_eq!(accounted_bytes(&items), 8000);
+    }
 }

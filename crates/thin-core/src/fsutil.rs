@@ -71,6 +71,44 @@ pub fn size_of(path: &Path) -> u64 {
     }
 }
 
+/// 逻辑大小：所有文件 `len()` 之和（不跨越文件系统边界）。
+///
+/// 与 [`size_of`]（按实际分配块）不同，用于跨卷复制前的空间预估，
+/// 因为复制会把稀疏文件的空洞也写成实心。
+pub fn logical_size(path: &Path) -> u64 {
+    if let Ok(m) = std::fs::metadata(path) {
+        if m.is_file() {
+            return m.len();
+        }
+    }
+    let root_dev = device_of(path);
+    let mut total: u64 = 0;
+    let mut it = WalkDir::new(path).follow_links(false).into_iter();
+    while let Some(entry) = it.next() {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        if entry.depth() == 0 {
+            continue;
+        }
+        let md = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if md.is_dir() {
+            if root_dev.is_some() && Some(md.dev()) != root_dev {
+                it.skip_current_dir();
+            }
+            continue;
+        }
+        if md.file_type().is_file() {
+            total = total.saturating_add(md.len());
+        }
+    }
+    total
+}
+
 /// 列出目录下各直接子项的大小（降序，并行统计）
 pub fn children_sizes(root: &Path) -> Vec<(PathBuf, u64)> {
     children_sizes_progress(root, &crate::progress::Progress::new())

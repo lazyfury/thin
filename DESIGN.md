@@ -3,6 +3,11 @@
 > 设计依据：本次对 suke 的 MacBook Air 的实际扫描流程与发现。
 > 目标：把「逐层 du + 分类判断 + 安全删除」这套人工流程，产品化成可信赖的清理工具。
 
+> **实现状态（重要）**：本文是产品设计**愿景**（原生 SwiftUI App）。
+> 当前已落地的 M0–M4 是 **Rust CLI + TUI**（`thin-core` / `thin-cli`）。
+> 实际架构、规则 schema、命令与安全模型**以 [`README.md`](./README.md) 与 [`AGENTS.md`](./AGENTS.md) 为准**。
+> 本文 §3/§5/§8 的 Swift 命名与 schema 为原计划；§4 的规则示例为早期设计，实际格式见下方「实际规则 schema」。
+
 ---
 
 ## 0. 核心洞察（决定了产品形态）
@@ -89,7 +94,7 @@ Step 1  Rule Scan（规则命中，秒级）
         ├─ 开发缓存：cargo/rustup/npm/pip/homebrew/gradle/Xcode DerivedData
         ├─ 应用缓存：Chrome OptGuide、Ollama、VS Code、Electron App
         ├─ 大对象：Parallels/Docker/VM 镜像
-        ├─ 系统项：/private/var/db/diagnostics, sleepimage, macOS Install Data
+        ├─ 系统项：/private/var/db/diagnostics, macOS Install Data
         └─ 回收站 / 下载
 
 Step 2  Generic Walk（兜底，Top-N）
@@ -165,6 +170,29 @@ func scan() async throws -> ScanReport {
 }
 ```
 
+### 实际规则 schema（当前 CLI 实现）
+
+实现采用更简单的两种 matcher，字段与 [`crates/thin-core/rules/default.json`](./crates/thin-core/rules/default.json) 一致：
+
+```jsonc
+{
+  "id": "homebrew-cache",
+  "name": "Homebrew 下载缓存",
+  "category": "app-cache",       // system-cache|app-cache|dev-cache|vm|log|trash|leftover|other
+  "risk": "safe",                // safe|confirm|destructive
+  "regenerable": true,
+  "sudo": false,                 // 需 root 的项会被安全门跳过
+  "matcher": { "kind": "path", "paths": ["~/Library/Caches/Homebrew"] },
+  // 或 { "kind": "findDir", "roots": ["~/Documents"], "dirName": "target",
+  //      "requireSibling": "Cargo.toml", "maxDepth": 6 }
+  "reclaim": "brew cleanup -s",  // 仅作人类可读说明，thin 不会执行
+  "explain": { "what": "...", "cost": "...", "recover": "..." }
+}
+```
+
+> 与早期 schema 的差异：`match`→`matcher`；glob 路径 → 固定 `path` / `findDir`；
+> `mustBeInside`→`requireSibling`；`reclaim` 从 `{kind, cmd}` 降为字符串（不执行）。
+
 ### 本机扫描得到的初始规则集（真实数据）
 
 | id | 类别 | 风险 | 可再生 | 本机大小 | reclaim |
@@ -178,7 +206,7 @@ func scan() async throws -> ScanReport {
 | `cargo-registry` | dev-cache | safe | ✅ | 1.3G | `cargo cache -a` |
 | `rustup-toolchains` | dev-cache | confirm | ✅ | 1.6G | `rustup toolchain uninstall` |
 | `homebrew-cache` | dev-cache | safe | ✅ | — | `brew cleanup` |
-| `sleepimage` | system | confirm | ✅ | 2.0G | 关闭休眠/删除，自动重建 |
+| `sleepimage` | system | confirm | ✅ | 2.0G | 受保护（`/private/var/vm`），不清理 |
 | `parallels-vm` | vm | destructive | ❌ | 26G | 仅提示，需用户明确确认 |
 | `docker-raw` | vm | destructive | ❌ | 74M | Docker 面板 |
 | `trash` | trash | safe | ❌ | — | 清空回收站 |
@@ -288,7 +316,7 @@ struct ScanReport {
 
 ## 8. 技术栈建议
 
-**推荐：原生 macOS**
+**原计划：原生 macOS**（当前实现为 Rust，见上）
 
 | 层 | 选型 |
 |---|---|
@@ -322,5 +350,5 @@ struct ScanReport {
 
 **M0 优先**：因为本次所有结论都来自 CLI，最快验证准确性的方式就是把它们变成可跑的 `thin`，再套 UI。
 
-> **实现进度（CLI 先行）**：扫描+核算 ✅ / 安全清理（隔离区+Journal）✅ / 大文件·重复文件·App 卸载 ✅ / 规则热更新·异常大目录归因·agent 规则入口 ✅。
+> **实现进度（CLI 先行）**：扫描+核算 ✅ / 安全清理（隔离区+Journal）✅ / 大文件·重复文件·App 卸载 ✅ / 规则热更新·异常大目录归因·agent 规则入口 ✅ / 卷隔离+运行中 App 守卫 ✅ / `discover` 覆盖率自检 + `scan` accountedBytes ✅。
 > 原计划的 SwiftUI 前端顺延，待 CLI 能力稳定后再做（core 已与 UI 解耦，可直接复用）。

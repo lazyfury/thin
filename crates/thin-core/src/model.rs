@@ -139,6 +139,8 @@ pub struct ReclaimSummary {
     pub safe: u64,
     pub confirm: u64,
     pub destructive: u64,
+    /// 需 sudo、thin 会自动跳过、只能手动处理的体积（不计入可回收）
+    pub manual: u64,
 }
 
 impl ReclaimSummary {

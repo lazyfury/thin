@@ -224,12 +224,13 @@ impl App {
         self.clean
             .ready()
             .map(|items| {
-                items
+                let chosen: Vec<CleanItem> = items
                     .iter()
                     .zip(&self.selected)
                     .filter(|(_, s)| **s)
-                    .map(|(i, _)| i.size)
-                    .sum()
+                    .map(|(i, _)| i.clone())
+                    .collect();
+                scan::planned_bytes(&chosen)
             })
             .unwrap_or(0)
     }
@@ -280,6 +281,8 @@ impl App {
                 .collect(),
             _ => return,
         };
+        // 只处理最顶层项，避免父子路径重复计入/重复移动
+        let chosen = scan::top_level(&chosen);
         if chosen.is_empty() {
             self.status = Some("未勾选任何项".into());
             return;
@@ -293,7 +296,12 @@ impl App {
                     let mut new_items = Vec::new();
                     let mut new_sel = Vec::new();
                     for (it, sel) in items.into_iter().zip(std::mem::take(&mut self.selected)) {
-                        if !moved.contains(&it.path) {
+                        // 丢弃已移动的项，以及被已移动父目录覆盖的嵌套子项
+                        let gone = moved.contains(&it.path)
+                            || moved
+                                .iter()
+                                .any(|m| it.path != *m && it.path.starts_with(m));
+                        if !gone {
                             new_sel.push(sel);
                             new_items.push(it);
                         }
@@ -925,7 +933,7 @@ fn render_confirm(frame: &mut Frame, app: &App) {
             format!("将 {} 项移入隔离区？", app.selected_count()),
             Style::default().add_modifier(Modifier::BOLD),
         )),
-        Line::from(format!("预计释放 {}", human(app.selected_total()))),
+        Line::from(format!("预计可释放 {}", human(app.selected_total()))),
         Line::from(""),
         Line::from(Span::styled(
             "移入后可随时恢复（thin quarantine restore）",

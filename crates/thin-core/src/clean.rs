@@ -103,8 +103,24 @@ fn sanitize(name: &str) -> String {
 // 安全门（SafetyGate）
 // ---------------------------------------------------------------------------
 
+/// 解析路径所在卷的设备号；路径不存在时向上找到最近的已存在祖先。
+fn volume_device(path: &Path) -> Option<u64> {
+    let mut cur = Some(path);
+    while let Some(p) = cur {
+        if let Ok(md) = std::fs::metadata(p) {
+            use std::os::unix::fs::MetadataExt;
+            return Some(md.dev());
+        }
+        cur = p.parent();
+    }
+    None
+}
+
 /// 若路径受保护，返回原因。受保护路径永不被移动/删除。
-pub fn protection_reason(path: &Path) -> Option<String> {
+///
+/// `ref_vol` 为隔离区所在卷的参考路径：与它不处于同一卷的目标（外接盘、其他挂载）
+/// 一律拒绝，避免跨卷复制带来的双倍空间占用与半成品数据。
+pub fn protection_reason_in(path: &Path, ref_vol: Option<&Path>) -> Option<String> {
     let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let home = user_home();
 
@@ -123,10 +139,13 @@ pub fn protection_reason(path: &Path) -> Option<String> {
         PathBuf::from("/System"),
         PathBuf::from("/private/var/vm"),
         PathBuf::from("/Library/Keychains"),
+        PathBuf::from("/Library/Apple"),
+        PathBuf::from("/Library/CloudStorage"),
     ];
     if let Some(h) = &home {
         subtrees.push(h.join("Library/Keychains"));
         subtrees.push(h.join("Library/Mobile Documents"));
+        subtrees.push(h.join("Library/CloudStorage"));
         subtrees.push(h.join(".thin"));
     }
     for p in subtrees {
@@ -135,7 +154,7 @@ pub fn protection_reason(path: &Path) -> Option<String> {
         }
     }
 
-    // 挂载点保护（与父目录设备号不同）
+    // 挂载点保护（路径自身是挂载点，与父目录设备号不同）
     if let Some(parent) = canon.parent() {
         if let (Ok(a), Ok(b)) = (std::fs::metadata(&canon), std::fs::metadata(parent)) {
             use std::os::unix::fs::MetadataExt;
@@ -144,12 +163,42 @@ pub fn protection_reason(path: &Path) -> Option<String> {
             }
         }
     }
+
+    // 卷隔离：目标必须与隔离区同卷，否则拒绝（外接盘 / 其他挂载）
+    if let Some(vol) = ref_vol {
+        if let (Some(a), Some(b)) = (volume_device(&canon), volume_device(vol)) {
+            if a != b {
+                return Some(format!(
+                    "位于不同卷（外接盘/其他挂载），不在隔离区所在卷 {}",
+                    vol.display()
+                ));
+            }
+        }
+    }
     None
+}
+
+/// 若路径受保护，返回原因（以用户主目录作为隔离区参考卷）
+pub fn protection_reason(path: &Path) -> Option<String> {
+    let home = user_home();
+    protection_reason_in(path, home.as_deref())
 }
 
 // ---------------------------------------------------------------------------
 // 移动 / 复制 / 删除
 // ---------------------------------------------------------------------------
+
+fn available_bytes(path: &Path) -> Option<u64> {
+    let p = if path.exists() { path } else { path.parent()? };
+    let c = std::ffi::CString::new(p.to_string_lossy().into_owned()).ok()?;
+    unsafe {
+        let mut st: libc::statfs = std::mem::zeroed();
+        if libc::statfs(c.as_ptr(), &mut st) != 0 {
+            return None;
+        }
+        Some((st.f_bavail as u64).saturating_mul(st.f_bsize as u64))
+    }
+}
 
 fn move_path(src: &Path, dst: &Path) -> Result<()> {
     if let Some(parent) = dst.parent() {
@@ -158,7 +207,17 @@ fn move_path(src: &Path, dst: &Path) -> Result<()> {
     match std::fs::rename(src, dst) {
         Ok(()) => Ok(()),
         Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-            // 跨文件系统：复制后删除
+            // 跨文件系统：复制前先确认空间足够，再复制后删除
+            let need = crate::fsutil::logical_size(src);
+            if let Some(avail) = available_bytes(dst) {
+                if avail < need {
+                    anyhow::bail!(
+                        "目标卷空间不足：需要 {}，可用 {}",
+                        crate::fmt::human(need),
+                        crate::fmt::human(avail)
+                    );
+                }
+            }
             copy_recursive(src, dst)?;
             remove_path(src)?;
             Ok(())
@@ -232,7 +291,7 @@ pub fn quarantine_into(home: &Path, items: &[CleanItem], dry_run: bool) -> Resul
             });
             continue;
         }
-        if let Some(reason) = protection_reason(&it.path) {
+        if let Some(reason) = protection_reason_in(&it.path, Some(home)) {
             journal.skipped.push(SkippedItem {
                 path: it.path.clone(),
                 reason,
@@ -415,6 +474,7 @@ mod tests {
         assert!(protection_reason(Path::new("/")).is_some());
         assert!(protection_reason(Path::new("/System/Library")).is_some());
         assert!(protection_reason(Path::new("/private/var/vm/sleepimage")).is_some());
+        assert!(protection_reason(Path::new("/Library/Apple/Support")).is_some());
         let home = user_home().unwrap();
         assert!(protection_reason(&home).is_some());
         // 普通文件不受保护

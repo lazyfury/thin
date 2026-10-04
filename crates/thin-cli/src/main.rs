@@ -298,11 +298,22 @@ fn cmd_scan(args: ScanArgs) -> Result<()> {
     let min = parse_size(&args.min).unwrap_or(1_048_576);
     let catalog = rules::load()?;
     let items = scan::scan(&catalog, args.all, min);
+    let accounted = scan::accounted_bytes(&items);
+    let volume = probe::statfs(&std::env::var("HOME").unwrap_or_else(|_| "/".into()));
 
     if args.json {
+        let vol = volume.as_ref().map(|v| {
+            serde_json::json!({
+                "total": v.total,
+                "used": v.used,
+                "avail": v.avail,
+            })
+        });
         let out = serde_json::json!({
             "items": items,
             "summary": scan::summarize(&items),
+            "accountedBytes": accounted,
+            "volume": vol,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
@@ -310,6 +321,17 @@ fn cmd_scan(args: ScanArgs) -> Result<()> {
 
     report::print_table(&items);
     report::print_summary(&items);
+    if let Some(v) = &volume {
+        println!(
+            "规则覆盖（含嵌套去重）: {} ｜ 主卷已用 {}（{:.0}%）",
+            human(accounted),
+            human(v.used),
+            accounted as f64 / v.used.max(1) as f64 * 100.0
+        );
+        println!(
+            "\x1b[90m其余为系统/应用/用户数据，不属于可清理项；局部「未归类」请用 thin discover。\x1b[0m"
+        );
+    }
 
     if !args.detail.is_empty() {
         println!();
@@ -439,10 +461,11 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
     let min = parse_size(&args.min).unwrap_or(500 * 1024 * 1024);
     let catalog = rules::load()?;
     eprintln!("分析 {} …", root.display());
-    let findings = discover::analyze(&root, min, &catalog);
+    let report = discover::analyze(&root, min, &catalog);
 
     if args.json {
-        let arr: Vec<_> = findings
+        let findings: Vec<_> = report
+            .findings
             .iter()
             .map(|f| {
                 serde_json::json!({
@@ -453,18 +476,27 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&arr)?);
+        let out = serde_json::json!({
+            "root": root,
+            "total": report.total,
+            "covered": report.covered,
+            "partial": report.partial,
+            "uncovered": report.uncovered,
+            "coverageRatio": report.coverage_ratio(),
+            "findings": findings,
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
 
-    if findings.is_empty() {
+    if report.findings.is_empty() {
         println!("未发现 >= {} 的子项。", human(min));
         return Ok(());
     }
 
     println!("{:>10}  {:<20} {}", "大小", "归因", "路径");
     println!("{}", "-".repeat(90));
-    for f in &findings {
+    for f in &report.findings {
         let tag = if f.coverage.is_uncovered() {
             format!("\x1b[33m{}\x1b[0m", f.coverage.label())
         } else {
@@ -473,11 +505,13 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
         println!("{:>10}  {:<20} {}", human(f.size), tag, shorten(&f.path));
     }
 
-    let none: Vec<_> = findings
+    let none: Vec<_> = report
+        .findings
         .iter()
         .filter(|f| matches!(f.coverage, discover::Coverage::None))
         .collect();
-    let partial: Vec<_> = findings
+    let partial: Vec<_> = report
+        .findings
         .iter()
         .filter(|f| matches!(f.coverage, discover::Coverage::Partial(_)))
         .collect();
@@ -498,6 +532,20 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
             println!("  thin discover \"{}\" --min 500MB", f.path.display());
         }
     }
+
+    // 覆盖率自检：直接子项合计 vs 已归类/未归类，诚实回答「还有多少没归类」
+    println!(
+        "\n\x1b[1m覆盖率自检\x1b[0m（{} 的直接子项）",
+        shorten(&root)
+    );
+    println!(
+        "  合计 {} ｜ 已归类 {} ｜ 部分覆盖 {} ｜ 未归类 {} ｜ 覆盖 {:.0}%",
+        human(report.total),
+        human(report.covered),
+        human(report.partial),
+        human(report.uncovered),
+        report.coverage_ratio() * 100.0
+    );
     Ok(())
 }
 
@@ -505,7 +553,7 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
 fn select_items(args: &CleanArgs) -> Result<Vec<thin_core::CleanItem>> {
     let catalog = rules::load()?;
     let items = scan::scan(&catalog, true, 1_048_576);
-    Ok(items
+    let selected: Vec<thin_core::CleanItem> = items
         .into_iter()
         .filter(|it| {
             if !args.ids.is_empty() {
@@ -517,24 +565,40 @@ fn select_items(args: &CleanArgs) -> Result<Vec<thin_core::CleanItem>> {
                 Risk::Destructive => false,
             }
         })
-        .collect())
+        .collect();
+    // 只处理最顶层项：避免父目录与其子目录重复计数、重复移动
+    Ok(scan::top_level(&selected))
 }
 
 fn print_plan(selected: &[thin_core::CleanItem]) {
-    println!("\x1b[1m清理计划\x1b[0m\n");
-    let mut total: u64 = 0;
+    println!("\x1b[1m清理计划\x1b[0m");
+    println!(
+        "\x1b[90m以下为官方推荐的清理方式；thin 统一将目标移入隔离区（可恢复），不会执行这些命令。\x1b[0m\n"
+    );
+    let mut manual = 0usize;
     for it in selected {
-        total = total.saturating_add(it.size);
         println!("• {:<28} {:>10}", it.name, human(it.size));
-        println!("  {:<28} {}", "方式:", it.reclaim);
+        println!("  {:<28} {}", "官方方式:", it.reclaim);
+        println!("  {:<28} {}", "thin 动作:", "移入隔离区（可恢复）");
         if it.sudo {
-            println!("  {:<28} {}", "注意:", "\x1b[33m需要 sudo（将跳过）\x1b[0m");
+            manual += 1;
+            println!(
+                "  {:<28} {}",
+                "注意:", "\x1b[33m需要 sudo（将跳过，不计入可释放）\x1b[0m"
+            );
         }
         println!("  {:<28} {}", "路径:", it.path.display());
     }
+    let total = scan::planned_bytes(selected);
+    let note = if manual > 0 {
+        format!("（其中 {manual} 项需 sudo 手动处理）")
+    } else {
+        String::new()
+    };
     println!(
-        "\n共 {} 项，预计释放 \x1b[1m{}\x1b[0m",
+        "\n共 {} 项{}，预计可释放 \x1b[1m{}\x1b[0m",
         selected.len(),
+        note,
         human(total)
     );
 }
@@ -560,7 +624,15 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
 
     let journal = clean::quarantine(&selected, false)?;
     print_journal(&journal);
+    warn_snapshots();
     Ok(())
+}
+
+/// 存在本地 APFS 快照时提醒：即使 purge，空间也可能不会立即释放
+fn warn_snapshots() {
+    if !probe::local_snapshots().is_empty() {
+        println!("\x1b[33m注意: 存在本地 APFS 快照，purge 后空间也可能不会立即释放。\x1b[0m");
+    }
 }
 
 fn cmd_quarantine(args: QuarantineArgs) -> Result<()> {
@@ -752,6 +824,7 @@ fn cmd_dupes(args: DupesArgs) -> Result<()> {
     }
     let journal = clean::quarantine(&items, false)?;
     print_journal(&journal);
+    warn_snapshots();
     Ok(())
 }
 
@@ -809,12 +882,12 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         ));
     }
 
-    println!("\x1b[1m卸载计划: {}\x1b[0m\n", app.name);
+    println!("\n\x1b[1m卸载计划: {}\x1b[0m\n", app.name);
     for it in &items {
         println!("• {:<44} {:>10}", shorten(&it.path), human(it.size));
     }
     println!(
-        "\n共 {} 项，预计释放 \x1b[1m{}\x1b[0m",
+        "\n共 {} 项，预计可释放 \x1b[1m{}\x1b[0m",
         items.len(),
         human(app.total())
     );
@@ -823,12 +896,22 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         println!("（预览；加 --apply 移入隔离区，可恢复）");
         return Ok(());
     }
+
+    // SafetyGate：运行中的 App 不硬删
+    if apps::is_running(&app.path) {
+        println!(
+            "\x1b[31m已取消：{} 正在运行，请先退出后再卸载。\x1b[0m",
+            app.name
+        );
+        return Ok(());
+    }
     if !args.yes && !confirm(&format!("卸载 {} 并移入隔离区？", app.name))? {
         println!("已取消。");
         return Ok(());
     }
     let journal = clean::quarantine(&items, false)?;
     print_journal(&journal);
+    warn_snapshots();
     Ok(())
 }
 
@@ -869,11 +952,16 @@ fn parse_size(s: &str) -> Option<u64> {
         return None;
     }
     let upper = s.to_uppercase();
-    let (num, mult) = if let Some(n) = upper.strip_suffix("GB").or(upper.strip_suffix("G")) {
+    let (num, mult) = if let Some(n) = upper.strip_suffix("PB").or_else(|| upper.strip_suffix('P'))
+    {
+        (n, 1024u64.pow(5))
+    } else if let Some(n) = upper.strip_suffix("TB").or_else(|| upper.strip_suffix('T')) {
+        (n, 1024u64.pow(4))
+    } else if let Some(n) = upper.strip_suffix("GB").or_else(|| upper.strip_suffix('G')) {
         (n, 1024u64.pow(3))
-    } else if let Some(n) = upper.strip_suffix("MB").or(upper.strip_suffix("M")) {
+    } else if let Some(n) = upper.strip_suffix("MB").or_else(|| upper.strip_suffix('M')) {
         (n, 1024u64.pow(2))
-    } else if let Some(n) = upper.strip_suffix("KB").or(upper.strip_suffix("K")) {
+    } else if let Some(n) = upper.strip_suffix("KB").or_else(|| upper.strip_suffix('K')) {
         (n, 1024)
     } else if let Some(n) = upper.strip_suffix('B') {
         (n, 1)
@@ -904,6 +992,8 @@ mod tests {
         assert_eq!(parse_size("1MB"), Some(1_048_576));
         assert_eq!(parse_size("500KB"), Some(512_000));
         assert_eq!(parse_size("2G"), Some(2 * 1024 * 1024 * 1024));
+        assert_eq!(parse_size("1TB"), Some(1024u64.pow(4)));
+        assert_eq!(parse_size("1.5T"), Some((1.5 * 1024f64.powi(4)) as u64));
         assert_eq!(parse_size("512"), Some(512));
         assert_eq!(parse_size("bad"), None);
         assert_eq!(parse_size(""), None);

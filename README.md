@@ -94,10 +94,12 @@ thin uninstall <名称> --apply                   # 卸载并移入隔离区
 
 | 机制 | 说明 |
 |---|---|
-| 默认可恢复 | 清理 = 移动到 `~/.thin/quarantine/<会话>/`，原位置立刻释放空间 |
+| 默认可恢复 | 清理 = 移动到 `~/.thin/quarantine/<会话>/`（同卷内为改名，**不立即释放空间**；`quarantine purge` 后才真正释放） |
 | Journal | 每次清理写入账本（原始路径、隔离路径、大小、规则），支持精确回滚 |
-| 受保护白名单 | `/`、`/System`、`/private/var/vm`、Keychains、iCloud、挂载点 —— 永不触碰 |
-| 需 sudo 项 | M1 自动跳过，提示手动处理 |
+| 受保护白名单 | `/`、`/System`、`/private/var/vm`、`/Library/Apple`、Keychains、iCloud、`~/Library/CloudStorage`、挂载点 —— 永不触碰 |
+| 卷隔离 | 目标必须与隔离区（`~/.thin`）同卷；外接盘/其他挂载被拒绝，避免跨卷复制 |
+| 运行中 App | `uninstall --apply` 前检测，正在运行则拒绝卸载 |
+| 需 sudo 项 | 自动跳过，提示手动处理，**不计入「可回收」** |
 | 风险分级 | 默认只处理「安全」项；`--all` 含「需确认」；「不可再生」需显式 `--id` |
 
 ## 准确性说明
