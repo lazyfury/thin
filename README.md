@@ -163,7 +163,10 @@ thin schedule uninstall                        # 卸载
 
 ## 规则目录
 
-所有可清理项声明在 [`rules/default.json`](./rules/default.json)，编译期嵌入，可随版本更新。
+所有可清理项声明在 [`rules/default.json`](./crates/thin-core/rules/default.json)，编译期嵌入，可随版本更新。
+内置约 70 条，覆盖常见 `~/Library` 缓存、以及大量 `~/.xx` / `~/.cache/*` 开发缓存
+（pip/uv/yarn/pnpm/bun、Go、Maven、NuGet、CocoaPods/SwiftPM、Playwright、HuggingFace 等）
+和 Xcode 大件（DeviceSupport/模拟器缓存）。
 
 支持两种匹配方式：
 

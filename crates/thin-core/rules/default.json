@@ -8,7 +8,13 @@
     "sudo": false,
     "matcher": {
       "kind": "findDir",
-      "roots": ["~/Documents", "~/Developer", "~/Projects", "~/code", "~/src"],
+      "roots": [
+        "~/Documents",
+        "~/Developer",
+        "~/Projects",
+        "~/code",
+        "~/src"
+      ],
       "dirName": "target",
       "requireSibling": "Cargo.toml",
       "maxDepth": 6
@@ -29,7 +35,13 @@
     "sudo": false,
     "matcher": {
       "kind": "findDir",
-      "roots": ["~/Documents", "~/Developer", "~/Projects", "~/code", "~/src"],
+      "roots": [
+        "~/Documents",
+        "~/Developer",
+        "~/Projects",
+        "~/code",
+        "~/src"
+      ],
       "dirName": "node_modules",
       "requireSibling": "package.json",
       "maxDepth": 6
@@ -48,7 +60,12 @@
     "risk": "confirm",
     "regenerable": true,
     "sudo": false,
-    "matcher": { "kind": "path", "paths": ["~/Library/Caches"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Caches"
+      ]
+    },
     "reclaim": "rm -rf ~/Library/Caches/*",
     "explain": {
       "what": "各 App 的缓存文件",
@@ -63,7 +80,12 @@
     "risk": "safe",
     "regenerable": true,
     "sudo": false,
-    "matcher": { "kind": "path", "paths": ["~/Library/Logs"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Logs"
+      ]
+    },
     "reclaim": "rm -rf ~/Library/Logs/*",
     "explain": {
       "what": "应用运行日志",
@@ -78,7 +100,12 @@
     "risk": "safe",
     "regenerable": true,
     "sudo": true,
-    "matcher": { "kind": "path", "paths": ["/Library/Logs"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "/Library/Logs"
+      ]
+    },
     "reclaim": "sudo rm -rf /Library/Logs/*",
     "explain": {
       "what": "系统级应用与安装器日志",
@@ -93,7 +120,12 @@
     "risk": "safe",
     "regenerable": true,
     "sudo": true,
-    "matcher": { "kind": "path", "paths": ["/var/log"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "/var/log"
+      ]
+    },
     "reclaim": "sudo rm -rf /var/log/*.log*",
     "explain": {
       "what": "系统运行日志",
@@ -108,7 +140,12 @@
     "risk": "safe",
     "regenerable": true,
     "sudo": true,
-    "matcher": { "kind": "path", "paths": ["/private/var/db/diagnostics"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "/private/var/db/diagnostics"
+      ]
+    },
     "reclaim": "sudo rm -rf /private/var/db/diagnostics/{Persist,Special,Signpost}",
     "explain": {
       "what": "macOS 崩溃/性能诊断数据（Persist/Special/Signpost）",
@@ -123,7 +160,12 @@
     "risk": "confirm",
     "regenerable": true,
     "sudo": true,
-    "matcher": { "kind": "path", "paths": ["/private/var/db/uuidtext"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "/private/var/db/uuidtext"
+      ]
+    },
     "reclaim": "sudo rm -rf /private/var/db/uuidtext/*",
     "explain": {
       "what": "崩溃日志的符号化缓存",
@@ -140,7 +182,9 @@
     "sudo": false,
     "matcher": {
       "kind": "path",
-      "paths": ["~/Library/Application Support/com.apple.wallpaper/aerials"]
+      "paths": [
+        "~/Library/Application Support/com.apple.wallpaper/aerials"
+      ]
     },
     "reclaim": "rm -rf ~/Library/Application Support/com.apple.wallpaper/aerials/*",
     "explain": {
@@ -158,7 +202,10 @@
     "sudo": false,
     "matcher": {
       "kind": "path",
-      "paths": ["~/.cargo/registry/cache", "~/.cargo/registry/src"]
+      "paths": [
+        "~/.cargo/registry/cache",
+        "~/.cargo/registry/src"
+      ]
     },
     "reclaim": "cargo cache -a  # 或删除 ~/.cargo/registry/cache",
     "explain": {
@@ -174,7 +221,12 @@
     "risk": "safe",
     "regenerable": true,
     "sudo": false,
-    "matcher": { "kind": "path", "paths": ["~/.cargo/git"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cargo/git"
+      ]
+    },
     "reclaim": "rm -rf ~/.cargo/git/*",
     "explain": {
       "what": "从 Git 拉取的依赖源码缓存",
@@ -189,7 +241,12 @@
     "risk": "confirm",
     "regenerable": true,
     "sudo": false,
-    "matcher": { "kind": "path", "paths": ["~/.rustup/toolchains"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.rustup/toolchains"
+      ]
+    },
     "reclaim": "rustup toolchain uninstall <name>",
     "explain": {
       "what": "已安装的 Rust 工具链（可能含多套/多目标）",
@@ -204,7 +261,12 @@
     "risk": "safe",
     "regenerable": true,
     "sudo": false,
-    "matcher": { "kind": "path", "paths": ["~/.npm/_cacache"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.npm/_cacache"
+      ]
+    },
     "reclaim": "npm cache clean --force",
     "explain": {
       "what": "npm 依赖包本地缓存",
@@ -221,7 +283,10 @@
     "sudo": false,
     "matcher": {
       "kind": "path",
-      "paths": ["~/Library/Caches/Homebrew", "/opt/homebrew/var/homebrew"]
+      "paths": [
+        "~/Library/Caches/Homebrew",
+        "/opt/homebrew/var/homebrew"
+      ]
     },
     "reclaim": "brew cleanup -s",
     "explain": {
@@ -237,7 +302,12 @@
     "risk": "safe",
     "regenerable": true,
     "sudo": false,
-    "matcher": { "kind": "path", "paths": ["~/.gradle/caches"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.gradle/caches"
+      ]
+    },
     "reclaim": "rm -rf ~/.gradle/caches/*",
     "explain": {
       "what": "Gradle 依赖与构建缓存",
@@ -254,7 +324,9 @@
     "sudo": false,
     "matcher": {
       "kind": "path",
-      "paths": ["~/Library/Developer/Xcode/DerivedData"]
+      "paths": [
+        "~/Library/Developer/Xcode/DerivedData"
+      ]
     },
     "reclaim": "rm -rf ~/Library/Developer/Xcode/DerivedData/*",
     "explain": {
@@ -272,7 +344,9 @@
     "sudo": false,
     "matcher": {
       "kind": "path",
-      "paths": ["~/Library/Developer/Xcode/Archives"]
+      "paths": [
+        "~/Library/Developer/Xcode/Archives"
+      ]
     },
     "reclaim": "在 Xcode Organizer 中删除旧归档",
     "explain": {
@@ -288,7 +362,12 @@
     "risk": "confirm",
     "regenerable": false,
     "sudo": false,
-    "matcher": { "kind": "path", "paths": ["~/Library/Android/sdk"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Android/sdk"
+      ]
+    },
     "reclaim": "如不做 Android 开发可整体删除",
     "explain": {
       "what": "Android 开发 SDK 与模拟器镜像",
@@ -305,7 +384,9 @@
     "sudo": false,
     "matcher": {
       "kind": "path",
-      "paths": ["~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel"]
+      "paths": [
+        "~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel"
+      ]
     },
     "reclaim": "rm -rf \"~/Library/Application Support/Google/Chrome/OptGuideOnDeviceModel\"",
     "explain": {
@@ -366,7 +447,12 @@
     "risk": "confirm",
     "regenerable": false,
     "sudo": false,
-    "matcher": { "kind": "path", "paths": ["~/.ollama/models"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.ollama/models"
+      ]
+    },
     "reclaim": "ollama rm <model>   # 逐个删除不再使用的模型",
     "explain": {
       "what": "本地大语言模型权重文件",
@@ -383,7 +469,9 @@
     "sudo": true,
     "matcher": {
       "kind": "path",
-      "paths": ["/System/Volumes/Data/macOS Install Data"]
+      "paths": [
+        "/System/Volumes/Data/macOS Install Data"
+      ]
     },
     "reclaim": "sudo rm -rf \"/System/Volumes/Data/macOS Install Data\"",
     "explain": {
@@ -399,7 +487,12 @@
     "risk": "safe",
     "regenerable": false,
     "sudo": false,
-    "matcher": { "kind": "path", "paths": ["~/.Trash"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.Trash"
+      ]
+    },
     "reclaim": "清空废纸篓",
     "explain": {
       "what": "已删除但未清空的文件",
@@ -414,7 +507,12 @@
     "risk": "destructive",
     "regenerable": false,
     "sudo": false,
-    "matcher": { "kind": "path", "paths": ["~/Parallels"] },
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Parallels"
+      ]
+    },
     "reclaim": "在 Parallels 中删除不再需要的虚拟机",
     "explain": {
       "what": "Parallels 虚拟机磁盘镜像",
@@ -431,13 +529,913 @@
     "sudo": false,
     "matcher": {
       "kind": "path",
-      "paths": ["~/Library/Containers/com.docker.docker/Data/vms"]
+      "paths": [
+        "~/Library/Containers/com.docker.docker/Data/vms"
+      ]
     },
     "reclaim": "docker system prune -a   # 或删除 Docker.raw",
     "explain": {
       "what": "Docker 镜像、容器与卷数据",
       "cost": "删除后容器/镜像全部丢失",
       "recover": "需重新 pull 构建"
+    }
+  },
+  {
+    "id": "xdg-cache",
+    "name": "XDG 缓存 (~/.cache)",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "XDG 约定的应用缓存根目录",
+      "cost": "部分应用首次启动变慢",
+      "recover": "由应用按需重建"
+    }
+  },
+  {
+    "id": "pip-cache",
+    "name": "pip 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/pip"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "pip 下载的 wheel 与 http 缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "uv-cache",
+    "name": "uv 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/uv"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "uv 的包与索引缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "yarn-cache",
+    "name": "Yarn 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/yarn",
+        "~/Library/Caches/Yarn"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Yarn 依赖缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "pnpm-store",
+    "name": "pnpm store",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/pnpm/store",
+        "~/.local/share/pnpm/store"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "pnpm 内容寻址存储",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "bun-cache",
+    "name": "Bun 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.bun/install/cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Bun 依赖缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "composer-cache",
+    "name": "Composer 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.composer/cache",
+        "~/Library/Caches/composer"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "PHP Composer 依赖缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "bundler-cache",
+    "name": "Bundler 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.bundle/cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Ruby Bundler 依赖缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "maven-cache",
+    "name": "Maven 仓库缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.m2/repository"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Maven 下载的依赖",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "nuget-cache",
+    "name": "NuGet 包缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.nuget/packages"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": ".NET NuGet 包缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "go-build-cache",
+    "name": "Go 构建缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Caches/go-build",
+        "~/.cache/go-build"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Go 编译中间产物",
+      "cost": "首次使用/构建会变慢",
+      "recover": "工具会自动重建"
+    }
+  },
+  {
+    "id": "go-mod-cache",
+    "name": "Go 模块缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/go/pkg/mod",
+        "~/Library/Caches/go-mod-cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Go 依赖模块源码",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "swiftpm-cache",
+    "name": "SwiftPM 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Caches/org.swift.swiftpm",
+        "~/.cache/swift-package-manager"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Swift Package Manager 依赖缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "cocoapods-cache",
+    "name": "CocoaPods 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Caches/CocoaPods"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "CocoaPods 依赖与 podspec 缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "pub-cache",
+    "name": "Dart/Flutter 包缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.pub-cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "pub 下载的包与构建缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "zig-cache",
+    "name": "Zig 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/zig"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Zig 编译缓存",
+      "cost": "首次使用/构建会变慢",
+      "recover": "工具会自动重建"
+    }
+  },
+  {
+    "id": "pytest-cache",
+    "name": "pytest 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.pytest_cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "pytest 上次运行的测试状态",
+      "cost": "首次使用/构建会变慢",
+      "recover": "工具会自动重建"
+    }
+  },
+  {
+    "id": "precommit-cache",
+    "name": "pre-commit 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/pre-commit"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "pre-commit 钩子环境缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "ruff-cache",
+    "name": "Ruff 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/ruff"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Ruff linter 缓存",
+      "cost": "首次使用/构建会变慢",
+      "recover": "工具会自动重建"
+    }
+  },
+  {
+    "id": "mypy-cache",
+    "name": "MyPy 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/mypy",
+        "~/.mypy_cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "MyPy 类型检查缓存",
+      "cost": "首次使用/构建会变慢",
+      "recover": "工具会自动重建"
+    }
+  },
+  {
+    "id": "node-gyp",
+    "name": "node-gyp 头文件",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.node-gyp"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "node-gyp 编译用的 Node 头文件",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "electron-cache",
+    "name": "Electron 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/electron",
+        "~/Library/Caches/electron"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Electron 二进制下载缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "puppeteer-cache",
+    "name": "Puppeteer 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/puppeteer"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Puppeteer 下载的 Chromium",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "deno-cache",
+    "name": "Deno 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Caches/deno",
+        "~/.cache/deno"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Deno 依赖与编译缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "esbuild-cache",
+    "name": "esbuild 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/esbuild"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "esbuild 二进制与缓存",
+      "cost": "首次使用/构建会变慢",
+      "recover": "工具会自动重建"
+    }
+  },
+  {
+    "id": "next-cache",
+    "name": "Next.js 构建缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.next/cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Next.js 构建缓存",
+      "cost": "首次使用/构建会变慢",
+      "recover": "工具会自动重建"
+    }
+  },
+  {
+    "id": "vite-cache",
+    "name": "Vite 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.vite",
+        "~/.cache/vite"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Vite 依赖预构建缓存",
+      "cost": "首次使用/构建会变慢",
+      "recover": "工具会自动重建"
+    }
+  },
+  {
+    "id": "parcel-cache",
+    "name": "Parcel 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.parcel-cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Parcel 打包缓存",
+      "cost": "首次使用/构建会变慢",
+      "recover": "工具会自动重建"
+    }
+  },
+  {
+    "id": "npm-logs",
+    "name": "npm 日志",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.npm/_logs"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "npm 运行日志",
+      "cost": "丢失历史 npm 日志",
+      "recover": "下次运行重新生成"
+    }
+  },
+  {
+    "id": "docker-buildx-cache",
+    "name": "Docker Buildx 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.docker/buildx/cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Docker Buildx 构建缓存",
+      "cost": "首次使用/构建会变慢",
+      "recover": "工具会自动重建"
+    }
+  },
+  {
+    "id": "terraform-plugin-cache",
+    "name": "Terraform 插件缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.terraform.d/plugin-cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Terraform provider 插件缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "aws-cli-cache",
+    "name": "AWS CLI 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.aws/cli/cache",
+        "~/.aws/sso/cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "AWS CLI 的临时凭证/权限缓存",
+      "cost": "下次调用重新获取",
+      "recover": "自动重建（不影响凭证配置）"
+    }
+  },
+  {
+    "id": "kube-cache",
+    "name": "kubectl 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.kube/cache",
+        "~/.kube/http-cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "kubectl API 发现与 http 缓存",
+      "cost": "首次查询略慢",
+      "recover": "自动重建"
+    }
+  },
+  {
+    "id": "selenium-cache",
+    "name": "Selenium 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/selenium"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Selenium WebDriver 二进制",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "podman-cache",
+    "name": "Podman 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.local/share/containers/cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Podman 镜像层缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "cabal-cache",
+    "name": "Cabal 包缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cabal/packages"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Haskell Cabal 下载的包",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "stack-cache",
+    "name": "Stack 索引缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.stack/pantry",
+        "~/.stack/build-plan-cache",
+        "~/.stack/global-hints-cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Haskell Stack 的包索引与构建计划缓存",
+      "cost": "下次构建需重新索引/解析依赖",
+      "recover": "Stack 自动重建（不影响已安装的 GHC 工具链）"
+    }
+  },
+  {
+    "id": "opam-cache",
+    "name": "opam 下载缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.opam/download-cache"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "OCaml opam 下载缓存",
+      "cost": "下次构建/安装需重新下载",
+      "recover": "工具会自动重新下载并重建"
+    }
+  },
+  {
+    "id": "playwright-cache",
+    "name": "Playwright 浏览器",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Caches/ms-playwright",
+        "~/.cache/ms-playwright"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "Playwright 下载的浏览器二进制",
+      "cost": "需重新下载浏览器（数百 MB 起）",
+      "recover": "playwright install 重新下载"
+    }
+  },
+  {
+    "id": "huggingface-cache",
+    "name": "HuggingFace 模型缓存",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/huggingface"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "HuggingFace 下载的模型/数据集",
+      "cost": "需重新下载模型（可能很大）",
+      "recover": "下次使用时重新下载"
+    }
+  },
+  {
+    "id": "torch-cache",
+    "name": "PyTorch 模型缓存",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/.cache/torch"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "PyTorch 预训练模型缓存",
+      "cost": "需重新下载模型",
+      "recover": "下次使用时重新下载"
+    }
+  },
+  {
+    "id": "xcode-devicesupport",
+    "name": "Xcode 设备支持文件",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Developer/Xcode/iOS DeviceSupport",
+        "~/Library/Developer/Xcode/watchOS DeviceSupport",
+        "~/Library/Developer/Xcode/tvOS DeviceSupport"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "调试真机所需的符号文件（每版本可达数 GB）",
+      "cost": "再次连接对应设备时会重新生成",
+      "recover": "重新连接设备即重建"
+    }
+  },
+  {
+    "id": "xcode-device-logs",
+    "name": "Xcode 设备日志",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Developer/Xcode/iOS Device Logs",
+        "~/Library/Developer/Xcode/watchOS Device Logs"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "从设备导出的崩溃/系统日志",
+      "cost": "丢失历史设备日志",
+      "recover": "重新连接设备可再导出"
+    }
+  },
+  {
+    "id": "coresimulator-cache",
+    "name": "CoreSimulator 缓存",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "path",
+      "paths": [
+        "~/Library/Developer/CoreSimulator/Caches"
+      ]
+    },
+    "reclaim": "删除缓存目录，工具会在下次使用时重建",
+    "explain": {
+      "what": "模拟器运行时缓存",
+      "cost": "首次启动模拟器略慢",
+      "recover": "自动重建"
     }
   }
 ]
