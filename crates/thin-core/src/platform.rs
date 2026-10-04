@@ -17,6 +17,17 @@ pub struct SandboxInfo {
     pub sandboxed: bool,
     /// `com.apple.security.application-groups` 声明的 group id
     pub groups: Vec<String>,
+    /// `com.apple.developer.icloud-container-identifiers` 声明的 iCloud 容器
+    pub icloud_containers: Vec<String>,
+    /// 代码签名 Team Identifier（Group Containers 常见前缀）
+    pub team_id: Option<String>,
+}
+
+/// 一个沙盒容器目录及其权威标识（目录名可能是 UUID）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SandboxContainer {
+    pub path: std::path::PathBuf,
+    pub identifier: String,
 }
 
 /// macOS 底层能力抽象。所有方法都允许「无法判断」时返回 `None`。
@@ -38,6 +49,9 @@ pub trait Platform: Send + Sync {
 
     /// 读取 .app 的沙盒信息；`None` 表示无法读取。
     fn app_sandbox_info(&self, app: &Path) -> Option<SandboxInfo>;
+
+    /// 枚举用户沙盒容器（一次批量返回）；`None` 表示后端不可用。
+    fn sandbox_containers(&self, home: &Path) -> Option<Vec<SandboxContainer>>;
 
     /// 移入系统废纸篓；`None` 表示后端不可用。
     fn trash_item(&self, path: &Path) -> Option<bool>;
@@ -82,6 +96,10 @@ impl Platform for LibcPlatform {
     }
 
     fn app_sandbox_info(&self, _app: &Path) -> Option<SandboxInfo> {
+        None
+    }
+
+    fn sandbox_containers(&self, _home: &Path) -> Option<Vec<SandboxContainer>> {
         None
     }
 
@@ -143,7 +161,21 @@ impl Platform for SwiftPlatform {
             bundle_id: info.bundle_id,
             sandboxed: info.sandboxed,
             groups: info.groups,
+            icloud_containers: info.icloud_containers,
+            team_id: info.team_id,
         })
+    }
+
+    fn sandbox_containers(&self, home: &Path) -> Option<Vec<SandboxContainer>> {
+        let list = thin_sys::sandbox_containers(home)?;
+        Some(
+            list.into_iter()
+                .map(|c| SandboxContainer {
+                    path: std::path::PathBuf::from(c.path),
+                    identifier: c.identifier,
+                })
+                .collect(),
+        )
     }
 
     fn trash_item(&self, path: &Path) -> Option<bool> {

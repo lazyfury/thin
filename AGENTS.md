@@ -27,9 +27,10 @@ thin 是 macOS 系统空间扫描与安全清理的 **Rust CLI + TUI**。核心�
 crates/
   thin-core/   核心库（无 UI 依赖）
     src/{lib,model,fsutil,probe,rules,scan,clean,protect,discover,finder,
-         apps,preset,history,schedule,status,progress,proc,recognize,
+         apps,app_conditions,spotlight,preset,history,schedule,status,progress,proc,recognize,
          catalog,script,platform,tree}.rs
     rules/default.json        内置清理规则
+    rules/app-leftovers.json  内置 App 残留条件表（tokens/forcePaths/require/exclude）
   thin-cli/    前端：clap CLI (main.rs) + ratatui TUI (tui.rs) + report/browse/ls/top/treemap
   thin-sys/    macOS 底层能力 FFI（Swift/ThinKit）；无 Swift 工具链时降级为纯 Rust
 docs/
@@ -66,6 +67,8 @@ cargo build -p thin-core --no-default-features
 - **逻辑分层**：`thin-core` 不依赖 UI；CLI/TUI/未来 SwiftUI 都复用其 API。
 - **规则优先**：新增可清理项优先写成声明式规则（`rules/default.json` + 用户 `~/.thin/rules.d/*.json`），
   而不是在代码里硬编码路径。
+- **App 残留条件**：常见 App 的目录名提示与歧义消除写成 `rules/app-leftovers.json`
+  （+ 用户 `~/.thin/app-leftovers.d/*.json`，按 `bundleId` 覆盖），而不是在 `apps.rs` 里硬编码 `APP_HINTS`。
 - **匹配器三类**：`path`、`findDir`（目录名 + `requireSibling` 标记 + `maxDepth`）、
   `script`（动态枚举，必须带 `review.hash` 脚本风险审查，见 `script.rs`）。
 - **外部命令必须带超时**：`tmutil`/`plutil`/`pgrep`/`mount`/`date`/`swift` 等一律加超时，避免挂死。
@@ -103,7 +106,7 @@ cargo build -p thin-core --no-default-features
 | `thin protect` | `protect.rs` |
 | `thin preset` / `history` / `schedule` | `preset.rs` / `history.rs` / `schedule.rs` |
 | `thin large` / `dupes` | `finder.rs` |
-| `thin apps` / `uninstall` | `apps.rs`、`recognize.rs` |
+| `thin apps` / `uninstall` | `apps.rs`、`app_conditions.rs`、`spotlight.rs`、`recognize.rs` |
 | `thin ls` / `tui` | `thin-cli/src/ls.rs` / `tui.rs`、`browse.rs`、`treemap.rs` |
 | `thin agents` | `thin-cli/src/main.rs`（内嵌 `docs/agent-prompt.md`） |
 

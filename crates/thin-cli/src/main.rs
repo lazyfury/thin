@@ -208,6 +208,9 @@ struct UninstallArgs {
     /// 改用 thin 隔离区（默认 App 及残留移入系统废纸篓）
     #[arg(long)]
     quarantine: bool,
+    /// 启用 Spotlight 深扫，补充带后缀/嵌套的关联残留（较慢）
+    #[arg(long)]
+    deep: bool,
 }
 
 #[derive(clap::Args)]
@@ -1849,7 +1852,13 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         &app.name,
         Risk::Confirm,
     )];
-    for l in &app.leftovers {
+    // --deep：用 Spotlight 补充带后缀/嵌套的残留（仍走同一安全门）
+    let leftovers = if args.deep {
+        apps::find_leftovers_deep(&app.name, app.bundle_id.as_deref(), &app.path)
+    } else {
+        app.leftovers.clone()
+    };
+    for l in &leftovers {
         let mut it = CleanItem::synthetic(
             l.path.clone(),
             l.size,
@@ -1863,6 +1872,9 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
     }
 
     println!("\n\x1b[1m卸载计划: {}\x1b[0m\n", app.name);
+    if args.deep {
+        println!("（已启用 Spotlight 深扫）");
+    }
     for it in &items {
         let tag = if it.sudo {
             "  \x1b[33m需 sudo\x1b[0m"

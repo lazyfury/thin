@@ -32,7 +32,7 @@ thin schedule run --preset <id> --dry-run    # 预览一次预设清理，不 pu
 thin quarantine list|restore|purge
 thin large [ROOT] --min --limit [--json]
 thin dupes [ROOT] --min [--apply] [--json]   # 受保护副本标 [已保护] 且不计入可回收
-thin apps --min ; thin uninstall <名称> [--apply]
+thin apps --min ; thin uninstall <名称> [--apply] [--deep]
 ```
 
 所有命令都可用 `THIN_HOME` 指向隔离的数据目录（便于在沙箱/测试中运行），
@@ -227,7 +227,7 @@ thin quarantine purge --older-than 7d             # 二次确认后永久删除
 5. **裸顶层目录**（即使子项可清理，也绝不删目录本身）：`/Applications`、`/Library`、`/opt`、`/Volumes`、`/Users`、`/private/var` 等。
 6. **卷隔离**：目标必须与隔离区（`~/.thin`）同卷；外接盘/其他挂载会被安全门拒绝，避免跨卷复制。
 7. **预演=执行**：`thin clean` 的 dry-run 与 `--apply` 使用**同一安全门**（`clean::plan`），被跳过项不会计入「可释放」。
-8. **运行中的 App / 系统 App**：`uninstall --apply` 前检测运行状态（超时视为运行中）；系统关键 App（列表见 `apps.rs`）禁止卸载。
+8. **运行中的 App / 系统 App**：`uninstall --apply` 前检测运行状态（超时视为运行中）；系统关键 App（列表见 `apps.rs`）禁止卸载。`--deep` 仅用 Spotlight 补充候选（限定 `~/Library`、`~/.config` 等受信任根，文件名命中 App 名/bundle id 等强 token），候选仍走同一安全门，不改变删除语义。
 9. **外部命令超时**：`tmutil`/`plutil`/`pgrep`/`mount`/`date` 均有超时，避免挂死。
 10. **写规则前先确认路径真实存在且可清理**；`regenerable=false` 的项风险应设为 `confirm` 或 `destructive`。
 11. 不确定时，宁可 `risk=confirm` 且 `--dry-run` 先看结果。

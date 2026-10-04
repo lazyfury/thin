@@ -4,6 +4,7 @@
 //!
 //! 设计原则见仓库根目录 `DESIGN.md`：还原真实路径、诚实核算、风险分级。
 
+pub mod app_conditions;
 pub mod apps;
 pub mod catalog;
 pub mod clean;
@@ -24,6 +25,7 @@ pub mod rules;
 pub mod scan;
 pub mod schedule;
 pub mod script;
+pub mod spotlight;
 pub mod status;
 pub mod tree;
 

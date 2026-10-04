@@ -209,6 +209,7 @@ thin dupes ~/Downloads --min 10MB --apply      # 每组保留首个，其余移�
 thin apps                                      # 列出全部 App（含关联残留），带体积分级与「● 运行中」标记
 thin apps --min 500MB                          # 只看大件
 thin uninstall <名称>                           # 预览卸载计划
+thin uninstall <名称> --deep                    # 预览时用 Spotlight 深扫补充带后缀/嵌套的关联残留
 thin uninstall <名称> --apply                   # 卸载并移入隔离区
 ```
 
@@ -355,17 +356,37 @@ thin rules add --json rule.json --approve-script   # 审查并钉住脚本哈希
 <details>
 <summary><b>展开：探测范围</b></summary>
 
-- **用户 `~/Library/`**：Application Support、Caches、Logs、Containers、Group Containers、
-  Application Scripts、WebKit、HTTPStorages、Preferences（含 ByHost）、LaunchAgents、
-  Saved Application State、Cookies；
+- **App Bundle 内部**（参考 Pearcleaner）：`CFBundleExecutable`、`Contents/MacOS/*` 可执行名、
+  嵌套 helper / 登录项 / XPC bundle 名（如 `Foo Helper.app`）——这些名字常被用作残留目录名；
+  通用词（Helper、Electron 等）与过短名字会被过滤，避免误配；
+- **用户 `~/Library/`**：Application Support（含 CrashReporter）、Caches、Logs、Containers、
+  Group Containers、Application Scripts、WebKit、HTTPStorages、Preferences（含 ByHost）、
+  LaunchAgents、Saved Application State、Cookies；
+- **插件 / 扩展**：Internet Plug-Ins、PreferencePanes、QuickLook、Screen Savers、ColorPickers、
+  Dictionaries、Automator、Spotlight、Input Methods、Widgets、Services、Safari Extensions、
+  Audio Plug-Ins（AU/VST/VST3/CLAP）等，同时匹配 `<name>.<ext>` 形式；
 - **主目录点目录 / XDG**：`~/.<name>`、`~/.config/<name>`、`~/.cache/<name>`、`~/.local/share|state/<name>`；
+- **共享与包管理**：`/Users/Shared`、`/usr/local/*`、`/opt/homebrew/*`（后两者标记 **需 sudo**，交安全门手动处理）；
 - **系统级 `/Library/`**：Application Support、Caches、Logs、Preferences、LaunchAgents、
-  LaunchDaemons、PrivilegedHelperTools、Application Scripts（标记 **需 sudo**，安全门跳过并提示手动）。
+  LaunchDaemons、PrivilegedHelperTools、Application Scripts 及各类插件目录（标记 **需 sudo**，安全门跳过并提示手动）；
+- **代码签名 entitlements**（Swift 后端）：沙盒 `Containers/<bundle-id>`、entitlements 声明的
+  Group Containers、iCloud 容器（`Mobile Documents`）、team id 前缀的 Group Containers，
+  并通过容器元数据（`MCMMetadataIdentifier`）把 **UUID 命名**的沙盒容器归回所属 App；
+- **声明式条件表**：内置 `rules/app-leftovers.json`（编译期嵌入），用户可在
+  `~/.thin/app-leftovers.d/*.json` 按 `bundleId` 覆盖。字段：`tokens`（补充目录名）、
+  `forcePaths`（精确补路径）、`require`/`exclude`（收敛泛匹配，相对 home 归一化后子串匹配）。
+  用于消除歧义：Chrome 只取 `Google/Chrome` 而不整包删除共享的 `Google` 厂商目录，
+  VS Code 稳定版不碰 `Code - Insiders`，Firefox 不碰 Thunderbird 等；
+- **Spotlight 深扫**（`thin uninstall --deep`）：用 `mdfind` 补充按固定 token 枚举不到的
+  带后缀/嵌套名字（如 `Application Scripts/com.foo.bar.FinderOpen`）。仅查询用户主目录，
+  结果须落在受信任根（`~/Library`、`~/.config`、`~/.cache`、`~/.local`）之下、
+  **文件名**命中强 token（App 名/bundle id/条件表 token），并过滤受保护路径与废纸篓；
+  父目录优先、子项去重。候选仍走同一安全门，不改变删除语义。
 
-目录名只用强证据：完整 bundle id、bundle 末段（非通用词）、显示名/归一化名，以及精确匹配的
-提示表（如 VS Code→`Code`、Chrome→`Google`、Docker→`Docker`）。**不用** bundle 中间段做泛匹配，
-避免误删同厂商其它 App 的数据；大小写不敏感用真实路径去重。`pkgutil` 命中的安装包 id 会一并列出，
-便于 `sudo pkgutil --forget`。
+目录名只用强证据：完整 bundle id、bundle 末段（非通用词）、显示名/归一化名、Bundle 内可执行/
+helper 名，以及精确匹配的提示表（如 VS Code→`Code`、Chrome→`Google`、Docker→`Docker`）。
+**不用** bundle 中间段做泛匹配，避免误删同厂商其它 App 的数据；大小写不敏感用真实路径去重。
+`pkgutil` 命中的安装包 id 会一并列出，便于 `sudo pkgutil --forget`。
 
 </details>
 

@@ -1,0 +1,100 @@
+[
+  {
+    "bundleId": "com.microsoft.VSCode",
+    "tokens": ["Code"],
+    "forcePaths": ["~/Library/Application Support/Code"],
+    "exclude": ["insiders"],
+    "note": "稳定版只认 Code，排除 Insiders 的 Code - Insiders"
+  },
+  {
+    "bundleId": "com.microsoft.VSCodeInsiders",
+    "tokens": ["Code - Insiders"],
+    "forcePaths": ["~/Library/Application Support/Code - Insiders"],
+    "note": "Insiders 单独匹配，不碰稳定版"
+  },
+  {
+    "bundleId": "com.google.Chrome",
+    "require": ["chrome"],
+    "forcePaths": [
+      "~/Library/Application Support/Google/Chrome",
+      "~/Library/Caches/Google/Chrome"
+    ],
+    "exclude": ["chromecanary", "chromebeta", "chromefeaturestate", "monochrome", "iterm"],
+    "note": "只取 Google/Chrome，不整包删除共享的 Google 厂商目录"
+  },
+  {
+    "bundleId": "com.google.Chrome.canary",
+    "require": ["canary"],
+    "forcePaths": [
+      "~/Library/Application Support/Google/Chrome Canary",
+      "~/Library/Caches/Google/Chrome Canary"
+    ],
+    "exclude": ["chromefeaturestate", "monochrome"]
+  },
+  {
+    "bundleId": "com.google.Chrome.beta",
+    "require": ["beta"],
+    "forcePaths": [
+      "~/Library/Application Support/Google/Chrome Beta",
+      "~/Library/Caches/Google/Chrome Beta"
+    ],
+    "exclude": ["chromefeaturestate", "monochrome"]
+  },
+  {
+    "bundleId": "org.mozilla.firefox",
+    "tokens": ["Firefox"],
+    "exclude": ["thunderbird"]
+  },
+  {
+    "bundleId": "org.mozilla.firefox.nightly",
+    "tokens": ["Firefox Nightly"],
+    "exclude": ["thunderbird"]
+  },
+  {
+    "bundleId": "org.mozilla.thunderbird",
+    "tokens": ["Thunderbird"],
+    "exclude": ["firefox"]
+  },
+  { "bundleId": "com.brave.Browser", "tokens": ["BraveSoftware", "Brave Browser"] },
+  { "bundleId": "com.docker.docker", "tokens": ["Docker"] },
+  { "bundleId": "com.electron.docker-frontend", "tokens": ["Docker Desktop"] },
+  { "bundleId": "com.tinyspeck.slackmacgap", "tokens": ["Slack"] },
+  { "bundleId": "com.spotify.client", "tokens": ["Spotify"] },
+  { "bundleId": "com.hnc.Discord", "tokens": ["discord"] },
+  { "bundleId": "us.zoom.xos", "tokens": ["Zoom", "zoom.us"] },
+  {
+    "bundleId": "com.microsoft.teams2",
+    "tokens": ["Microsoft Teams"],
+    "forcePaths": ["~/Library/Application Support/Microsoft/Teams"],
+    "exclude": ["office", "onedrive", "outlook"]
+  },
+  { "bundleId": "com.microsoft.edgemac", "tokens": ["Microsoft Edge"], "exclude": ["vscode", "rdc", "appcenter", "office", "oneauth"] },
+  { "bundleId": "com.operasoftware.Opera", "tokens": ["Opera"] },
+  { "bundleId": "org.virtualbox.app.VirtualBox", "tokens": ["VirtualBox"] },
+  { "bundleId": "com.parallels.desktop.console", "tokens": ["Parallels"] },
+  { "bundleId": "com.vmware.fusion", "tokens": ["VMware Fusion"] },
+  { "bundleId": "com.raycast.macos", "tokens": ["Raycast"] },
+  { "bundleId": "com.1password.1password", "tokens": ["1Password"] },
+  { "bundleId": "com.agilebits.onepassword7", "tokens": ["1Password"] },
+  { "bundleId": "com.bitwarden.desktop", "tokens": ["Bitwarden"] },
+  { "bundleId": "com.obsproject.obs-studio", "tokens": ["obs-studio", "OBS"] },
+  { "bundleId": "org.blenderfoundation.blender", "tokens": ["Blender"] },
+  {
+    "bundleId": "com.apple.dt.Xcode",
+    "tokens": ["Xcode"],
+    "forcePaths": ["~/Library/Developer/Xcode"],
+    "note": "Xcode 构建产物在 ~/Library/Developer；不整包删除 Developer"
+  },
+  { "bundleId": "com.sublimetext.4", "tokens": ["Sublime Text"] },
+  { "bundleId": "com.sublimetext.3", "tokens": ["Sublime Text 3"] },
+  {
+    "bundleId": "company.thebrowser.Browser",
+    "tokens": ["Arc"],
+    "forcePaths": ["~/Library/Application Support/Arc", "~/Library/Caches/Arc"]
+  },
+  {
+    "bundleId": "com.logi.optionsplus",
+    "tokens": ["logi", "logipluginservice"],
+    "exclude": ["login", "logic"]
+  }
+]

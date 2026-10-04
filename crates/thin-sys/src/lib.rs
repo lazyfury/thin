@@ -10,7 +10,7 @@
 use std::path::Path;
 
 /// FFI ABI 版本；与 Swift 端 `thin_abi_version` 对齐，不一致即视为后端不可用。
-pub const ABI_VERSION: u32 = 4;
+pub const ABI_VERSION: u32 = 5;
 
 /// 卷容量（含 purgeable 信息）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +51,22 @@ pub struct AppSandboxInfo {
     pub sandboxed: bool,
     #[serde(default)]
     pub groups: Vec<String>,
+    /// `com.apple.developer.icloud-container-identifiers` 声明的 iCloud 容器
+    #[serde(default)]
+    pub icloud_containers: Vec<String>,
+    /// 代码签名 Team Identifier（Group Containers 常见前缀）
+    #[serde(default)]
+    pub team_id: Option<String>,
+}
+
+/// 一个沙盒容器目录及其权威标识。
+///
+/// 目录名未必等于 bundle id（可能是 UUID）；`identifier` 来自容器元数据，
+/// 用于把「名字不可读」的容器归回所属 App。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct SandboxContainer {
+    pub path: String,
+    pub identifier: String,
 }
 
 /// 是否已连上可用的 Swift 后端（目标为 macOS 且 ABI 匹配）。
@@ -88,9 +104,14 @@ pub fn dir_usage(path: &Path) -> Option<DirUsage> {
     imp::dir_usage(path)
 }
 
-/// 读取 .app 的沙盒信息（bundle id / 是否沙盒 / group id 列表）。
+/// 读取 .app 的沙盒信息（bundle id / 是否沙盒 / group id / iCloud 容器 / team id）。
 pub fn app_sandbox_info(app: &Path) -> Option<AppSandboxInfo> {
     imp::app_sandbox_info(app)
+}
+
+/// 枚举 `<home>/Library/Containers` 下所有沙盒容器（一次批量返回）。
+pub fn sandbox_containers(home: &Path) -> Option<Vec<SandboxContainer>> {
+    imp::sandbox_containers(home)
 }
 
 /// 把路径移入系统废纸篓；`Some(true)` 成功、`Some(false)` 失败、`None` 后端不可用。
@@ -100,7 +121,7 @@ pub fn trash_item(path: &Path) -> Option<bool> {
 
 #[cfg(all(target_os = "macos", thin_sys_swift))]
 mod imp {
-    use super::{ABI_VERSION, AppSandboxInfo, DirUsage, VolumeCapacity};
+    use super::{ABI_VERSION, AppSandboxInfo, DirUsage, SandboxContainer, VolumeCapacity};
     use std::ffi::{CStr, CString};
     use std::os::raw::c_char;
     use std::path::Path;
@@ -121,6 +142,7 @@ mod imp {
         fn thin_full_disk_access() -> i32;
         fn thin_dir_usage_json(path: *const c_char) -> *mut c_char;
         fn thin_app_sandbox_info_json(path: *const c_char) -> *mut c_char;
+        fn thin_sandbox_containers_json(home: *const c_char) -> *mut c_char;
         fn thin_trash_item(path: *const c_char) -> i32;
     }
 
@@ -242,6 +264,23 @@ mod imp {
         }
     }
 
+    pub fn sandbox_containers(home: &Path) -> Option<Vec<SandboxContainer>> {
+        if !backend_available() {
+            return None;
+        }
+        let c = CString::new(home.to_string_lossy().as_bytes()).ok()?;
+        // SAFETY: 返回 `strdup` 的 JSON C 字符串或 NULL，所有权随后归还。
+        unsafe {
+            let p = thin_sandbox_containers_json(c.as_ptr());
+            if p.is_null() {
+                return None;
+            }
+            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+            thin_string_free(p);
+            serde_json::from_str(&s).ok()
+        }
+    }
+
     pub fn trash_item(path: &Path) -> Option<bool> {
         if !backend_available() {
             return None;
@@ -254,7 +293,7 @@ mod imp {
 
 #[cfg(not(all(target_os = "macos", thin_sys_swift)))]
 mod imp {
-    use super::VolumeCapacity;
+    use super::{AppSandboxInfo, DirUsage, SandboxContainer, VolumeCapacity};
     use std::path::Path;
 
     pub fn backend_available() -> bool {
@@ -286,6 +325,10 @@ mod imp {
     }
 
     pub fn app_sandbox_info(_app: &Path) -> Option<AppSandboxInfo> {
+        None
+    }
+
+    pub fn sandbox_containers(_home: &Path) -> Option<Vec<SandboxContainer>> {
         None
     }
 
@@ -365,6 +408,41 @@ mod tests {
             let info = app_sandbox_info(safari).expect("Safari 沙盒信息应可读");
             assert_eq!(info.bundle_id.as_deref(), Some("com.apple.Safari"));
             assert!(info.sandboxed, "Safari 应为沙盒 App");
+        }
+    }
+
+    #[test]
+    fn reads_icloud_entitlement() {
+        if !backend_available() {
+            return;
+        }
+        let notes = Path::new("/System/Applications/Notes.app");
+        if notes.exists() {
+            let info = app_sandbox_info(notes).expect("Notes 沙盒信息应可读");
+            assert!(
+                info.icloud_containers
+                    .iter()
+                    .any(|c| c == "com.apple.notes"),
+                "应读出 iCloud 容器: {:?}",
+                info.icloud_containers
+            );
+        }
+    }
+
+    #[test]
+    fn enumerates_sandbox_containers() {
+        if !backend_available() {
+            return;
+        }
+        let Ok(home) = std::env::var("HOME") else {
+            return;
+        };
+        let Some(list) = sandbox_containers(Path::new(&home)) else {
+            return;
+        };
+        for c in &list {
+            assert!(!c.path.is_empty(), "容器路径不应为空");
+            assert!(!c.identifier.is_empty(), "容器标识不应为空");
         }
     }
 

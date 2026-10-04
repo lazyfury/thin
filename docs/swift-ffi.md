@@ -163,16 +163,20 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
 
 ### M3 · 卸载与删除语义 ✅（NSFileCoordinator 暂缓）
 - ✅ `thin_app_sandbox_info_json`（Security 框架读代码签名 entitlements）：返回
-  `{bundleId, sandboxed, groups}`；`find_leftovers` 据此精确补充
-  `~/Library/Containers/<bundle-id>` 与 `~/Library/Group Containers/<group-id>`，
+  `{bundleId, sandboxed, groups, icloudContainers, teamId}`；`find_leftovers` 据此精确补充
+  `~/Library/Containers/<bundle-id>`、`~/Library/Group Containers/<group-id>`、
+  iCloud 容器（`Mobile Documents`）与 team id 前缀的 Group Containers，
   不再只靠名称猜测（group id 常与 bundle id 无关）。
+- ✅ `thin_sandbox_containers_json`：一次枚举 `~/Library/Containers`，读取每个容器的
+  `.com.apple.containermanagerd.metadata.plist` 的 `MCMMetadataIdentifier`，把**目录名为 UUID**
+  的沙盒容器归回所属 App；Rust 侧缓存该 `identifier → 容器` 映射，逐 App 查表而非重复遍历。
 - ✅ `thin_trash_item`（`FileManager.trashItem`）+ `clean::Mode`/`default_mode`/`apply`：
   **系统废纸篓为默认清理方式**，`--quarantine` 改回隔离区；两者**共用同一安全门**。
   后端不可用时默认自动回退隔离区（显式 `--trash` 则报错），**绝不回退 `rm`**。
   `clean` / `apply --plan` / `uninstall` / `dupes` / `schedule run` 均已切换。
 - ✅ TUI 去掉「隔离区」标签（现为 清理/应用/历史/浏览，键 1-4）；TUI 清理/卸载同样默认走废纸篓。
 - 实测：`iShot Pro` 预览正确列出 `Group Containers/4K6FWZU8C4.group.cn.better365`；
-  默认 `thin clean --apply` 成功移入废纸篓，`--quarantine` 会话可 `quarantine list` 看到。ABI 升至 4。
+  默认 `thin clean --apply` 成功移入废纸篓，`--quarantine` 会话可 `quarantine list` 看到。ABI 升至 5。
 - `NSFileCoordinator` 暂缓：缓存/残留目录极少被其他进程持续持有，收益低于复杂度；
   现有 `clean.rs` 的 `deny delete` ACL 退化路径已能处理占用场景。
 - objc2 备选：`objc2-foundation` 覆盖 `trashItem`/`NSFileCoordinator`；entitlements 需 Security。

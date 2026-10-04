@@ -1170,6 +1170,12 @@ mod tests {
         fn app_sandbox_info(&self, _app: &Path) -> Option<crate::platform::SandboxInfo> {
             None
         }
+        fn sandbox_containers(
+            &self,
+            _home: &Path,
+        ) -> Option<Vec<crate::platform::SandboxContainer>> {
+            None
+        }
         fn trash_item(&self, path: &Path) -> Option<bool> {
             Some(path != self.deny)
         }
