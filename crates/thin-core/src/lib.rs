@@ -6,6 +6,7 @@
 
 pub mod apps;
 pub mod clean;
+pub mod discover;
 pub mod finder;
 pub mod fmt;
 pub mod fsutil;

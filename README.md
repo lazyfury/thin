@@ -1,9 +1,10 @@
 # thin
 
-macOS 系统空间扫描与安全清理 CLI + TUI（M2 · 隔离区可恢复）。
+macOS 系统空间扫描与安全清理 CLI + TUI（M3 · 规则可扩展）。
 
 > 设计文档见 [DESIGN.md](./DESIGN.md)。清理默认**不真正删除**，而是移入**隔离区**（`~/.thin/quarantine`），
 > 写入 Journal，可随时 `restore`；只有显式 `purge` 才永久删除。
+> Agent 工作流见 [AGENTS.md](./AGENTS.md)。
 
 ## 为什么做这个
 
@@ -20,7 +21,7 @@ macOS 的「系统数据 / 系统缓存」是个兜底分类，会把虚拟机�
 ```
 crates/
   thin-core/     核心库：磁盘探测、规则、扫描、核算、安全清理、查找（无 UI 依赖）
-    src/{lib,model,fsutil,probe,rules,scan,clean,finder,apps,fmt}.rs
+    src/{lib,model,fsutil,probe,rules,scan,clean,finder,apps,discover,fmt}.rs
     rules/default.json
   thin-cli/      前端：CLI (clap) + TUI (ratatui)
     src/{main,report,top,tui}.rs
@@ -55,8 +56,13 @@ thin top ~/Library --limit 20
 thin tui
 thin tui --min 100MB
 
-# 列出内置规则目录
-thin rules
+# 规则 / 归因 / agent 入口
+thin rules                          # 列出所有规则
+thin rules path                     # 用户规则文件路径
+thin rules add --path "~/..." --risk safe --regenerable
+thin rules remove <id>
+thin discover --min 1G              # 找出未被规则覆盖的大目录
+thin discover --json                # 机器可读
 
 # 清理：默认只预览；--apply 才真正移入隔离区
 thin clean                          # dry-run 预览（默认「安全」项）
@@ -121,13 +127,27 @@ thin uninstall <名称> --apply                   # 卸载并移入隔离区
 
 用 `THIN_RULES=/path/to/rules.json thin scan` 可覆盖内置规则。
 
+### 用户规则（可热更新）
+
+内置规则之外，可把自己的发现写入**用户规则文件**（`thin rules path`，默认 `~/.thin/rules.json`），
+与内置规则按 id 合并、用户优先：
+
+```bash
+thin rules add --path "~/Library/Application Support/SomeApp/Cache" --risk safe --regenerable
+cat rule.json | thin rules add --json -     # 或用完整 JSON
+thin rules remove custom-someapp
+```
+
+`thin discover` 会标注每个大目录的归因（已归类 / 部分 / 未归类）并直接给出补规则的命令。
+完整 agent 流程见 [AGENTS.md](./AGENTS.md)。
+
 ## 路线图
 
 - **M0** CLI 只读扫描 + 诚实核算 + dry-run ✅
 - **M1** 安全清理：隔离区 + Journal + 恢复/永久删除 + TUI 交互 ✅
-- **M2（当前）** 大文件查找 / 重复文件检测 / App 卸载（均复用隔离区）✅
-- M3 规则热更新、异常大目录归因、TUI 多标签页
-- M3 规则热更新、异常大目录归因
+- **M2** 大文件查找 / 重复文件检测 / App 卸载（均复用隔离区）✅
+- **M3（当前）** 规则热更新（用户规则文件）+ 异常大目录归因 + **agent 规则写入入口** ✅
+- M4 TUI 多标签页 / SwiftUI 前端
 
 ## 测试
 

@@ -2,17 +2,17 @@ mod report;
 mod top;
 mod tui;
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use thin_core::fmt::human;
-use thin_core::model::Risk;
-use thin_core::{CleanItem, apps, clean, finder, fsutil, probe, rules, scan};
+use thin_core::model::{Category, Risk};
+use thin_core::{CleanItem, apps, clean, discover, finder, fsutil, probe, rules, scan};
 
 #[derive(Parser)]
 #[command(
     name = "thin",
-    about = "macOS 系统空间扫描与安全清理 (M2 · 隔离区可恢复)",
+    about = "macOS 系统空间扫描与安全清理 (M3 · 规则可扩展)",
     version
 )]
 struct Cli {
@@ -34,8 +34,11 @@ enum Cmd {
     /// 交互式 TUI（浏览、勾选、移入隔离区）
     Tui(TuiArgs),
 
-    /// 列出内置规则目录
-    Rules,
+    /// 规则：列出 / 新增（agent 入口）/ 删除
+    Rules(RulesArgs),
+
+    /// 归因：找出未被规则覆盖的大目录
+    Discover(DiscoverArgs),
 
     /// 清理：默认 dry-run 预览；--apply 移入隔离区（可恢复）
     Clean(CleanArgs),
@@ -145,6 +148,70 @@ struct UninstallArgs {
 }
 
 #[derive(clap::Args)]
+struct RulesArgs {
+    #[command(subcommand)]
+    cmd: Option<RulesCmd>,
+}
+
+#[derive(Subcommand)]
+enum RulesCmd {
+    /// 列出所有规则（默认）
+    List,
+    /// 显示用户规则文件路径
+    Path,
+    /// 新增/覆盖一条规则（agent 入口）
+    Add(RuleAddArgs),
+    /// 删除一条用户规则
+    Remove(RuleRemoveArgs),
+}
+
+#[derive(clap::Args)]
+struct RuleAddArgs {
+    /// 要清理的路径（构造 path 规则）
+    #[arg(long)]
+    path: Option<String>,
+    /// 直接给出完整规则 JSON，或 "-" 从 stdin 读取，或文件路径
+    #[arg(long)]
+    json: Option<String>,
+    #[arg(long)]
+    id: Option<String>,
+    #[arg(long)]
+    name: Option<String>,
+    #[arg(long, default_value = "other")]
+    category: String,
+    #[arg(long, default_value = "confirm")]
+    risk: String,
+    #[arg(long)]
+    regenerable: bool,
+    #[arg(long, default_value = "")]
+    reclaim: String,
+    #[arg(long)]
+    what: Option<String>,
+    #[arg(long)]
+    cost: Option<String>,
+    #[arg(long)]
+    recover: Option<String>,
+}
+
+#[derive(clap::Args)]
+struct RuleRemoveArgs {
+    id: String,
+}
+
+#[derive(clap::Args)]
+struct DiscoverArgs {
+    /// 分析根目录
+    #[arg(default_value = "~")]
+    root: String,
+    /// 最小体积过滤
+    #[arg(long, default_value = "500MB")]
+    min: String,
+    /// 输出 JSON
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(clap::Args)]
 struct CleanArgs {
     /// 实际执行：移入隔离区（默认为 dry-run 预览）
     #[arg(long)]
@@ -214,7 +281,8 @@ fn main() -> Result<()> {
             top::run(path, args.limit);
         }
         Cmd::Tui(args) => cmd_tui(args)?,
-        Cmd::Rules => cmd_rules()?,
+        Cmd::Rules(args) => cmd_rules(args)?,
+        Cmd::Discover(args) => cmd_discover(args)?,
         Cmd::Clean(args) => cmd_clean(args)?,
         Cmd::Quarantine(args) => cmd_quarantine(args)?,
         Cmd::Large(args) => cmd_large(args)?,
@@ -263,7 +331,26 @@ fn cmd_tui(args: TuiArgs) -> Result<()> {
     Ok(())
 }
 
-fn cmd_rules() -> Result<()> {
+fn cmd_rules(args: RulesArgs) -> Result<()> {
+    match args.cmd {
+        None | Some(RulesCmd::List) => list_rules()?,
+        Some(RulesCmd::Path) => println!("{}", rules::user_rules_path().display()),
+        Some(RulesCmd::Add(a)) => cmd_rule_add(a)?,
+        Some(RulesCmd::Remove(r)) => {
+            if rules::remove_user_rule(&r.id)? {
+                println!("已删除用户规则 {}", r.id);
+            } else {
+                println!(
+                    "未找到用户规则 {}（内置规则不可删除，可用 THIN_RULES 覆盖）",
+                    r.id
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn list_rules() -> Result<()> {
     let catalog = rules::load()?;
     println!(
         "{:>8}  {:<10} {:<12} {}",
@@ -281,9 +368,135 @@ fn cmd_rules() -> Result<()> {
         );
     }
     println!(
-        "\n共 {} 条规则。可用 THIN_RULES=/path/to.json 覆盖。",
-        catalog.len()
+        "\n共 {} 条规则。用户规则文件: {}",
+        catalog.len(),
+        rules::user_rules_path().display()
     );
+    Ok(())
+}
+
+fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
+    let rule = if let Some(spec) = &args.json {
+        let raw = if spec == "-" {
+            use std::io::Read;
+            let mut s = String::new();
+            std::io::stdin().read_to_string(&mut s)?;
+            s
+        } else if std::path::Path::new(spec).exists() {
+            std::fs::read_to_string(spec)?
+        } else {
+            spec.clone()
+        };
+        serde_json::from_str::<thin_core::Rule>(&raw)
+            .map_err(|e| anyhow!("规则 JSON 解析失败: {e}"))?
+    } else {
+        let path = args
+            .path
+            .ok_or_else(|| anyhow!("需要 --path <路径> 或 --json <规则JSON>"))?;
+        let id = args.id.unwrap_or_else(|| rules::slug_for(&path));
+        let name = args.name.unwrap_or_else(|| {
+            path.trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .unwrap_or("规则")
+                .to_string()
+        });
+        let category = rules::parse_category(&args.category).unwrap_or(Category::Other);
+        let risk = rules::parse_risk(&args.risk).unwrap_or(Risk::Confirm);
+        let reclaim = if args.reclaim.is_empty() {
+            "移入隔离区".to_string()
+        } else {
+            args.reclaim
+        };
+        rules::make_path_rule(
+            id,
+            name,
+            path,
+            category,
+            risk,
+            args.regenerable,
+            reclaim,
+            args.what.unwrap_or_else(|| "自定义清理项".into()),
+            args.cost.unwrap_or_else(|| "移入隔离区，可恢复".into()),
+            args.recover
+                .unwrap_or_else(|| "thin quarantine restore".into()),
+        )
+    };
+
+    let saved = rules::upsert_user_rule(rule.clone())?;
+    println!(
+        "已写入规则 \x1b[1m{}\x1b[0m  →  {}",
+        rule.id,
+        saved.display()
+    );
+    println!("验证: thin scan --detail {}", rule.id);
+    Ok(())
+}
+
+fn cmd_discover(args: DiscoverArgs) -> Result<()> {
+    let root = expand_root(&args.root);
+    let min = parse_size(&args.min).unwrap_or(500 * 1024 * 1024);
+    let catalog = rules::load()?;
+    eprintln!("分析 {} …", root.display());
+    let findings = discover::analyze(&root, min, &catalog);
+
+    if args.json {
+        let arr: Vec<_> = findings
+            .iter()
+            .map(|f| {
+                serde_json::json!({
+                    "path": f.path,
+                    "size": f.size,
+                    "coverage": f.coverage.label(),
+                    "uncovered": f.coverage.is_uncovered(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&arr)?);
+        return Ok(());
+    }
+
+    if findings.is_empty() {
+        println!("未发现 >= {} 的子项。", human(min));
+        return Ok(());
+    }
+
+    println!("{:>10}  {:<20} {}", "大小", "归因", "路径");
+    println!("{}", "-".repeat(90));
+    for f in &findings {
+        let tag = if f.coverage.is_uncovered() {
+            format!("\x1b[33m{}\x1b[0m", f.coverage.label())
+        } else {
+            f.coverage.label()
+        };
+        println!("{:>10}  {:<20} {}", human(f.size), tag, shorten(&f.path));
+    }
+
+    let none: Vec<_> = findings
+        .iter()
+        .filter(|f| matches!(f.coverage, discover::Coverage::None))
+        .collect();
+    let partial: Vec<_> = findings
+        .iter()
+        .filter(|f| matches!(f.coverage, discover::Coverage::Partial(_)))
+        .collect();
+    if !none.is_empty() {
+        println!("\n\x1b[1m未归类大目录 —— 可用 thin rule add 补规则:\x1b[0m");
+        for f in none {
+            let p = f.path.display().to_string();
+            println!(
+                "  thin rule add --path \"{}\" --id {}",
+                p,
+                rules::slug_for(&p)
+            );
+        }
+    }
+    if !partial.is_empty() {
+        println!("\n\x1b[1m部分覆盖 —— 可继续下钻:\x1b[0m");
+        for f in partial {
+            println!("  thin discover \"{}\" --min 500MB", f.path.display());
+        }
+    }
     Ok(())
 }
 
