@@ -1,8 +1,9 @@
 # spacekit
 
-macOS 系统空间扫描与安全清理 CLI（M0 · 只读）。
+macOS 系统空间扫描与安全清理 CLI + TUI（M1 · 隔离区可恢复）。
 
-> 设计文档见 [DESIGN.md](./DESIGN.md)。当前阶段只做「扫描 + 诚实核算 + dry-run 计划」，**不会真正删除任何文件**。
+> 设计文档见 [DESIGN.md](./DESIGN.md)。清理默认**不真正删除**，而是移入**隔离区**（`~/.spacekit/quarantine`），
+> 写入 Journal，可随时 `restore`；只有显式 `purge` 才永久删除。
 
 ## 为什么做这个
 
@@ -12,14 +13,14 @@ macOS 的「系统数据 / 系统缓存」是个兜底分类，会把虚拟机�
 - **还原真实路径**，每一项都注明「这是什么 / 删了会怎样 / 能否恢复」
 - **诚实核算**：按实际分配块统计（稀疏文件不虚高）、按 inode 去重（硬链接不重复）、排除嵌套重复路径
 - **风险分级**：`安全` / `需确认` / `不可再生`，默认只把前两类计入「可回收」
-- **只读优先**：M0 绝不删除
+- **可恢复**：清理 = 移入隔离区，随时可撤回；永久删除需显式操作
 
 ## 工作区结构
 
 ```
 crates/
-  spacekit-core/     核心库：磁盘探测、规则、扫描与核算（无 UI 依赖）
-    src/{lib,model,fsutil,probe,rules,scan,fmt}.rs
+  spacekit-core/     核心库：磁盘探测、规则、扫描、核算、安全清理（无 UI 依赖）
+    src/{lib,model,fsutil,probe,rules,scan,clean,fmt}.rs
     rules/default.json
   spacekit-cli/      前端：CLI (clap) + TUI (ratatui)
     src/{main,report,top,tui}.rs
@@ -50,18 +51,37 @@ spacekit scan --detail rust-target   # 查看某规则详细解释
 # 列出某目录下最大的子项（类似 du -sh PATH/* | sort -rh）
 spacekit top ~/Library --limit 20
 
-# 交互式 TUI：浏览、勾选并可预览清理计划
+# 交互式 TUI：浏览、勾选、按 c 移入隔离区
 spacekit tui
 spacekit tui --min 100MB
 
 # 列出内置规则目录
 spacekit rules
 
-# 生成清理计划（M0 仅支持 --dry-run）
-spacekit clean --dry-run
-spacekit clean --dry-run --safe
-spacekit clean --dry-run --id rust-target --id chrome-optguide-model
+# 清理：默认只预览；--apply 才真正移入隔离区
+spacekit clean                          # dry-run 预览（默认「安全」项）
+spacekit clean --apply                  # 移入隔离区（会二次确认）
+spacekit clean --apply --yes            # 跳过确认
+spacekit clean --apply --all            # 连「需确认」项一起处理
+spacekit clean --apply --id rust-target --id chrome-optguide-model
+
+# 隔离区管理
+spacekit quarantine list                # 查看所有会话
+spacekit quarantine restore             # 恢复最近一次
+spacekit quarantine restore --all       # 恢复全部
+spacekit quarantine purge <session>     # 永久删除
+spacekit quarantine purge --older-than 7d
 ```
+
+## 安全模型
+
+| 机制 | 说明 |
+|---|---|
+| 默认可恢复 | 清理 = 移动到 `~/.spacekit/quarantine/<会话>/`，原位置立刻释放空间 |
+| Journal | 每次清理写入账本（原始路径、隔离路径、大小、规则），支持精确回滚 |
+| 受保护白名单 | `/`、`/System`、`/private/var/vm`、Keychains、iCloud、挂载点 —— 永不触碰 |
+| 需 sudo 项 | M1 自动跳过，提示手动处理 |
+| 风险分级 | 默认只处理「安全」项；`--all` 含「需确认」；「不可再生」需显式 `--id` |
 
 ## 准确性说明
 
@@ -95,8 +115,8 @@ spacekit clean --dry-run --id rust-target --id chrome-optguide-model
 
 ## 路线图
 
-- **M0（当前）** CLI 只读扫描 + 诚实核算 + dry-run
-- M1 安全清理：隔离区 + Journal + 撤销
+- **M0** CLI 只读扫描 + 诚实核算 + dry-run ✅
+- **M1（当前）** 安全清理：隔离区 + Journal + 恢复/永久删除 + TUI 交互 ✅
 - M2 大文件 / 重复文件 / App 卸载
 - M3 规则热更新、异常大目录归因
 
