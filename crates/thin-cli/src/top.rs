@@ -1,7 +1,7 @@
-use spacekit_core::fmt::human;
+use thin_core::fmt::human;
 use std::path::PathBuf;
 
-/// `spacekit top [PATH]`：列出某目录下各子项占用（类似 `du -sh PATH/* | sort -rh`）
+/// `thin top [PATH]`：列出某目录下各子项占用（类似 `du -sh PATH/* | sort -rh`）
 pub fn run(path: PathBuf, limit: usize) {
     if !path.is_dir() {
         eprintln!("不是目录: {}", path.display());
@@ -13,7 +13,7 @@ pub fn run(path: PathBuf, limit: usize) {
         Ok(entries) => {
             for e in entries.flatten() {
                 let p = e.path();
-                let size = spacekit_core::fsutil::size_of(&p);
+                let size = thin_core::fsutil::size_of(&p);
                 children.push((size, p));
             }
         }

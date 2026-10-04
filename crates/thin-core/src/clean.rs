@@ -57,20 +57,20 @@ fn user_home() -> Option<PathBuf> {
     std::env::var("HOME").ok().map(PathBuf::from)
 }
 
-/// spacekit 的数据目录（隔离区/账本），支持 SPACEKIT_HOME 覆盖（便于测试）
-pub fn spacekit_home() -> PathBuf {
-    if let Ok(p) = std::env::var("SPACEKIT_HOME") {
+/// thin 的数据目录（隔离区/账本），支持 THIN_HOME 覆盖（便于测试）
+pub fn thin_home() -> PathBuf {
+    if let Ok(p) = std::env::var("THIN_HOME") {
         if !p.is_empty() {
             return PathBuf::from(p);
         }
     }
     user_home()
-        .map(|h| h.join(".spacekit"))
-        .unwrap_or_else(|| PathBuf::from(".spacekit"))
+        .map(|h| h.join(".thin"))
+        .unwrap_or_else(|| PathBuf::from(".thin"))
 }
 
 pub fn quarantine_root() -> PathBuf {
-    spacekit_home().join("quarantine")
+    thin_home().join("quarantine")
 }
 
 fn now_secs() -> u64 {
@@ -127,7 +127,7 @@ pub fn protection_reason(path: &Path) -> Option<String> {
     if let Some(h) = &home {
         subtrees.push(h.join("Library/Keychains"));
         subtrees.push(h.join("Library/Mobile Documents"));
-        subtrees.push(h.join(".spacekit"));
+        subtrees.push(h.join(".thin"));
     }
     for p in subtrees {
         if canon == p || canon.starts_with(&p) {
@@ -200,7 +200,7 @@ fn remove_path(path: &Path) -> Result<()> {
 
 /// 把选中的项移入隔离区，返回账本。`dry_run=true` 时只生成计划不落盘。
 pub fn quarantine(items: &[CleanItem], dry_run: bool) -> Result<Journal> {
-    quarantine_into(&spacekit_home(), items, dry_run)
+    quarantine_into(&thin_home(), items, dry_run)
 }
 
 /// 内部实现（可指定数据目录，便于测试）
@@ -290,7 +290,7 @@ fn load_journal_at(session_dir: &Path) -> Result<Journal> {
 
 /// 列出所有隔离会话（按创建时间倒序）
 pub fn list_journals() -> Result<Vec<Journal>> {
-    list_journals_in(&spacekit_home())
+    list_journals_in(&thin_home())
 }
 
 pub fn list_journals_in(home: &Path) -> Result<Vec<Journal>> {
@@ -322,7 +322,7 @@ pub struct RestoreReport {
 
 /// 恢复某个会话：把隔离区内容移回原位置
 pub fn restore_session(session: &str) -> Result<RestoreReport> {
-    restore_session_in(&spacekit_home(), session)
+    restore_session_in(&thin_home(), session)
 }
 
 pub fn restore_session_in(home: &Path, session: &str) -> Result<RestoreReport> {
@@ -355,7 +355,7 @@ pub fn restore_session_in(home: &Path, session: &str) -> Result<RestoreReport> {
 
 /// 永久删除某个会话的隔离内容，返回释放的字节数
 pub fn purge_session(session: &str) -> Result<u64> {
-    purge_session_in(&spacekit_home(), session)
+    purge_session_in(&thin_home(), session)
 }
 
 pub fn purge_session_in(home: &Path, session: &str) -> Result<u64> {
@@ -370,7 +370,7 @@ pub fn purge_session_in(home: &Path, session: &str) -> Result<u64> {
 
 /// 永久删除早于 `days` 天的隔离会话，返回 (会话数, 释放字节)
 pub fn purge_older_than(days: u64) -> Result<(usize, u64)> {
-    purge_older_than_in(&spacekit_home(), days)
+    purge_older_than_in(&thin_home(), days)
 }
 
 pub fn purge_older_than_in(home: &Path, days: u64) -> Result<(usize, u64)> {
@@ -418,12 +418,12 @@ mod tests {
         let home = user_home().unwrap();
         assert!(protection_reason(&home).is_some());
         // 普通文件不受保护
-        assert!(protection_reason(Path::new("/tmp/spacekit-test-nonexistent")).is_none());
+        assert!(protection_reason(Path::new("/tmp/thin-test-nonexistent")).is_none());
     }
 
     #[test]
     fn quarantine_and_restore_roundtrip() {
-        let base = std::env::temp_dir().join(format!("spacekit-test-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("thin-test-{}", std::process::id()));
         let data_home = base.join("data");
         let work = base.join("work");
         std::fs::create_dir_all(&work).unwrap();
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn purge_removes_session() {
-        let base = std::env::temp_dir().join(format!("spacekit-purge-{}", std::process::id()));
+        let base = std::env::temp_dir().join(format!("thin-purge-{}", std::process::id()));
         let data_home = base.join("data");
         let work = base.join("work");
         std::fs::create_dir_all(&work).unwrap();

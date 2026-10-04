@@ -4,14 +4,14 @@ mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
-use spacekit_core::fmt::human;
-use spacekit_core::model::Risk;
-use spacekit_core::{clean, fsutil, probe, rules, scan};
+use thin_core::fmt::human;
+use thin_core::model::Risk;
+use thin_core::{clean, fsutil, probe, rules, scan};
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
-    name = "spacekit",
+    name = "thin",
     about = "macOS 系统空间扫描与安全清理 (M1 · 隔离区可恢复)",
     version
 )]
@@ -214,14 +214,14 @@ fn cmd_rules() -> Result<()> {
         );
     }
     println!(
-        "\n共 {} 条规则。可用 SPACEKIT_RULES=/path/to.json 覆盖。",
+        "\n共 {} 条规则。可用 THIN_RULES=/path/to.json 覆盖。",
         catalog.len()
     );
     Ok(())
 }
 
 /// 按参数筛选清理项
-fn select_items(args: &CleanArgs) -> Result<Vec<spacekit_core::CleanItem>> {
+fn select_items(args: &CleanArgs) -> Result<Vec<thin_core::CleanItem>> {
     let catalog = rules::load()?;
     let items = scan::scan(&catalog, true, 1_048_576);
     Ok(items
@@ -239,7 +239,7 @@ fn select_items(args: &CleanArgs) -> Result<Vec<spacekit_core::CleanItem>> {
         .collect())
 }
 
-fn print_plan(selected: &[spacekit_core::CleanItem]) {
+fn print_plan(selected: &[thin_core::CleanItem]) {
     println!("\x1b[1m清理计划\x1b[0m\n");
     let mut total: u64 = 0;
     for it in selected {
@@ -295,10 +295,10 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
         println!("  \x1b[33m跳过\x1b[0m {}：{}", s.path.display(), s.reason);
     }
     println!(
-        "\n恢复:       spacekit quarantine restore {}",
+        "\n恢复:       thin quarantine restore {}",
         journal.session
     );
-    println!("永久删除:   spacekit quarantine purge {}", journal.session);
+    println!("永久删除:   thin quarantine purge {}", journal.session);
     Ok(())
 }
 
@@ -310,7 +310,7 @@ fn cmd_quarantine(args: QuarantineArgs) -> Result<()> {
                 println!("隔离区为空。");
                 return Ok(());
             }
-            println!("数据目录: {}\n", clean::spacekit_home().display());
+            println!("数据目录: {}\n", clean::thin_home().display());
             for j in list {
                 println!(
                     "\x1b[1m会话 {}\x1b[0m  共 {} 项  {}",

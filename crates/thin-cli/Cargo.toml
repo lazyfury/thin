@@ -1,16 +1,16 @@
 [package]
-name = "spacekit-cli"
+name = "thin-cli"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "spacekit 命令行与 TUI 前端"
+description = "thin 命令行与 TUI 前端"
 
 [[bin]]
-name = "spacekit"
+name = "thin"
 path = "src/main.rs"
 
 [dependencies]
-spacekit-core = { path = "../spacekit-core" }
+thin-core = { path = "../thin-core" }
 clap.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true

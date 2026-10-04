@@ -12,9 +12,9 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap},
 };
-use spacekit_core::clean;
-use spacekit_core::fmt::human;
-use spacekit_core::model::{CleanItem, Risk};
+use thin_core::clean;
+use thin_core::fmt::human;
+use thin_core::model::{CleanItem, Risk};
 use std::collections::HashSet;
 
 struct App {
@@ -126,7 +126,7 @@ impl App {
                 if !j.skipped.is_empty() {
                     msg.push_str(&format!("  跳过 {} 项", j.skipped.len()));
                 }
-                msg.push_str("   恢复: spacekit quarantine restore");
+                msg.push_str("   恢复: thin quarantine restore");
                 self.status = Some(msg);
             }
             Err(e) => self.status = Some(format!("失败: {e:#}")),
@@ -248,7 +248,7 @@ fn render_header(frame: &mut Frame, app: &App, area: Rect) {
     let text = vec![
         Line::from(vec![
             Span::styled(
-                " spacekit ",
+                " thin ",
                 Style::default()
                     .fg(Color::Black)
                     .bg(Color::Cyan)
@@ -436,7 +436,7 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn print_plan(app: &App) {
-    println!("\n\x1b[1mspacekit 清理计划 (dry-run)\x1b[0m\n");
+    println!("\n\x1b[1mthin 清理计划 (dry-run)\x1b[0m\n");
     let mut total: u64 = 0;
     for (it, sel) in app.items.iter().zip(&app.selected) {
         if *sel {
@@ -454,5 +454,5 @@ fn print_plan(app: &App) {
         app.selected_count(),
         human(total)
     );
-    println!("（已在 TUI 中执行的项已移入隔离区，可用 spacekit quarantine list 查看）");
+    println!("（已在 TUI 中执行的项已移入隔离区，可用 thin quarantine list 查看）");
 }

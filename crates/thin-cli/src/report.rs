@@ -1,5 +1,5 @@
-use spacekit_core::fmt::human;
-use spacekit_core::model::CleanItem;
+use thin_core::fmt::human;
+use thin_core::model::CleanItem;
 
 fn char_width(s: &str) -> usize {
     s.chars().count()
@@ -51,8 +51,8 @@ fn truncate(s: &str, width: usize) -> String {
 
 /// 打印可回收汇总
 pub fn print_summary(items: &[CleanItem]) {
-    let s = spacekit_core::scan::summarize(items);
-    let nested = spacekit_core::scan::nested_count(items);
+    let s = thin_core::scan::summarize(items);
+    let nested = thin_core::scan::nested_count(items);
     println!();
     println!(
         "\x1b[1m可回收总计: {}\x1b[0m  （安全 {} / 需确认 {} / 不可再生 {})",

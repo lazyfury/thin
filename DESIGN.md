@@ -1,4 +1,4 @@
-# SpaceCleaner — macOS 系统空间清理 App 设计文档
+# thin — macOS 系统空间清理 App 设计文档
 
 > 设计依据：本次对 suke 的 MacBook Air 的实际扫描流程与发现。
 > 目标：把「逐层 du + 分类判断 + 安全删除」这套人工流程，产品化成可信赖的清理工具。
@@ -293,7 +293,7 @@ struct ScanReport {
 | 层 | 选型 |
 |---|---|
 | UI | SwiftUI（macOS 14+），Charts 画磁盘条 |
-| 引擎 | Swift Package `SpaceKit`（可单测、可复用为 CLI） |
+| 引擎 | Swift Package `thin`（可单测、可复用为 CLI） |
 | 遍历 | `FileManager.enumerator` + `getattrlistbulk` 提速；并行 `TaskGroup` |
 | 容量 | `URLResourceValues`、`statfs`；APFS 用 `diskutil`/`DiskArbitration` |
 | 快照 | `tmutil`、`diskutil apfs` |
@@ -314,10 +314,10 @@ struct ScanReport {
 
 | 阶段 | 交付 | 说明 |
 |---|---|---|
-| **M0 · CLI 引擎** | `spacekit scan` / `clean --dry-run` | 直接把本次手工流程脚本化，验证规则与核算准确性 |
+| **M0 · CLI 引擎** | `thin scan` / `clean --dry-run` | 直接把本次手工流程脚本化，验证规则与核算准确性 |
 | **M1 · 只读 App** | SwiftUI Dashboard + 清理列表（不可删） | 先把「诚实分类 + 可解释」做对 |
 | **M2 · 安全清理** | 隔离区 + Journal + 撤销 | 只开放 `safe` 类，默认进隔离区 |
 | **M3 · 高级** | 大文件/重复文件、App 卸载、Xcode/Homebrew 专项、快照清理 | |
 | **M4 · 智能化** | 规则热更新、异常大目录归因、清理建议 | 解决「系统数据又变大了」 |
 
-**M0 优先**：因为本次所有结论都来自 CLI，最快验证准确性的方式就是把它们变成可跑的 `spacekit`，再套 UI。
+**M0 优先**：因为本次所有结论都来自 CLI，最快验证准确性的方式就是把它们变成可跑的 `thin`，再套 UI。

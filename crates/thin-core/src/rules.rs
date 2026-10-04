@@ -6,9 +6,9 @@ use std::path::PathBuf;
 /// 内置规则（编译期嵌入，随版本更新）
 const DEFAULT_RULES: &str = include_str!("../rules/default.json");
 
-/// 加载规则。可用环境变量 SPACEKIT_RULES 指向外部 JSON 覆盖内置规则。
+/// 加载规则。可用环境变量 THIN_RULES 指向外部 JSON 覆盖内置规则。
 pub fn load() -> Result<Vec<Rule>> {
-    let raw: String = match std::env::var("SPACEKIT_RULES") {
+    let raw: String = match std::env::var("THIN_RULES") {
         Ok(p) if !p.is_empty() => {
             std::fs::read_to_string(&p).with_context(|| format!("读取外部规则失败: {p}"))?
         }

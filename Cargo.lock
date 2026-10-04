@@ -607,30 +607,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f9395f0f0eee849a9b707b2f06bb92a6a422090e2123bb2ef8e87a0e61892a8e"
 
 [[package]]
-name = "spacekit-cli"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "clap",
- "crossterm",
- "ratatui",
- "serde_json",
- "spacekit-core",
-]
-
-[[package]]
-name = "spacekit-core"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "libc",
- "rayon",
- "serde",
- "serde_json",
- "walkdir",
-]
-
-[[package]]
 name = "static_assertions"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -684,6 +660,30 @@ dependencies = [
  "proc-macro2",
  "quote",
  "unicode-ident",
+]
+
+[[package]]
+name = "thin-cli"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "crossterm",
+ "ratatui",
+ "serde_json",
+ "thin-core",
+]
+
+[[package]]
+name = "thin-core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "libc",
+ "rayon",
+ "serde",
+ "serde_json",
+ "walkdir",
 ]
 
 [[package]]

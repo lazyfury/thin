@@ -1,9 +1,9 @@
 [package]
-name = "spacekit-core"
+name = "thin-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "spacekit 核心：磁盘探测、规则扫描与诚实核算"
+description = "thin 核心：磁盘探测、规则扫描与诚实核算"
 
 [dependencies]
 serde.workspace = true

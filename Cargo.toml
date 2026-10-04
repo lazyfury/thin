@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/spacekit-core", "crates/spacekit-cli"]
+members = ["crates/thin-core", "crates/thin-cli"]
 
 [workspace.package]
 version = "0.1.0"
