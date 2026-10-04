@@ -728,6 +728,7 @@ dependencies = [
  "ratatui",
  "serde_json",
  "thin-core",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]

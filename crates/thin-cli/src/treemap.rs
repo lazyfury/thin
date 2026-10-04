@@ -11,6 +11,8 @@ use ratatui::{
 };
 use thin_core::fmt::human;
 
+use crate::text;
+
 /// 计算矩形划分，返回 (矩形, 原索引)，按体积从大到小填充
 pub fn layout(rect: Rect, values: &[u64]) -> Vec<(Rect, usize)> {
     let mut items: Vec<(u64, usize)> = values
@@ -122,13 +124,7 @@ pub fn render(frame: &mut Frame, area: Rect, entries: &[(String, u64)]) {
 }
 
 fn truncate(s: &str, width: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= width {
-        return s.to_string();
-    }
-    let mut out: String = chars[..width.saturating_sub(1)].iter().collect();
-    out.push('…');
-    out
+    text::truncate(s, width)
 }
 
 #[cfg(test)]

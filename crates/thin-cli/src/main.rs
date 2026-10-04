@@ -1,6 +1,8 @@
 mod browse;
 mod ls;
 mod report;
+mod text;
+mod toast;
 mod top;
 mod treemap;
 mod tui;

@@ -24,6 +24,8 @@ use thin_core::progress::Progress;
 use thin_core::{apps, clean, finder, fsutil, probe, protect, rules, scan, status};
 
 use crate::browse::BrowseState;
+use crate::text;
+use crate::toast::{self, Toast};
 use crate::{browse, treemap};
 
 const TABS: [&str; 7] = ["清理", "概览", "大文件", "重复", "应用", "状态", "浏览"];
@@ -103,7 +105,7 @@ struct App {
     cpu: status::CpuSampler,
     status_at: Option<std::time::Instant>,
     confirm: bool,
-    status: Option<String>,
+    status: Option<Toast>,
     help: bool,
     quit: bool,
     tick: usize,
@@ -138,6 +140,26 @@ impl App {
             help: false,
             quit: false,
             tick: 0,
+        }
+    }
+
+    /// 统一的状态提示入口；`tick` 用于自动过期计时
+    fn info(&mut self, text: impl Into<String>) {
+        self.status = Some(Toast::info(text, self.tick));
+    }
+
+    fn warn(&mut self, text: impl Into<String>) {
+        self.status = Some(Toast::warn(text, self.tick));
+    }
+
+    fn error(&mut self, text: impl Into<String>) {
+        self.status = Some(Toast::error(text, self.tick));
+    }
+
+    /// 过期清理：info/warn 自动消失，error 需用户按 Esc 关闭
+    fn expire_status(&mut self) {
+        if self.status.as_ref().is_some_and(|t| t.expired(self.tick)) {
+            self.status = None;
         }
     }
 
@@ -209,6 +231,7 @@ impl App {
                     .collect();
             }
         }
+        self.expire_status();
     }
 
     fn switch_tab(&mut self, tab: usize) {
@@ -304,7 +327,7 @@ impl App {
             // 保护名单项不可勾选
             if let Load::Ready(items) = &self.clean {
                 if items.get(i).map(|it| it.protected).unwrap_or(false) {
-                    self.status = Some("该项已在保护名单，thin protect remove 后可清理".into());
+                    self.warn("该路径已在保护名单，先 thin protect remove 再清理");
                     return;
                 }
             }
@@ -330,9 +353,9 @@ impl App {
                 if i < self.selected.len() {
                     self.selected[i] = false;
                 }
-                self.status = Some(format!("已保护 {}（含子目录）", canon.display()));
+                self.info(format!("已保护 {}（含子目录）", canon.display()));
             }
-            Err(e) => self.status = Some(format!("保护失败: {e}")),
+            Err(e) => self.error(format!("加入保护名单失败：{e}")),
         }
     }
 
@@ -349,7 +372,7 @@ impl App {
             _ => {}
         }
         self.ensure(self.tab);
-        self.status = Some("重新加载…".into());
+        self.info("正在重新加载…");
     }
 
     fn apply(&mut self) {
@@ -366,7 +389,7 @@ impl App {
         // 只处理最顶层项，避免父子路径重复计入/重复移动
         let chosen = scan::top_level(&chosen);
         if chosen.is_empty() {
-            self.status = Some("未勾选任何项".into());
+            self.warn("未勾选任何清理项");
             return;
         }
 
@@ -402,9 +425,9 @@ impl App {
                 if !j.skipped.is_empty() {
                     msg.push_str(&format!("  跳过 {} 项", j.skipped.len()));
                 }
-                self.status = Some(msg);
+                self.info(msg);
             }
-            Err(e) => self.status = Some(format!("失败: {e:#}")),
+            Err(e) => self.error(format!("清理失败：{e:#}")),
         }
     }
 
@@ -430,32 +453,44 @@ impl App {
         }
 
         if self.tab == BROWSE_TAB {
-            // 浏览页：标签切换保留全局，其余按键交给 BrowseState
-            match code {
-                KeyCode::Tab | KeyCode::Char('l') => {
-                    self.next_tab(1);
-                    return;
+            // 浏览页处于输入/模态状态时，普通按键（含 Tab/数字）应交给组件，
+            // 否则 Tab 切页、数字跳页会抢走过滤/跳转的输入。
+            let modal = self.browse.as_ref().is_some_and(|b| b.captures_input());
+            if !modal {
+                match code {
+                    KeyCode::Tab | KeyCode::Char('l') => {
+                        self.next_tab(1);
+                        return;
+                    }
+                    KeyCode::BackTab | KeyCode::Char('h') => {
+                        self.next_tab(-1);
+                        return;
+                    }
+                    KeyCode::Char(c @ '1'..='7') => {
+                        self.switch_tab((c as u8 - b'1') as usize);
+                        return;
+                    }
+                    _ => {}
                 }
-                KeyCode::BackTab | KeyCode::Char('h') => {
-                    self.next_tab(-1);
-                    return;
-                }
-                KeyCode::Char(c @ '1'..='7') => {
-                    self.switch_tab((c as u8 - b'1') as usize);
-                    return;
-                }
-                _ => {}
             }
-            if let Some(b) = &mut self.browse {
-                if b.on_key(code) {
-                    self.switch_tab(0);
-                }
+            if let Some(b) = &mut self.browse
+                && b.on_key(code)
+            {
+                self.switch_tab(0);
             }
             return;
         }
 
         match code {
-            KeyCode::Char('q') | KeyCode::Esc => self.quit = true,
+            KeyCode::Char('q') => self.quit = true,
+            // Esc：先关闭底部提示，无提示时才退出（避免错误消息关不掉）
+            KeyCode::Esc => {
+                if self.status.is_some() {
+                    self.status = None;
+                } else {
+                    self.quit = true;
+                }
+            }
             KeyCode::Tab | KeyCode::Char('l') => self.next_tab(1),
             KeyCode::BackTab | KeyCode::Char('h') => self.next_tab(-1),
             KeyCode::Char(c @ '1'..='7') => self.switch_tab((c as u8 - b'1') as usize),
@@ -477,7 +512,7 @@ impl App {
                 if self.selected_count() > 0 {
                     self.confirm = true;
                 } else {
-                    self.status = Some("未勾选任何项".into());
+                    self.warn("未勾选任何清理项");
                 }
             }
             KeyCode::Char('r') => self.reload_current(),
@@ -773,19 +808,29 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
                         path
                     };
                     ListItem::new(Line::from(vec![
-                        Span::styled(format!("{mark} "), Style::default().fg(Color::Green)),
+                        Span::styled(
+                            format!("{mark} "),
+                            Style::default().fg(if app.selected.get(i).copied().unwrap_or(false) {
+                                Color::Green
+                            } else {
+                                Color::DarkGray
+                            }),
+                        ),
                         Span::styled(
                             format!("{:>9} ", human(it.size)),
                             Style::default().fg(Color::White),
                         ),
                         Span::styled(
                             format!(
-                                "{:<5} ",
-                                if it.protected {
-                                    "已保护"
-                                } else {
-                                    it.risk.label()
-                                }
+                                "{} ",
+                                text::pad_end(
+                                    if it.protected {
+                                        "已保护"
+                                    } else {
+                                        it.risk.label()
+                                    },
+                                    8,
+                                )
                             ),
                             Style::default().fg(if it.protected {
                                 Color::DarkGray
@@ -1192,7 +1237,10 @@ fn metric_line(name: &str, ratio: f64, value: Option<String>) -> Line<'static> {
 /// 基本信息的一行：标签 + 值
 fn field(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(format!("{label:<10}"), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            text::pad_end(label, 10),
+            Style::default().fg(Color::DarkGray),
+        ),
         Span::raw(value.to_string()),
     ])
 }
@@ -1203,23 +1251,27 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         frame.render_widget(Paragraph::new(""), area);
         return;
     }
-    let text = if let Some(s) = &app.status {
-        s.clone()
+    let (text, style) = if let Some(t) = &app.status {
+        (
+            format!(" {}   · Esc 关闭", t.text()),
+            toast::style(t.kind()),
+        )
     } else if app.help {
-        " 1-7/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · r 重载 · c 清理 · q 退出"
-            .into()
+        (
+            " 1-7/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · r 重载 · c 清理 · Esc 关闭提示/退出 · q 退出"
+                .to_string(),
+            toast::bar_style(),
+        )
     } else {
-        match app.tab {
-            0 => " Tab 切页 · ↑↓ 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护·不清理 · c 移入隔离区 · r 重载 · ? 帮助 · q 退出",
-            6 => " Tab 切页 · ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · s 排序 · t 占用图 · b 书签 · c 清理 · q 返回",
+        let hint = match app.tab {
+            0 => {
+                " Tab 切页 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · c 清理 · r 重载 · ? 帮助 · q 退出"
+            }
             _ => " 1-7/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
-        }
-        .into()
+        };
+        (hint.to_string(), toast::bar_style())
     };
-    frame.render_widget(
-        Paragraph::new(text).style(Style::default().fg(Color::Black).bg(Color::Gray)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(text).style(style), area);
 }
 
 fn render_confirm(frame: &mut Frame, app: &App) {
@@ -1241,7 +1293,7 @@ fn render_confirm(frame: &mut Frame, app: &App) {
         Line::from(vec![
             Span::styled("[y] 确认", Style::default().fg(Color::Green)),
             Span::raw("    "),
-            Span::styled("[n] 取消", Style::default().fg(Color::Red)),
+            Span::styled("[n / Esc] 取消", Style::default().fg(Color::Red)),
         ]),
     ];
     let popup = Paragraph::new(text)
@@ -1270,11 +1322,5 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
 }
 
 fn truncate(s: &str, width: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= width {
-        return s.to_string();
-    }
-    let mut out: String = chars[..width.saturating_sub(1)].iter().collect();
-    out.push('…');
-    out
+    text::truncate(s, width)
 }

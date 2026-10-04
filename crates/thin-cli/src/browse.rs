@@ -24,6 +24,8 @@ use thin_core::model::{Category, CleanItem, Explain, Risk};
 use thin_core::progress::{Progress, ProgressSnapshot};
 use thin_core::recognize::{Recognition, Recognizer, Source};
 
+use crate::text;
+use crate::toast::{self, Toast};
 use crate::treemap;
 
 /// 一行：子项 + 用途识别
@@ -85,8 +87,10 @@ pub struct BrowseState {
     bookmark_sel: usize,
     help: bool,
     tick: usize,
-    status: Option<String>,
-    status_at: usize,
+    toast: Option<Toast>,
+    /// `:` 跳转输入框内容
+    goto: String,
+    gotoing: bool,
 }
 
 impl BrowseState {
@@ -111,8 +115,9 @@ impl BrowseState {
             bookmark_sel: 0,
             help: false,
             tick: 0,
-            status: None,
-            status_at: 0,
+            toast: None,
+            goto: String::new(),
+            gotoing: false,
         };
         app.load();
         app
@@ -155,13 +160,13 @@ impl BrowseState {
             }
             Ok(Err(e)) => {
                 if loader.generation == self.generation {
-                    self.set_status(format!("加载失败: {e}"));
+                    self.error(format!("加载目录失败：{e}"));
                 }
             }
             Err(TryRecvError::Empty) => self.loader = Some(loader),
             Err(TryRecvError::Disconnected) => {
                 if loader.generation == self.generation {
-                    self.set_status("加载中断");
+                    self.error("加载目录中断");
                 }
             }
         }
@@ -169,16 +174,26 @@ impl BrowseState {
 
     pub fn tick(&mut self) {
         self.tick = self.tick.wrapping_add(1);
-        // 瞬时提示几秒后自动消失，恢复底部快捷键提示
-        if self.status.is_some() && self.tick.wrapping_sub(self.status_at) > 45 {
-            self.status = None;
+        // info/warn 几秒后自动消失；error 保留到用户按 Esc 关闭
+        if self.toast.as_ref().is_some_and(|t| t.expired(self.tick)) {
+            self.toast = None;
         }
     }
 
-    /// 设置底部瞬时提示（带自动消失计时）
-    fn set_status(&mut self, s: impl Into<String>) {
-        self.status = Some(s.into());
-        self.status_at = self.tick;
+    fn info(&mut self, s: impl Into<String>) {
+        self.toast = Some(Toast::info(s, self.tick));
+    }
+
+    fn warn(&mut self, s: impl Into<String>) {
+        self.toast = Some(Toast::warn(s, self.tick));
+    }
+
+    fn error(&mut self, s: impl Into<String>) {
+        self.toast = Some(Toast::error(s, self.tick));
+    }
+
+    fn clear_status(&mut self) {
+        self.toast = None;
     }
 
     fn rebuild_visible(&mut self) {
@@ -237,7 +252,7 @@ impl BrowseState {
             self.stack.push(dir);
             self.load();
         } else {
-            self.set_status("只能进入目录");
+            self.warn("只能进入目录");
         }
     }
 
@@ -246,7 +261,7 @@ impl BrowseState {
             self.stack.pop();
             self.load();
         } else {
-            self.set_status("已在起点");
+            self.info("已在浏览根目录");
         }
     }
 
@@ -254,6 +269,77 @@ impl BrowseState {
         let dir = self.cwd().to_path_buf();
         self.cache.remove(&dir);
         self.load();
+    }
+
+    /// 是否处于会消费普通字符的输入/模态状态。
+    /// 主 TUI 据此决定是否把 Tab/数字等按键原样交给浏览页。
+    pub fn captures_input(&self) -> bool {
+        self.confirm || self.bookmark_pick || self.filtering || self.gotoing || self.help
+    }
+
+    /// `:` 打开跳转输入框
+    fn start_goto(&mut self) {
+        self.gotoing = true;
+        self.goto.clear();
+    }
+
+    /// 解析输入并跳转（支持 `~` 与相对当前目录的路径）
+    fn apply_goto(&mut self) {
+        let raw = self.goto.trim().to_string();
+        if raw.is_empty() {
+            return;
+        }
+        match resolve_dir(&raw, self.cwd()) {
+            Some(dir) => {
+                self.stack = vec![dir.clone()];
+                self.load();
+                self.info(format!("已跳转到 {}", shorten(&dir, &home_prefix())));
+            }
+            None => self.error(format!("目录不存在：{raw}")),
+        }
+    }
+
+    /// 按 Tab 补全当前输入路径的目录名（只列目录，隐藏项需以 . 开头）
+    fn complete_goto(&mut self) {
+        let raw = self.goto.clone();
+        if raw.is_empty() {
+            return;
+        }
+        let (dir_raw, prefix) = match raw.rfind('/') {
+            Some(i) => (raw[..=i].to_string(), raw[i + 1..].to_string()),
+            None => (String::new(), raw.clone()),
+        };
+        let dir_fs = expand_tilde(&dir_raw);
+        let dir_path = if dir_fs.is_empty() {
+            self.cwd().to_path_buf()
+        } else {
+            PathBuf::from(&dir_fs)
+        };
+        let dir_path = if dir_path.is_absolute() {
+            dir_path
+        } else {
+            self.cwd().join(dir_path)
+        };
+        let Ok(rd) = std::fs::read_dir(&dir_path) else {
+            return;
+        };
+        let show_hidden = prefix.starts_with('.');
+        let mut names: Vec<String> = rd
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .filter_map(|e| e.file_name().into_string().ok())
+            .filter(|n| n.starts_with(&prefix) && (show_hidden || !n.starts_with('.')))
+            .collect();
+        names.sort();
+        if names.is_empty() {
+            return;
+        }
+        let completion = if names.len() == 1 {
+            format!("{}/", names[0])
+        } else {
+            common_prefix(&names)
+        };
+        self.goto = format!("{dir_raw}{completion}");
     }
 
     /// 把当前项移入隔离区（复用 clean 安全门）
@@ -286,18 +372,18 @@ impl BrowseState {
                     .first()
                     .map(|s| s.reason.clone())
                     .unwrap_or_default();
-                self.set_status(format!("未清理：{reason}"));
+                self.warn(format!("未清理：{reason}"));
             }
             Ok(journal) => {
-                self.set_status(format!(
-                    "已移入隔离区（thin quarantine restore {}）",
+                self.info(format!(
+                    "已移入隔离区；可恢复：thin quarantine restore {}",
                     journal.session
                 ));
                 let dir = self.cwd().to_path_buf();
                 self.cache.remove(&dir);
                 self.load();
             }
-            Err(e) => self.set_status(format!("清理失败: {e:#}")),
+            Err(e) => self.error(format!("清理失败：{e:#}")),
         }
     }
 
@@ -347,6 +433,22 @@ impl BrowseState {
             }
             return false;
         }
+        if self.gotoing {
+            match code {
+                KeyCode::Enter => {
+                    self.gotoing = false;
+                    self.apply_goto();
+                }
+                KeyCode::Esc => self.gotoing = false,
+                KeyCode::Tab => self.complete_goto(),
+                KeyCode::Backspace => {
+                    self.goto.pop();
+                }
+                KeyCode::Char(c) => self.goto.push(c),
+                _ => {}
+            }
+            return false;
+        }
         if self.filtering {
             match code {
                 KeyCode::Enter => self.filtering = false,
@@ -374,7 +476,12 @@ impl BrowseState {
         if matches!(code, KeyCode::Esc) && self.loader.is_some() {
             // 取消正在进行的加载
             self.loader = None;
-            self.set_status("已取消加载");
+            self.info("已取消加载");
+            return false;
+        }
+        // Esc：先关闭底部提示，再按一次才离开浏览页
+        if matches!(code, KeyCode::Esc) && self.toast.is_some() {
+            self.clear_status();
             return false;
         }
         match code {
@@ -399,20 +506,21 @@ impl BrowseState {
                 self.rebuild_visible();
             }
             KeyCode::Char('/') => self.filtering = true,
+            KeyCode::Char(':') => self.start_goto(),
             KeyCode::Char('t') => self.show_treemap = !self.show_treemap,
             KeyCode::Char('s') => {
                 self.sort = self.sort.next();
                 self.rebuild_visible();
-                self.set_status(format!("排序: {}", self.sort.label()));
+                self.info(format!("排序：{}", self.sort.label()));
             }
             KeyCode::Char('b') => {
                 let dir = self.cwd().to_path_buf();
                 if let Some(pos) = self.bookmarks.iter().position(|p| *p == dir) {
                     self.bookmarks.remove(pos);
-                    self.set_status("已取消书签");
+                    self.info("已取消书签");
                 } else {
                     self.bookmarks.push(dir);
-                    self.set_status("已加书签（B 打开列表）");
+                    self.info("已加书签（B 打开列表）");
                 }
                 let _ = save_bookmarks(&self.bookmarks);
             }
@@ -425,7 +533,7 @@ impl BrowseState {
                     if row.rec.cleanable && !row.rec.protected {
                         self.confirm = true;
                     } else {
-                        self.set_status("该项不可清理（未被规则命中或受保护）");
+                        self.warn("该路径不可清理（未被规则命中或已在保护名单）");
                     }
                 }
             }
@@ -569,7 +677,10 @@ fn render_list(frame: &mut Frame, app: &mut BrowseState, area: Rect) {
                     Style::default().fg(Color::White),
                 ),
                 Span::styled(
-                    format!("{:<10} ", truncate(&row.rec.title, 10)),
+                    format!(
+                        "{} ",
+                        text::pad_end(&text::truncate(&row.rec.title, 10), 10)
+                    ),
                     Style::default().fg(status_color(&row.rec)),
                 ),
                 Span::raw(name),
@@ -665,23 +776,41 @@ fn render_detail(frame: &mut Frame, app: &BrowseState, area: Rect) {
 }
 
 fn render_footer(frame: &mut Frame, app: &BrowseState, area: Rect) {
-    let text = if app.confirm {
-        "移入隔离区？ y 确认 / n 取消".into()
+    let (text, style) = if app.confirm {
+        (
+            " 移入隔离区？ y 确认 · n/Esc 取消".to_string(),
+            toast::style(toast::Kind::Warn),
+        )
     } else if app.bookmark_pick {
-        "书签：j/k 选择 · Enter 跳转 · d 删除 · Esc 关闭".into()
+        (
+            " 书签：j/k 选择 · Enter 跳转 · d 删除 · Esc 关闭".to_string(),
+            toast::bar_style(),
+        )
     } else if app.filtering {
-        format!("过滤: {}▏  Enter 确认 · Esc 清除", app.filter)
-    } else if let Some(s) = &app.status {
-        s.clone()
+        (
+            format!(" 过滤：{}▏   Enter 确认 · Esc 清除", app.filter),
+            toast::bar_style(),
+        )
+    } else if app.gotoing {
+        (
+            format!(" 跳转：{}▏   Enter 跳转 · Tab 补全 · Esc 取消", app.goto),
+            toast::bar_style(),
+        )
+    } else if let Some(t) = &app.toast {
+        (
+            format!(" {}   · Esc 关闭", t.text()),
+            toast::style(t.kind()),
+        )
     } else if app.loader.is_some() {
-        "加载中…  Esc 取消".into()
+        (" 加载中…   Esc 取消".to_string(), toast::bar_style())
     } else {
-        " ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · s 排序 · t 占用图 · b 书签 · c 清理 · q 返回".into()
+        (
+            " ↑↓ 移动 · Enter 进入 · Backspace 上级 · / 过滤 · : 跳转 · s 排序 · t 占用图 · b 书签 · c 清理 · q 返回"
+                .to_string(),
+            toast::bar_style(),
+        )
     };
-    frame.render_widget(
-        Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(text).style(style), area);
 }
 
 fn render_loading(
@@ -801,6 +930,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::from("  Backspace / ← 返回上级"),
         Line::from("  g / G        跳到顶部 / 底部"),
         Line::from("  /            过滤（按名称/用途）"),
+        Line::from("  :            跳转目录（支持 ~ 与相对路径，Tab 补全）"),
         Line::from("  s            切换排序（大小/名称/类型）"),
         Line::from("  t            占用图切换"),
         Line::from("  b / B        加/删当前目录书签 · 打开书签列表"),
@@ -948,13 +1078,7 @@ fn home_prefix() -> String {
 }
 
 fn truncate(s: &str, width: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= width {
-        return s.to_string();
-    }
-    let mut out: String = chars[..width.saturating_sub(1)].iter().collect();
-    out.push('…');
-    out
+    text::truncate(s, width)
 }
 
 fn shorten(path: &Path, home: &str) -> String {
@@ -964,6 +1088,43 @@ fn shorten(path: &Path, home: &str) -> String {
     } else {
         s
     }
+}
+
+/// 展开开头的 `~`（`~` 或 `~/...`）
+fn expand_tilde(p: &str) -> String {
+    if p == "~" {
+        home_prefix()
+    } else if let Some(rest) = p.strip_prefix("~/") {
+        format!("{}/{}", home_prefix(), rest)
+    } else {
+        p.to_string()
+    }
+}
+
+/// 解析跳转输入：展开 `~`、相对路径基于 `cwd`，返回规范化的目录
+fn resolve_dir(input: &str, cwd: &Path) -> Option<PathBuf> {
+    let expanded = expand_tilde(input);
+    let p = PathBuf::from(expanded);
+    let p = if p.is_absolute() { p } else { cwd.join(p) };
+    let canon = std::fs::canonicalize(&p).ok()?;
+    canon.is_dir().then_some(canon)
+}
+
+/// 一组字符串的最长公共前缀
+fn common_prefix(names: &[String]) -> String {
+    let Some(first) = names.first() else {
+        return String::new();
+    };
+    let mut pref = first.clone();
+    for n in &names[1..] {
+        while !n.starts_with(&pref) {
+            pref.pop();
+            if pref.is_empty() {
+                return pref;
+            }
+        }
+    }
+    pref
 }
 
 fn centered_rect(percent_x: u16, height: u16, area: Rect) -> Rect {
@@ -1009,5 +1170,35 @@ mod tests {
         assert_eq!(size_cell(&mk(EntryKind::Symlink)), "—");
         assert_eq!(size_cell(&mk(EntryKind::Mount)), "—");
         assert_eq!(size_cell(&mk(EntryKind::Dir)), "0 B");
+    }
+
+    #[test]
+    fn common_prefix_works() {
+        let names = vec![
+            "Documents".to_string(),
+            "Downloads".to_string(),
+            "Docker".to_string(),
+        ];
+        assert_eq!(common_prefix(&names), "Do");
+        assert_eq!(common_prefix(&["a".to_string()]), "a");
+        assert!(common_prefix(&[]).is_empty());
+    }
+
+    #[test]
+    fn resolve_dir_handles_relative_and_missing() {
+        let base = std::env::temp_dir().join(format!("thin-goto-test-{}", std::process::id()));
+        let sub = base.join("child");
+        std::fs::create_dir_all(&sub).unwrap();
+        std::fs::write(base.join("file.txt"), b"x").unwrap();
+
+        assert_eq!(
+            resolve_dir("child", &base),
+            Some(std::fs::canonicalize(&sub).unwrap())
+        );
+        // 普通文件不是目录
+        assert_eq!(resolve_dir("file.txt", &base), None);
+        assert_eq!(resolve_dir("missing", &base), None);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
