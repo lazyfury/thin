@@ -230,7 +230,9 @@ impl App {
                     .filter(|(_, s)| **s)
                     .map(|(i, _)| i.clone())
                     .collect();
-                scan::planned_bytes(&chosen)
+                // 与真实执行共用安全门；先去重嵌套，再按安全门计算可释放量
+                let chosen = scan::top_level(&chosen);
+                clean::plan(&chosen).approved_bytes()
             })
             .unwrap_or(0)
     }

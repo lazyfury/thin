@@ -148,9 +148,12 @@ thin quarantine purge --older-than 7d
    - `safe`：可自动处理（可再生成）
    - `confirm`：需人工确认（`--all` 才纳入）
    - `destructive`：只能 `--id` 显式指定
-4. **受保护路径**（永不可动）：`/`、`/System`、`/private/var/vm`、`/Library/Apple`、Keychains、iCloud、`~/Library/CloudStorage`、挂载点、整个主目录。
-5. **卷隔离**：目标必须与隔离区（`~/.thin`）同卷；外接盘/其他挂载会被安全门拒绝，避免跨卷复制。
-6. **运行中的 App**：`thin uninstall --apply` 会先检测，App 正在运行则拒绝卸载。
+4. **受保护路径**（永不可动）：`/`、`/System`、`/usr`、`/bin`、`/sbin`、`/etc`、`/private/var/vm`、`/private/var/db`（`diagnostics`/`uuidtext` 除外）、`/Library/Apple`、`/Library/Extensions`、Keychains、iCloud、`~/Library/CloudStorage`、挂载点、整个主目录。
+5. **裸顶层目录**（即使子项可清理，也绝不删目录本身）：`/Applications`、`/Library`、`/opt`、`/Volumes`、`/Users`、`/private/var` 等。
+6. **卷隔离**：目标必须与隔离区（`~/.thin`）同卷；外接盘/其他挂载会被安全门拒绝，避免跨卷复制。
+7. **预演=执行**：`thin clean` 的 dry-run 与 `--apply` 使用**同一安全门**（`clean::plan`），被跳过项不会计入「可释放」。
+8. **运行中的 App / 系统 App**：`uninstall --apply` 前检测运行状态（超时视为运行中）；系统关键 App（列表见 `apps.rs`）禁止卸载。
+9. **外部命令超时**：`tmutil`/`plutil`/`pgrep`/`mount`/`date` 均有超时，避免挂死。
 5. **写规则前先确认路径真实存在且可清理**；`regenerable=false` 的项风险应设为 `confirm` 或 `destructive`。
 6. 不确定时，宁可 `risk=confirm` 且 `--dry-run` 先看结果。
 

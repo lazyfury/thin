@@ -2,7 +2,7 @@
 
 use rayon::prelude::*;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::time::Duration;
 
 #[derive(Debug, Clone)]
 pub struct AppInfo {
@@ -122,24 +122,64 @@ pub fn find_app(query: &str) -> Vec<AppInfo> {
 }
 
 /// 判断某个 .app 当前是否在运行（其可执行文件位于 Contents/MacOS）。
+///
+/// 探测失败或超时视为「无法确认」，保守地当作运行中（拒绝卸载）。
 pub fn is_running(app: &Path) -> bool {
     let needle = app.join("Contents/MacOS");
     let pattern = format!("{}/", needle.to_string_lossy());
-    Command::new("pgrep")
-        .args(["-f", &pattern])
-        .output()
+    crate::proc::output_with_timeout("pgrep", &["-f", &pattern], Duration::from_secs(2))
         .map(|o| o.status.success() && !o.stdout.is_empty())
-        .unwrap_or(false)
+        .unwrap_or(true)
+}
+
+/// 系统关键 App（不可卸载）。
+///
+/// 刻意用显式列表而非 `com.apple.*` 通配：后者会连带阻止用户自行安装的
+/// Apple 应用（Xcode、Final Cut Pro 等）被卸载。
+const SYSTEM_CRITICAL_BUNDLES: &[&str] = &[
+    "com.apple.finder",
+    "com.apple.dock",
+    "com.apple.Safari",
+    "com.apple.mail",
+    "com.apple.systempreferences",
+    "com.apple.SystemSettings",
+    "com.apple.controlcenter",
+    "com.apple.Spotlight",
+    "com.apple.loginwindow",
+    "com.apple.Preview",
+    "com.apple.TextEdit",
+    "com.apple.Notes",
+    "com.apple.iCal",
+    "com.apple.AddressBook",
+    "com.apple.Photos",
+    "com.apple.AppStore",
+    "com.apple.Terminal",
+    "com.apple.ActivityMonitor",
+    "com.apple.DiskUtility",
+    "com.apple.KeychainAccess",
+];
+
+/// 是否是不可卸载的系统 App。
+///
+/// 读不到 bundle id 时保守地视为受保护（宁可拒绝，不可误卸）。
+pub fn is_system_protected(bundle_id: Option<&str>) -> bool {
+    match bundle_id {
+        Some(id) => SYSTEM_CRITICAL_BUNDLES
+            .iter()
+            .any(|p| id == *p || id.starts_with(&format!("{p}."))),
+        None => true,
+    }
 }
 
 /// 读取 .app 的 CFBundleIdentifier
 pub fn bundle_id(app: &Path) -> Option<String> {
     let plist = app.join("Contents/Info.plist");
-    let out = Command::new("plutil")
-        .args(["-extract", "CFBundleIdentifier", "raw", "-o", "-"])
-        .arg(&plist)
-        .output()
-        .ok()?;
+    let plist_s = plist.to_string_lossy().into_owned();
+    let out = crate::proc::output_with_timeout(
+        "plutil",
+        &["-extract", "CFBundleIdentifier", "raw", "-o", "-", &plist_s],
+        Duration::from_secs(5),
+    )?;
     if !out.status.success() {
         return None;
     }
@@ -171,6 +211,7 @@ pub fn find_leftovers(bundle_id: &str) -> Vec<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::process::Command;
 
     #[test]
     fn leftovers_only_existing() {
@@ -184,6 +225,17 @@ mod tests {
         assert_eq!(tier(2 * 1024 * 1024 * 1024), Tier::Large);
         assert_eq!(tier(200 * 1024 * 1024), Tier::Medium);
         assert_eq!(tier(50 * 1024 * 1024), Tier::Small);
+    }
+
+    #[test]
+    fn system_apps_protected() {
+        assert!(is_system_protected(Some("com.apple.Safari")));
+        assert!(is_system_protected(Some("com.apple.SystemSettings")));
+        assert!(is_system_protected(None), "未知 bundle id 保守拒绝");
+        // 用户自行安装的 Apple 应用仍可卸载
+        assert!(!is_system_protected(Some("com.apple.dt.Xcode")));
+        assert!(!is_system_protected(Some("com.apple.FinalCut")));
+        assert!(!is_system_protected(Some("com.example.app")));
     }
 
     #[test]

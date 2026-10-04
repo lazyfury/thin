@@ -12,6 +12,7 @@ pub mod fmt;
 pub mod fsutil;
 pub mod model;
 pub mod probe;
+pub mod proc;
 pub mod progress;
 pub mod rules;
 pub mod scan;

@@ -1,5 +1,6 @@
 use anyhow::Result;
 use std::ffi::CString;
+use std::time::Duration;
 
 /// 单个卷的容量信息（来自 statfs）
 #[derive(Debug, Clone)]
@@ -52,7 +53,7 @@ pub struct Mount {
 /// 解析 `mount` 输出，列出所有挂载点
 pub fn list_mounts() -> Vec<Mount> {
     let mut v = Vec::new();
-    if let Ok(out) = std::process::Command::new("mount").output() {
+    if let Some(out) = crate::proc::output_with_timeout("mount", &[], Duration::from_secs(5)) {
         let s = String::from_utf8_lossy(&out.stdout);
         for line in s.lines() {
             // 形如: /dev/disk7s1 on /Volumes/数据 (apfs, ...)
@@ -73,10 +74,11 @@ pub fn list_mounts() -> Vec<Mount> {
 pub fn local_snapshots() -> Vec<String> {
     let mut out = Vec::new();
     for vol in ["/", "/System/Volumes/Data"] {
-        if let Ok(o) = std::process::Command::new("tmutil")
-            .args(["listlocalsnapshots", vol])
-            .output()
-        {
+        if let Some(o) = crate::proc::output_with_timeout(
+            "tmutil",
+            &["listlocalsnapshots", vol],
+            Duration::from_secs(10),
+        ) {
             for line in String::from_utf8_lossy(&o.stdout).lines() {
                 let l = line.trim();
                 if l.starts_with("com.apple.TimeMachine") {

@@ -570,37 +570,33 @@ fn select_items(args: &CleanArgs) -> Result<Vec<thin_core::CleanItem>> {
     Ok(scan::top_level(&selected))
 }
 
-fn print_plan(selected: &[thin_core::CleanItem]) {
+fn print_plan(plan: &clean::Plan) {
     println!("\x1b[1m清理计划\x1b[0m");
     println!(
         "\x1b[90m以下为官方推荐的清理方式；thin 统一将目标移入隔离区（可恢复），不会执行这些命令。\x1b[0m\n"
     );
-    let mut manual = 0usize;
-    for it in selected {
+    for it in &plan.approved {
         println!("• {:<28} {:>10}", it.name, human(it.size));
         println!("  {:<28} {}", "官方方式:", it.reclaim);
         println!("  {:<28} {}", "thin 动作:", "移入隔离区（可恢复）");
-        if it.sudo {
-            manual += 1;
-            println!(
-                "  {:<28} {}",
-                "注意:", "\x1b[33m需要 sudo（将跳过，不计入可释放）\x1b[0m"
-            );
-        }
         println!("  {:<28} {}", "路径:", it.path.display());
     }
-    let total = scan::planned_bytes(selected);
-    let note = if manual > 0 {
-        format!("（其中 {manual} 项需 sudo 手动处理）")
-    } else {
-        String::new()
-    };
+    let total = plan.approved_bytes();
     println!(
-        "\n共 {} 项{}，预计可释放 \x1b[1m{}\x1b[0m",
-        selected.len(),
-        note,
+        "\n共 {} 项，预计可释放 \x1b[1m{}\x1b[0m",
+        plan.approved.len(),
         human(total)
     );
+    // 与真实执行使用同一安全门：被跳过项也如实展示
+    if !plan.skipped.is_empty() {
+        println!(
+            "\n\x1b[33m安全门跳过 {} 项（不计入可释放）:\x1b[0m",
+            plan.skipped.len()
+        );
+        for s in &plan.skipped {
+            println!("  - {}：{}", shorten(&s.path), s.reason);
+        }
+    }
 }
 
 fn cmd_clean(args: CleanArgs) -> Result<()> {
@@ -610,18 +606,29 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
         return Ok(());
     }
 
+    // 预演与执行共用同一安全门，保证「预览即所得」
+    let plan = clean::plan(&selected);
+    if plan.approved.is_empty() {
+        println!("没有可通过安全门的清理项：");
+        for s in &plan.skipped {
+            println!("  - {}：{}", shorten(&s.path), s.reason);
+        }
+        return Ok(());
+    }
+
     let apply = args.apply && !args.dry_run;
     if !apply {
-        print_plan(&selected);
+        print_plan(&plan);
         println!("\n（dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）");
         return Ok(());
     }
 
-    if !args.yes && !confirm(&format!("将 {} 项移入隔离区？", selected.len()))? {
+    if !args.yes && !confirm(&format!("将 {} 项移入隔离区？", plan.approved.len()))? {
         println!("已取消。");
         return Ok(());
     }
 
+    // 传原始候选项：quarantine 内部复用同一安全门，并如实记录被跳过项
     let journal = clean::quarantine(&selected, false)?;
     print_journal(&journal);
     warn_snapshots();
@@ -865,6 +872,16 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         return Ok(());
     }
     let app = &matched[0];
+
+    // 系统关键 App 保护（读不到 bundle id 时也拒绝）
+    if apps::is_system_protected(app.bundle_id.as_deref()) {
+        println!(
+            "\x1b[31m已取消：{} 是系统关键 App，禁止卸载。\x1b[0m",
+            app.name
+        );
+        return Ok(());
+    }
+
     let mut items: Vec<CleanItem> = vec![CleanItem::synthetic(
         app.path.clone(),
         app.size,

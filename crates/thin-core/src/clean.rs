@@ -6,7 +6,7 @@
 use crate::model::{CleanItem, Risk};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 /// 隔离区中一条记录
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,10 +81,11 @@ fn now_secs() -> u64 {
 }
 
 fn now_session_id() -> String {
-    if let Ok(o) = std::process::Command::new("date")
-        .arg("+%Y%m%d-%H%M%S")
-        .output()
-    {
+    if let Some(o) = crate::proc::output_with_timeout(
+        "date",
+        &["+%Y%m%d-%H%M%S"],
+        std::time::Duration::from_secs(2),
+    ) {
         let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
         if !s.is_empty() {
             return s;
@@ -102,6 +103,53 @@ fn sanitize(name: &str) -> String {
 // ---------------------------------------------------------------------------
 // 安全门（SafetyGate）
 // ---------------------------------------------------------------------------
+
+/// 树级保护（含子目录）
+const DENY_SUBTREES: &[&str] = &[
+    "/System",
+    "/bin",
+    "/sbin",
+    "/usr",
+    "/etc",
+    "/private/etc",
+    "/private/var/vm",
+    "/private/var/db",
+    "/private/var/protected",
+    "/Library/Extensions",
+    "/Library/Apple",
+    "/Library/Keychains",
+    "/Library/CloudStorage",
+    "/dev",
+    "/cores",
+];
+
+/// 可重建的系统缓存/日志：位于拒绝子树内，但允许清理（在拒绝清单之前判断）。
+const ALLOW_SUBTREES: &[&str] = &[
+    "/private/var/log",
+    "/private/var/db/diagnostics",
+    "/private/var/db/uuidtext",
+    "/private/var/folders",
+    "/private/tmp",
+    "/usr/local",
+    "/opt/homebrew",
+    "/Library/Logs",
+    "/Library/Caches",
+];
+
+/// 裸顶层根：即使子项可清理，也绝不删除这些目录**本身**（防止整目录被搬走）。
+const BARE_ROOTS: &[&str] = &[
+    "/Applications",
+    "/Library",
+    "/Library/Application Support",
+    "/Library/Caches",
+    "/Library/Logs",
+    "/Volumes",
+    "/opt",
+    "/Users",
+    "/private",
+    "/private/var",
+    "/var",
+];
 
 /// 解析路径所在卷的设备号；路径不存在时向上找到最近的已存在祖先。
 fn volume_device(path: &Path) -> Option<u64> {
@@ -121,6 +169,17 @@ fn volume_device(path: &Path) -> Option<u64> {
 /// `ref_vol` 为隔离区所在卷的参考路径：与它不处于同一卷的目标（外接盘、其他挂载）
 /// 一律拒绝，避免跨卷复制带来的双倍空间占用与半成品数据。
 pub fn protection_reason_in(path: &Path, ref_vol: Option<&Path>) -> Option<String> {
+    // 基础校验：空路径 / 控制字符 / `..` 组件
+    if path.as_os_str().is_empty() {
+        return Some("空路径".into());
+    }
+    if path.to_string_lossy().chars().any(|c| c.is_control()) {
+        return Some("路径含控制字符".into());
+    }
+    if path.components().any(|c| matches!(c, Component::ParentDir)) {
+        return Some("路径包含 .. 组件".into());
+    }
+
     let canon = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let home = user_home();
 
@@ -134,23 +193,44 @@ pub fn protection_reason_in(path: &Path, ref_vol: Option<&Path>) -> Option<Strin
         }
     }
 
-    // 子树保护
-    let mut subtrees: Vec<PathBuf> = vec![
-        PathBuf::from("/System"),
-        PathBuf::from("/private/var/vm"),
-        PathBuf::from("/Library/Keychains"),
-        PathBuf::from("/Library/Apple"),
-        PathBuf::from("/Library/CloudStorage"),
-    ];
+    // 用户隐私目录（始终保护，先于 allow 判断）
     if let Some(h) = &home {
-        subtrees.push(h.join("Library/Keychains"));
-        subtrees.push(h.join("Library/Mobile Documents"));
-        subtrees.push(h.join("Library/CloudStorage"));
-        subtrees.push(h.join(".thin"));
+        for sub in [
+            "Library/Keychains",
+            "Library/Mobile Documents",
+            "Library/CloudStorage",
+            ".thin",
+        ] {
+            let p = h.join(sub);
+            if canon == p || canon.starts_with(&p) {
+                return Some(format!("受保护路径 {}", p.display()));
+            }
+        }
     }
-    for p in subtrees {
-        if canon == p || canon.starts_with(&p) {
-            return Some(format!("受保护路径 {}", p.display()));
+
+    // 其他用户主目录（/Users/<name> 本身）
+    if let Ok(rest) = canon.strip_prefix("/Users") {
+        if rest.components().count() == 1 {
+            return Some("用户主目录".into());
+        }
+    }
+
+    // 拒绝子树 / 裸顶层根（允许清单内的可清理项例外）
+    let allowed = ALLOW_SUBTREES.iter().any(|s| {
+        let p = Path::new(s);
+        canon == p || canon.starts_with(p)
+    });
+    if !allowed {
+        for s in DENY_SUBTREES {
+            let p = Path::new(s);
+            if canon == p || canon.starts_with(p) {
+                return Some(format!("受保护路径 {s}"));
+            }
+        }
+        for s in BARE_ROOTS {
+            if canon == Path::new(s) {
+                return Some(format!("禁止删除顶层目录 {s}"));
+            }
         }
     }
 
@@ -254,6 +334,58 @@ fn remove_path(path: &Path) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// 清理计划（SafetyGate）
+// ---------------------------------------------------------------------------
+
+/// 清理计划：预演与执行使用**同一套**安全门，保证「预览即所得」。
+#[derive(Debug, Default)]
+pub struct Plan {
+    pub approved: Vec<CleanItem>,
+    pub skipped: Vec<SkippedItem>,
+}
+
+impl Plan {
+    pub fn approved_bytes(&self) -> u64 {
+        self.approved.iter().map(|i| i.size).sum()
+    }
+}
+
+/// 对候选项套用安全门（存在性 / sudo / 受保护路径 / 卷隔离），不落盘。
+pub fn plan(items: &[CleanItem]) -> Plan {
+    plan_in(&thin_home(), items)
+}
+
+/// 内部实现（可指定数据目录，便于测试）
+pub fn plan_in(home: &Path, items: &[CleanItem]) -> Plan {
+    let mut p = Plan::default();
+    for it in items {
+        if !it.path.exists() {
+            p.skipped.push(SkippedItem {
+                path: it.path.clone(),
+                reason: "路径不存在".into(),
+            });
+            continue;
+        }
+        if it.sudo {
+            p.skipped.push(SkippedItem {
+                path: it.path.clone(),
+                reason: "需要 sudo，请手动处理".into(),
+            });
+            continue;
+        }
+        if let Some(reason) = protection_reason_in(&it.path, Some(home)) {
+            p.skipped.push(SkippedItem {
+                path: it.path.clone(),
+                reason,
+            });
+            continue;
+        }
+        p.approved.push(it.clone());
+    }
+    p
+}
+
+// ---------------------------------------------------------------------------
 // 隔离（quarantine）
 // ---------------------------------------------------------------------------
 
@@ -268,37 +400,17 @@ pub fn quarantine_into(home: &Path, items: &[CleanItem], dry_run: bool) -> Resul
     let session_dir = home.join("quarantine").join(&session);
     let payload = session_dir.join("payload");
 
+    // 与 dry-run 使用同一安全门：被跳过项与预览一致
+    let plan = plan_in(home, items);
     let mut journal = Journal {
         session: session.clone(),
         created_at: now_secs(),
         dry_run,
         entries: Vec::new(),
-        skipped: Vec::new(),
+        skipped: plan.skipped,
     };
 
-    for (i, it) in items.iter().enumerate() {
-        if !it.path.exists() {
-            journal.skipped.push(SkippedItem {
-                path: it.path.clone(),
-                reason: "路径不存在".into(),
-            });
-            continue;
-        }
-        if it.sudo {
-            journal.skipped.push(SkippedItem {
-                path: it.path.clone(),
-                reason: "需要 sudo，请手动处理".into(),
-            });
-            continue;
-        }
-        if let Some(reason) = protection_reason_in(&it.path, Some(home)) {
-            journal.skipped.push(SkippedItem {
-                path: it.path.clone(),
-                reason,
-            });
-            continue;
-        }
-
+    for (i, it) in plan.approved.iter().enumerate() {
         let base = it
             .path
             .file_name()
@@ -477,8 +589,51 @@ mod tests {
         assert!(protection_reason(Path::new("/Library/Apple/Support")).is_some());
         let home = user_home().unwrap();
         assert!(protection_reason(&home).is_some());
+        // 裸顶层根：整个目录不可删
+        assert!(protection_reason(Path::new("/Applications")).is_some());
+        assert!(protection_reason(Path::new("/Library")).is_some());
+        assert!(protection_reason(Path::new("/private/var")).is_some());
+        assert!(protection_reason(Path::new("/usr")).is_some());
         // 普通文件不受保护
         assert!(protection_reason(Path::new("/tmp/thin-test-nonexistent")).is_none());
+    }
+
+    #[test]
+    fn rejects_dangerous_shapes() {
+        assert!(protection_reason(Path::new("/tmp/../etc/passwd")).is_some());
+        assert!(protection_reason(Path::new("/tmp/a\nb")).is_some());
+        assert!(protection_reason(Path::new("/private/var/db/other")).is_some());
+        // 允许清单内的可重建缓存仍可清理
+        assert!(protection_reason(Path::new("/tmp/thin-nonexistent")).is_none());
+    }
+
+    #[test]
+    fn plan_matches_real_skip_reasons() {
+        let base = std::env::temp_dir().join(format!("thin-plan-{}", std::process::id()));
+        let data_home = base.join("data");
+        let work = base.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let target = work.join("cache");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let mut sudo_item = item(target.clone(), 10);
+        sudo_item.sudo = true;
+        let missing = item(work.join("nope"), 10);
+        let protected = item(PathBuf::from("/System/Library"), 10);
+        let ok = item(target.clone(), 1024);
+
+        let candidates = vec![sudo_item.clone(), missing, protected, ok];
+        let p = plan_in(&data_home, &candidates);
+        assert_eq!(p.approved.len(), 1, "只有合法项应通过");
+        assert_eq!(p.approved_bytes(), 1024);
+        assert_eq!(p.skipped.len(), 3);
+
+        // 真实执行使用同一安全门：跳过项数量一致
+        let j = quarantine_into(&data_home, &candidates, false).unwrap();
+        assert_eq!(j.entries.len(), p.approved.len());
+        assert_eq!(j.skipped.len(), p.skipped.len());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
