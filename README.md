@@ -14,6 +14,19 @@ macOS 的「系统数据 / 系统缓存」是个兜底分类，会把虚拟机�
 - **风险分级**：`安全` / `需确认` / `不可再生`，默认只把前两类计入「可回收」
 - **只读优先**：M0 绝不删除
 
+## 工作区结构
+
+```
+crates/
+  spacekit-core/     核心库：磁盘探测、规则、扫描与核算（无 UI 依赖）
+    src/{lib,model,fsutil,probe,rules,scan,fmt}.rs
+    rules/default.json
+  spacekit-cli/      前端：CLI (clap) + TUI (ratatui)
+    src/{main,report,top,tui}.rs
+```
+
+分层目的：核心逻辑可被 CLI、TUI、未来的 SwiftUI GUI 或测试复用。
+
 ## 构建
 
 ```bash
@@ -36,6 +49,10 @@ spacekit scan --detail rust-target   # 查看某规则详细解释
 
 # 列出某目录下最大的子项（类似 du -sh PATH/* | sort -rh）
 spacekit top ~/Library --limit 20
+
+# 交互式 TUI：浏览、勾选并可预览清理计划
+spacekit tui
+spacekit tui --min 100MB
 
 # 列出内置规则目录
 spacekit rules

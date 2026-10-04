@@ -1,21 +1,23 @@
-[package]
-name = "spacekit"
+[workspace]
+resolver = "2"
+members = ["crates/spacekit-core", "crates/spacekit-cli"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
-description = "macOS 系统空间扫描与安全清理 CLI (M0)"
+license = "MIT"
+repository = ""
 
-[[bin]]
-name = "spacekit"
-path = "src/main.rs"
-
-[dependencies]
-clap = { version = "4", features = ["derive"] }
+[workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 walkdir = "2"
 rayon = "1"
 anyhow = "1"
 libc = "0.2"
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.29"
+crossterm = "0.28"
 
 [profile.release]
 opt-level = 3

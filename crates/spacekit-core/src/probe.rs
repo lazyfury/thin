@@ -118,7 +118,7 @@ pub enum MountKind {
 }
 
 pub fn probe_summary() -> Result<()> {
-    use crate::report::human;
+    use crate::fmt::human;
     println!("\x1b[1m磁盘容量\x1b[0m");
     if let Some(v) = statfs("/System/Volumes/Data") {
         println!(

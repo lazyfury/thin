@@ -1,0 +1,18 @@
+[package]
+name = "spacekit-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "spacekit 命令行与 TUI 前端"
+
+[[bin]]
+name = "spacekit"
+path = "src/main.rs"
+
+[dependencies]
+spacekit-core = { path = "../spacekit-core" }
+clap.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true

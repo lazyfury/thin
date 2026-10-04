@@ -1,19 +1,17 @@
-mod fsutil;
-mod model;
-mod probe;
 mod report;
-mod rules;
-mod scan;
 mod top;
+mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use spacekit_core::fmt::human;
+use spacekit_core::{fsutil, model, probe, rules, scan};
 use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(
     name = "spacekit",
-    about = "macOS 系统空间扫描与安全清理 CLI (M0 · 只读)",
+    about = "macOS 系统空间扫描与安全清理 (M0 · 只读)",
     version
 )]
 struct Cli {
@@ -31,6 +29,9 @@ enum Cmd {
 
     /// 列出某目录下最大的子项（类似 du -sh PATH/* | sort -rh）
     Top(TopArgs),
+
+    /// 交互式 TUI（只读浏览、勾选并预览清理计划）
+    Tui(TuiArgs),
 
     /// 列出内置规则目录
     Rules,
@@ -70,6 +71,13 @@ struct TopArgs {
 }
 
 #[derive(clap::Args)]
+struct TuiArgs {
+    /// 最小体积过滤
+    #[arg(long, default_value = "1MB")]
+    min: String,
+}
+
+#[derive(clap::Args)]
 struct CleanArgs {
     /// 仅预览计划（M0 必须）
     #[arg(long)]
@@ -93,6 +101,7 @@ fn main() -> Result<()> {
             let path = fsutil::expand(&args.path).unwrap_or_else(|| PathBuf::from(&args.path));
             top::run(path, args.limit);
         }
+        Cmd::Tui(args) => cmd_tui(args)?,
         Cmd::Rules => cmd_rules()?,
         Cmd::Clean(args) => cmd_clean(args)?,
     }
@@ -125,6 +134,15 @@ fn cmd_scan(args: ScanArgs) -> Result<()> {
             }
         }
     }
+    Ok(())
+}
+
+fn cmd_tui(args: TuiArgs) -> Result<()> {
+    let min = parse_size(&args.min).unwrap_or(1_048_576);
+    let catalog = rules::load()?;
+    eprintln!("扫描中…");
+    let items = scan::scan(&catalog, true, min);
+    tui::run(items)?;
     Ok(())
 }
 
@@ -183,7 +201,7 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
     let mut total: u64 = 0;
     for it in &selected {
         total = total.saturating_add(it.size);
-        println!("• {:<28} {:>10}", it.name, report::human(it.size));
+        println!("• {:<28} {:>10}", it.name, human(it.size));
         println!("  {:<28} {}", "方式:", it.reclaim);
         if it.sudo {
             println!("  {:<28} {}", "注意:", "\x1b[33m需要 sudo\x1b[0m");
@@ -193,7 +211,7 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
     println!(
         "\n共计 {} 项，预计释放 \x1b[1m{}\x1b[0m",
         selected.len(),
-        report::human(total)
+        human(total)
     );
     println!("（dry-run，未执行任何删除）");
     Ok(())

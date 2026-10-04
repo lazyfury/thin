@@ -1,0 +1,14 @@
+[package]
+name = "spacekit-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "spacekit 核心：磁盘探测、规则扫描与诚实核算"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+walkdir.workspace = true
+rayon.workspace = true
+anyhow.workspace = true
+libc.workspace = true
