@@ -239,4 +239,26 @@ mod tests {
         assert_eq!(e.safety, Safety::Regenerable);
         assert!(c.lookup_name("no-such-dir-xyz").is_none());
     }
+
+    #[test]
+    fn home_dotdirs_do_not_just_inherit_home() {
+        let Ok(home) = std::env::var("HOME") else {
+            return;
+        };
+        let c = Catalog::builtin();
+        let lookup = |rel: &str| c.lookup_path(&Path::new(&home).join(rel));
+
+        // 常见 .xx 工具目录应各自有条目，而不是都显示「用户主目录」
+        assert_eq!(lookup(".pi").unwrap().title, "pi Agent 数据");
+        assert_eq!(lookup(".cargo").unwrap().title, "Cargo 主目录");
+        assert_eq!(lookup(".vscode").unwrap().title, "VS Code 扩展与 CLI");
+        // 更深子路径仍归到最近的已描述祖先
+        assert_eq!(lookup(".pi/agent").unwrap().title, "pi Agent 数据");
+
+        // 敏感/机密目录按受保护处理
+        assert_eq!(lookup(".gnupg").unwrap().safety, Safety::Protected);
+        assert_eq!(lookup(".ssh").unwrap().safety, Safety::Protected);
+        // shell 会话记录是可再生的临时缓存
+        assert_eq!(lookup(".zsh_sessions").unwrap().safety, Safety::Regenerable);
+    }
 }

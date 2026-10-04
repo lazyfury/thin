@@ -329,7 +329,7 @@
       "title": "用户主目录",
       "kind": "user-data",
       "safety": "precious",
-      "note": "当前用户的家目录（macOS 放在 /Users/<名字>）。包含文稿/桌面/下载等个人目录，以及 Library(应用数据与缓存)。绝不能整体清理。",
+      "note": "当前用户的家目录（macOS 放在 /Users/<名字>）。包含文稿/桌面/下载等个人目录，以及 Library(应用数据与缓存)。非标准命名的子目录通常是用户自己的项目/数据，一律按「重要」处理。绝不能整体清理。",
       "reference": "man hier"
     },
     {
@@ -415,6 +415,279 @@
       "kind": "app-data",
       "safety": "precious",
       "note": "XDG 规范的用户级数据与程序(~/.local/share、~/.local/bin、~/.local/state)。包含数据与可执行文件，不是缓存。"
+    },
+    {
+      "paths": ["~/.ollama"],
+      "title": "Ollama 数据",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "本地大模型运行时：models 是可重新下载的模型权重（有内置规则），logs 是日志，密钥文件不可丢。"
+    },
+    {
+      "paths": ["~/.cargo"],
+      "title": "Cargo 主目录",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Rust 包管理器 CARGO_HOME：registry/git 是可再生缓存（有内置规则），bin 是 cargo install 的命令，config 是配置。整体不可删。"
+    },
+    {
+      "paths": ["~/.rustup"],
+      "title": "Rustup 工具链",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "rustup 安装的 Rust 工具链与组件，可重新下载；卸载旧工具链用 rustup toolchain uninstall，不要整目录删。"
+    },
+    {
+      "paths": ["~/.vscode"],
+      "title": "VS Code 扩展与 CLI",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "VS Code 的扩展目录、命令行工具与 argv.json。卸载扩展请用 VS Code 自身，不要整目录清理。"
+    },
+    {
+      "paths": ["~/.vscode-shared"],
+      "title": "VS Code 共享存储",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "VS Code 多个实例共享的本地存储数据，属于应用状态，不是缓存。"
+    },
+    {
+      "paths": ["~/.opencode"],
+      "title": "opencode 数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "opencode CLI 的安装与运行数据（bin 等），不是缓存。"
+    },
+    {
+      "paths": ["~/.pi"],
+      "title": "pi Agent 数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "pi 编码 Agent 的安装、会话与配置（agent/install/sessions）。属于工具状态，不可清理。"
+    },
+    {
+      "paths": ["~/.dsh"],
+      "title": "DeepSeek 工具数据",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "DeepSeek CLI/桌面工具的凭据、会话与存储（profiles/sessions/storages）。含账号信息，不可清理。"
+    },
+    {
+      "paths": ["~/.pig"],
+      "title": "pig 工具数据",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "pig 工具的 agent/docs/state 数据；其中 cache 可再生，但整体属于应用数据。"
+    },
+    {
+      "paths": ["~/.copilot"],
+      "title": "GitHub Copilot 数据",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "Copilot 的 IDE 集成数据与日志。日志可再生，整体属于应用数据。"
+    },
+    {
+      "paths": ["~/.gervill"],
+      "title": "Java MIDI 音色库",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "Java 自带 Gervill 合成器的音色库（SoundBank），不是缓存。"
+    },
+    {
+      "paths": ["~/.android"],
+      "title": "Android 调试数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Android 命令行工具与虚拟设备（avd/cli）。AVD 可达数 GB，删除会丢模拟器数据，需手动确认。"
+    },
+    {
+      "paths": ["~/.docker"],
+      "title": "Docker CLI 配置",
+      "kind": "config",
+      "safety": "precious",
+      "note": "Docker CLI 的 config.json、上下文与插件，属于配置而非缓存。"
+    },
+    {
+      "paths": ["~/.npm"],
+      "title": "npm 数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "npm 的缓存(_cacache，可再生)与日志(_logs)，均有内置规则；顶层不可整体删。"
+    },
+    {
+      "paths": ["~/.swiftpm"],
+      "title": "SwiftPM 数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Swift Package Manager 的配置、安全凭据与缓存；cache 可再生。"
+    },
+    {
+      "paths": ["~/.oh-my-zsh"],
+      "title": "Oh My Zsh",
+      "kind": "config",
+      "safety": "precious",
+      "note": "zsh 框架与其 plugins/themes，属于配置，更新用其自带脚本。"
+    },
+    {
+      "paths": ["~/.gradle"],
+      "title": "Gradle 数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Gradle 用户主目录：caches/wrapper 可再生（有内置规则），需要时用 gradle clean 清理。"
+    },
+    {
+      "paths": ["~/.m2"],
+      "title": "Maven 本地仓库",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Maven 下载的依赖 jar（~/.m2/repository）。可重新下载，但删除后首次构建需重新拉取。"
+    },
+    {
+      "paths": ["~/.gem"],
+      "title": "RubyGems 数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Ruby gem 安装目录；不是缓存，卸载 gem 请用 gem uninstall。"
+    },
+    {
+      "paths": ["~/.nvm"],
+      "title": "nvm (Node 版本)",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "nvm 安装的各版本 Node。可重新安装，但属于工具链，不要随手删。"
+    },
+    {
+      "paths": ["~/.pyenv"],
+      "title": "pyenv",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "pyenv 安装的 Python 版本。可重新编译/安装，属于工具链。"
+    },
+    {
+      "paths": ["~/.sdkman"],
+      "title": "SDKMAN",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "SDKMAN 管理的 JVM/工具链（candidates、archives）。属于工具链，不是缓存。"
+    },
+    {
+      "paths": ["~/.composer"],
+      "title": "Composer 数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "PHP Composer 的缓存与全局包；cache 可再生（有内置规则）。"
+    },
+    {
+      "paths": ["~/.deno"],
+      "title": "Deno 数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Deno 的模块缓存与安装的二进制；缓存可再生（有内置规则）。"
+    },
+    {
+      "paths": ["~/.bun"],
+      "title": "Bun 数据",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Bun 运行时与安装的包缓存；cache 可再生（有内置规则）。"
+    },
+    {
+      "paths": ["~/.nuget"],
+      "title": "NuGet 缓存",
+      "kind": "dev",
+      "safety": "precious",
+      "note": ".NET NuGet 包缓存，可重新下载（有内置规则）。"
+    },
+    {
+      "paths": ["~/.terraform.d"],
+      "title": "Terraform 插件",
+      "kind": "dev",
+      "safety": "precious",
+      "note": "Terraform 的 provider 插件与 CLI 配置；插件可重新下载（有内置规则）。"
+    },
+    {
+      "paths": ["~/.kube"],
+      "title": "Kubernetes 配置",
+      "kind": "config",
+      "safety": "precious",
+      "note": "kubeconfig 与集群上下文，通常含凭据，不可外传或清理。"
+    },
+    {
+      "paths": ["~/.aws"],
+      "title": "AWS 配置",
+      "kind": "config",
+      "safety": "precious",
+      "note": "AWS 凭据与配置文件（credentials/config），含访问密钥，不可清理。"
+    },
+    {
+      "paths": ["~/.azure"],
+      "title": "Azure 配置",
+      "kind": "config",
+      "safety": "precious",
+      "note": "Azure CLI 的登录凭据与配置，含访问密钥，不可清理。"
+    },
+    {
+      "paths": ["~/.gnupg"],
+      "title": "GPG 密钥",
+      "kind": "config",
+      "safety": "protected",
+      "note": "GnuPG 的私钥环与配置，泄露后果严重，受保护。"
+    },
+    {
+      "paths": ["~/.zshrc", "~/.zshenv", "~/.zprofile", "~/.profile", "~/.tcshrc"],
+      "title": "Shell 启动脚本",
+      "kind": "config",
+      "safety": "precious",
+      "note": "登录与交互 shell 的启动脚本，含环境变量与别名，删除会影响终端，不可清理。"
+    },
+    {
+      "paths": ["~/.zsh_history"],
+      "title": "Shell 命令历史",
+      "kind": "user-data",
+      "safety": "precious",
+      "note": "zsh 历史命令记录。想清空用 history -p，不建议直接删文件。"
+    },
+    {
+      "paths": ["~/.zsh_sessions"],
+      "title": "zsh 会话记录",
+      "kind": "cache",
+      "safety": "regenerable",
+      "note": "每次 shell 会话的临时记录与时间戳，可安全清理，下次开终端重建。"
+    },
+    {
+      "paths": ["~/.gitconfig"],
+      "title": "Git 全局配置",
+      "kind": "config",
+      "safety": "precious",
+      "note": "Git 全局用户名、邮箱与别名等配置，不可清理。"
+    },
+    {
+      "paths": ["~/.viminfo"],
+      "title": "Vim 状态",
+      "kind": "app-data",
+      "safety": "precious",
+      "note": "Vim 的命令历史、搜索记录等状态文件，不是缓存。"
+    },
+    {
+      "paths": ["~/.CFUserTextEncoding"],
+      "title": "系统文本编码",
+      "kind": "config",
+      "safety": "precious",
+      "note": "当前用户的默认文本编码设置，系统使用，不可清理。"
+    },
+    {
+      "paths": ["~/Applications (Parallels)"],
+      "title": "Parallels 应用",
+      "kind": "app",
+      "safety": "precious",
+      "note": "Parallels 为 Windows 虚拟机生成的应用快捷方式，属于虚拟机数据，不可清理。"
+    },
+    {
+      "paths": ["~/.thin"],
+      "title": "thin 数据目录",
+      "kind": "app-data",
+      "safety": "protected",
+      "note": "thin 的隔离区、清理历史与保护名单。删除会丢失可恢复数据，受保护。"
     },
     {
       "paths": ["~/Library"],
