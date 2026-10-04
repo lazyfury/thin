@@ -12,7 +12,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
@@ -21,17 +21,31 @@ use thin_core::finder::{DupeGroup, LargeFile};
 use thin_core::fmt::human;
 use thin_core::model::{CleanItem, Risk};
 use thin_core::progress::Progress;
-use thin_core::{apps, clean, finder, fsutil, probe, protect, rules, scan, status};
+use thin_core::{apps, clean, finder, fsutil, history, probe, protect, rules, scan, status};
 
 use crate::browse::BrowseState;
 use crate::text;
 use crate::toast::{self, Toast};
 use crate::{browse, treemap};
 
-const TABS: [&str; 7] = ["清理", "概览", "大文件", "重复", "应用", "状态", "浏览"];
+const TABS: [&str; 9] = [
+    "清理",
+    "概览",
+    "大文件",
+    "重复",
+    "应用",
+    "状态",
+    "隔离区",
+    "历史",
+    "浏览",
+];
 const N_TABS: usize = TABS.len();
+/// 「隔离区」标签页下标
+const QUARANTINE_TAB: usize = 6;
+/// 「历史」标签页下标
+const HISTORY_TAB: usize = 7;
 /// 「浏览」标签页下标（独立组件 `crate::browse`）
-const BROWSE_TAB: usize = 6;
+const BROWSE_TAB: usize = 8;
 
 // ---------------------------------------------------------------------------
 // 懒加载状态
@@ -88,6 +102,15 @@ impl<T> Load<T> {
 // App
 // ---------------------------------------------------------------------------
 
+/// 待确认的卸载计划（App 本体 + 关联残留）
+struct PendingUninstall {
+    app_name: String,
+    app_path: PathBuf,
+    items: Vec<CleanItem>,
+    approved_bytes: u64,
+    skipped: usize,
+}
+
 struct App {
     root: PathBuf,
     min: u64,
@@ -99,12 +122,18 @@ struct App {
     large: Load<Vec<LargeFile>>,
     dupes: Load<Vec<DupeGroup>>,
     apps: Load<Vec<AppInfo>>,
+    quarantine: Load<Vec<clean::Journal>>,
+    history: Load<Vec<history::Record>>,
     browse: Option<BrowseState>,
     sysinfo: Option<status::SystemInfo>,
     live: Option<status::LiveStats>,
     cpu: status::CpuSampler,
     status_at: Option<std::time::Instant>,
     confirm: bool,
+    /// 永久删除隔离会话的二次确认（会话 id）
+    purge_confirm: Option<String>,
+    /// 卸载 App 的二次确认
+    uninstall_confirm: Option<PendingUninstall>,
     status: Option<Toast>,
     help: bool,
     quit: bool,
@@ -130,12 +159,16 @@ impl App {
             large: Load::Idle,
             dupes: Load::Idle,
             apps: Load::Idle,
+            quarantine: Load::Idle,
+            history: Load::Idle,
             browse: None,
             sysinfo: None,
             live: None,
             cpu: status::CpuSampler::new(),
             status_at: None,
             confirm: false,
+            purge_confirm: None,
+            uninstall_confirm: None,
             status: None,
             help: false,
             quit: false,
@@ -204,7 +237,13 @@ impl App {
                     self.sysinfo = Some(status::collect_info());
                 }
             }
-            6 => {
+            6 if self.quarantine.is_idle() => {
+                self.quarantine = Load::spawn(move |_p| clean::list_journals());
+            }
+            7 if self.history.is_idle() => {
+                self.history = Load::spawn(move |_p| history::load(None));
+            }
+            8 => {
                 if self.browse.is_none() {
                     self.browse = Some(BrowseState::new(root));
                 }
@@ -219,6 +258,8 @@ impl App {
         self.large.poll();
         self.dupes.poll();
         self.apps.poll();
+        self.quarantine.poll();
+        self.history.poll();
         if let Some(b) = &mut self.browse {
             b.poll();
             b.tick();
@@ -236,6 +277,12 @@ impl App {
 
     fn switch_tab(&mut self, tab: usize) {
         self.tab = tab % N_TABS;
+        // 隔离区/历史很轻量，每次进入都重新加载，避免清理后看到旧数据
+        if self.tab == QUARANTINE_TAB {
+            self.quarantine = Load::Idle;
+        } else if self.tab == HISTORY_TAB {
+            self.history = Load::Idle;
+        }
         self.ensure(self.tab);
         if self.tab == 5 {
             self.refresh_status(true);
@@ -271,6 +318,8 @@ impl App {
             2 => self.large.ready().map_or(0, |v| v.len()),
             3 => self.dupes.ready().map_or(0, |v| v.len()),
             4 => self.apps.ready().map_or(0, |v| v.len()),
+            6 => self.quarantine.ready().map_or(0, |v| v.len()),
+            7 => self.history.ready().map_or(0, |v| v.len()),
             _ => 0,
         }
     }
@@ -369,10 +418,173 @@ impl App {
             2 => self.large = Load::Idle,
             3 => self.dupes = Load::Idle,
             4 => self.apps = Load::Idle,
+            6 => self.quarantine = Load::Idle,
+            7 => self.history = Load::Idle,
             _ => {}
         }
         self.ensure(self.tab);
         self.info("正在重新加载…");
+    }
+
+    // -- 隔离区 --
+
+    fn reload_quarantine(&mut self) {
+        self.quarantine = Load::Idle;
+        self.ensure(QUARANTINE_TAB);
+    }
+
+    /// 当前选中的隔离会话 id
+    fn current_session(&self) -> Option<String> {
+        match &self.quarantine {
+            Load::Ready(list) => list.get(self.cursor()).map(|j| j.session.clone()),
+            _ => None,
+        }
+    }
+
+    fn restore_selected(&mut self) {
+        let Some(session) = self.current_session() else {
+            return;
+        };
+        match clean::restore_session(&session) {
+            Ok(rep) => {
+                let mut msg = format!("已恢复 {} 项", rep.restored);
+                if !rep.missing.is_empty() {
+                    msg.push_str(&format!("，缺失 {}", rep.missing.len()));
+                }
+                if !rep.conflicts.is_empty() {
+                    msg.push_str(&format!("，冲突 {}（仍留在隔离区）", rep.conflicts.len()));
+                }
+                self.info(msg);
+                self.reload_quarantine();
+            }
+            Err(e) => self.error(format!("恢复失败：{e:#}")),
+        }
+    }
+
+    fn purge_selected(&mut self) {
+        if let Some(session) = self.current_session() {
+            self.purge_confirm = Some(session);
+        }
+    }
+
+    fn purge_session(&mut self, session: &str) {
+        match clean::purge_session(session) {
+            Ok(freed) => {
+                self.info(format!("已永久删除会话 {session}，释放 {}", human(freed)));
+                self.reload_quarantine();
+            }
+            Err(e) => self.error(format!("永久删除失败：{e:#}")),
+        }
+    }
+
+    // -- 历史 --
+
+    fn reconcile_history(&mut self) {
+        match history::reconcile_with_quarantine() {
+            Ok(n) => {
+                self.info(format!("已从隔离区回填 {n} 条历史记录"));
+                self.history = Load::Idle;
+                self.ensure(HISTORY_TAB);
+            }
+            Err(e) => self.error(format!("回填失败：{e:#}")),
+        }
+    }
+
+    // -- 应用卸载 --
+
+    /// 当前选中的应用
+    fn current_app(&self) -> Option<AppInfo> {
+        match &self.apps {
+            Load::Ready(list) => list.get(self.cursor()).cloned(),
+            _ => None,
+        }
+    }
+
+    /// 组装卸载计划；系统关键 App / 运行中的 App 直接拒绝
+    fn begin_uninstall(&mut self) {
+        let Some(app) = self.current_app() else {
+            return;
+        };
+        if apps::is_system_protected(app.bundle_id.as_deref()) {
+            self.error(format!("{} 是系统关键 App，禁止卸载", app.name));
+            return;
+        }
+        if apps::is_running(&app.path) {
+            self.error(format!("{} 正在运行，请先退出后再卸载", app.name));
+            return;
+        }
+        let mut items: Vec<CleanItem> = vec![CleanItem::synthetic(
+            app.path.clone(),
+            app.size,
+            "app",
+            &app.name,
+            Risk::Confirm,
+        )];
+        for l in &app.leftovers {
+            let mut it = CleanItem::synthetic(
+                l.path.clone(),
+                l.size,
+                "app-leftover",
+                &format!("{} 残留", app.name),
+                Risk::Confirm,
+            );
+            // 系统级残留（/Library 等）需 root，交给安全门跳过
+            it.sudo = l.sudo;
+            items.push(it);
+        }
+        let plan = clean::plan(&items);
+        if plan.approved.is_empty() {
+            self.warn(format!("{} 没有可通过安全门的项", app.name));
+            return;
+        }
+        self.uninstall_confirm = Some(PendingUninstall {
+            app_name: app.name.clone(),
+            app_path: app.path.clone(),
+            items,
+            approved_bytes: plan.approved_bytes(),
+            skipped: plan.skipped.len(),
+        });
+    }
+
+    fn execute_uninstall(&mut self, plan: PendingUninstall) {
+        // 确认期间 App 可能已被启动
+        if apps::is_running(&plan.app_path) {
+            self.error(format!("{} 正在运行，已取消卸载", plan.app_name));
+            return;
+        }
+        match clean::quarantine(&plan.items, false) {
+            Ok(j) => {
+                // 与 CLI 一致：记录历史
+                let hist_err = {
+                    let mut rec = history::Record::new("uninstall");
+                    rec.scanned = plan.items.len();
+                    rec.approved = j.entries.len();
+                    rec.session = Some(j.session.clone());
+                    rec.moved = j.entries.len();
+                    rec.moved_bytes = j.total_size();
+                    rec.skipped = j.skipped.len();
+                    history::append(&rec).err()
+                };
+                let mut msg = format!(
+                    "已卸载 {}：移入隔离区 {} 项 · {}",
+                    plan.app_name,
+                    j.entries.len(),
+                    human(j.total_size())
+                );
+                if !j.skipped.is_empty() {
+                    msg.push_str(&format!("，跳过 {} 项", j.skipped.len()));
+                }
+                if let Some(e) = hist_err {
+                    msg.push_str(&format!("（历史写入失败：{e:#}）"));
+                }
+                self.info(msg);
+                self.apps = Load::Idle;
+                self.ensure(4);
+                self.quarantine = Load::Idle;
+                self.history = Load::Idle;
+            }
+            Err(e) => self.error(format!("卸载失败：{e:#}")),
+        }
     }
 
     fn apply(&mut self) {
@@ -395,6 +607,17 @@ impl App {
 
         match clean::quarantine(&chosen, false) {
             Ok(j) => {
+                // 与 CLI 一致：把本次清理写入历史
+                let hist_err = {
+                    let mut rec = history::Record::new("manual");
+                    rec.scanned = chosen.len();
+                    rec.approved = j.entries.len();
+                    rec.session = Some(j.session.clone());
+                    rec.moved = j.entries.len();
+                    rec.moved_bytes = j.total_size();
+                    rec.skipped = j.skipped.len();
+                    history::append(&rec).err()
+                };
                 let moved: std::collections::HashSet<PathBuf> =
                     j.entries.iter().map(|e| e.original.clone()).collect();
                 if let Load::Ready(items) = std::mem::replace(&mut self.clean, Load::Idle) {
@@ -425,6 +648,9 @@ impl App {
                 if !j.skipped.is_empty() {
                     msg.push_str(&format!("  跳过 {} 项", j.skipped.len()));
                 }
+                if let Some(e) = hist_err {
+                    msg.push_str(&format!("  （历史写入失败：{e:#}）"));
+                }
                 self.info(msg);
             }
             Err(e) => self.error(format!("清理失败：{e:#}")),
@@ -451,6 +677,27 @@ impl App {
             }
             return;
         }
+        if let Some(session) = self.purge_confirm.clone() {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    self.purge_confirm = None;
+                    self.purge_session(&session);
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.purge_confirm = None,
+                _ => {}
+            }
+            return;
+        }
+        if let Some(plan) = self.uninstall_confirm.take() {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    self.execute_uninstall(plan)
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {}
+                _ => self.uninstall_confirm = Some(plan),
+            }
+            return;
+        }
 
         if self.tab == BROWSE_TAB {
             // 浏览页处于输入/模态状态时，普通按键（含 Tab/数字）应交给组件，
@@ -466,7 +713,7 @@ impl App {
                         self.next_tab(-1);
                         return;
                     }
-                    KeyCode::Char(c @ '1'..='7') => {
+                    KeyCode::Char(c @ '1'..='9') => {
                         self.switch_tab((c as u8 - b'1') as usize);
                         return;
                     }
@@ -493,7 +740,7 @@ impl App {
             }
             KeyCode::Tab | KeyCode::Char('l') => self.next_tab(1),
             KeyCode::BackTab | KeyCode::Char('h') => self.next_tab(-1),
-            KeyCode::Char(c @ '1'..='7') => self.switch_tab((c as u8 - b'1') as usize),
+            KeyCode::Char(c @ '1'..='9') => self.switch_tab((c as u8 - b'1') as usize),
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1),
             KeyCode::Char('g') | KeyCode::Home => self.list_states[self.tab].select(Some(0)),
@@ -515,6 +762,10 @@ impl App {
                     self.warn("未勾选任何清理项");
                 }
             }
+            KeyCode::Enter if self.tab == QUARANTINE_TAB => self.restore_selected(),
+            KeyCode::Char('p') if self.tab == QUARANTINE_TAB => self.purge_selected(),
+            KeyCode::Char('c') if self.tab == HISTORY_TAB => self.reconcile_history(),
+            KeyCode::Char('u') if self.tab == 4 => self.begin_uninstall(),
             KeyCode::Char('r') => self.reload_current(),
             KeyCode::Char('?') => self.help = !self.help,
             _ => {}
@@ -599,6 +850,16 @@ fn home_prefix() -> String {
         .unwrap_or(raw)
 }
 
+/// 把家目录前缀显示为 `~`
+fn shorten(path: &Path, home: &str) -> String {
+    let s = path.display().to_string();
+    if !home.is_empty() && s.starts_with(home) {
+        s.replacen(home, "~", 1)
+    } else {
+        s
+    }
+}
+
 fn ui(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -617,6 +878,12 @@ fn ui(frame: &mut Frame, app: &mut App) {
 
     if app.confirm {
         render_confirm(frame, app);
+    }
+    if let Some(session) = app.purge_confirm.clone() {
+        render_purge_confirm(frame, app, &session);
+    }
+    if let Some(plan) = &app.uninstall_confirm {
+        render_uninstall_confirm(frame, plan);
     }
 }
 
@@ -685,8 +952,211 @@ fn render_body(frame: &mut Frame, app: &mut App, area: Rect) {
         3 => render_dupes(frame, app, area),
         4 => render_apps(frame, app, area),
         5 => render_status(frame, app, area),
-        6 => render_browse(frame, app, area),
+        6 => render_quarantine(frame, app, area),
+        7 => render_history(frame, app, area),
+        8 => render_browse(frame, app, area),
         _ => {}
+    }
+}
+
+/// 隔离区：会话列表 + 明细
+fn render_quarantine(frame: &mut Frame, app: &mut App, area: Rect) {
+    let home = home_prefix();
+    let parts = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(52), Constraint::Percentage(48)])
+        .split(area);
+
+    match &app.quarantine {
+        Load::Ready(list) => {
+            if list.is_empty() {
+                state_msg(frame, area, "隔离区为空（清理后可在这里恢复）");
+                return;
+            }
+            let items: Vec<ListItem> = list
+                .iter()
+                .map(|j| {
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!("{:>9} ", human(j.total_size())),
+                            Style::default().fg(Color::White),
+                        ),
+                        Span::styled(
+                            format!("{:>3} 项  ", j.entries.len()),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                        Span::raw(history::format_ts(j.created_at)),
+                        Span::styled(
+                            format!("  {}", j.session),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]))
+                })
+                .collect();
+            let total: u64 = list.iter().map(|j| j.total_size()).sum();
+            let widget = List::new(items)
+                .block(Block::default().borders(Borders::ALL).title(format!(
+                    "隔离会话 · {} 个 · {}",
+                    list.len(),
+                    human(total)
+                )))
+                .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                .highlight_symbol("› ");
+            frame.render_stateful_widget(widget, parts[0], &mut app.list_states[app.tab]);
+
+            let cur = app.cursor();
+            let mut text: Vec<Line> = Vec::new();
+            if let Some(j) = list.get(cur) {
+                text.push(Line::from(Span::styled(
+                    format!("会话 {}", j.session),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                text.push(Line::from(format!(
+                    "创建 {}",
+                    history::format_ts(j.created_at)
+                )));
+                text.push(Line::from(format!(
+                    "共 {} 项 · {}",
+                    j.entries.len(),
+                    human(j.total_size())
+                )));
+                text.push(Line::from(""));
+                text.push(Line::from(Span::styled(
+                    "条目",
+                    Style::default().fg(Color::Cyan),
+                )));
+                for e in &j.entries {
+                    text.push(Line::from(vec![
+                        Span::styled(
+                            format!("{:>9} ", human(e.size)),
+                            Style::default().fg(Color::White),
+                        ),
+                        Span::raw(shorten(&e.original, &home)),
+                    ]));
+                }
+                if !j.skipped.is_empty() {
+                    text.push(Line::from(""));
+                    text.push(Line::from(Span::styled(
+                        "跳过",
+                        Style::default().fg(Color::Yellow),
+                    )));
+                    for s in &j.skipped {
+                        text.push(Line::from(format!(
+                            "{} — {}",
+                            shorten(&s.path, &home),
+                            s.reason
+                        )));
+                    }
+                }
+            } else {
+                text.push(Line::from("（无）"));
+            }
+            frame.render_widget(
+                Paragraph::new(text)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("详情 · Enter 恢复 · p 永久删除"),
+                    )
+                    .wrap(Wrap { trim: true }),
+                parts[1],
+            );
+        }
+        Load::Loading { progress, .. } => {
+            render_loading(frame, area, Some(progress), app.tick, "读取隔离区…")
+        }
+        Load::Failed(e) => state_msg(frame, area, e),
+        Load::Idle => state_msg(frame, area, "等待加载"),
+    }
+}
+
+/// 历史：记录列表 + 明细
+fn render_history(frame: &mut Frame, app: &mut App, area: Rect) {
+    let parts = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
+        .split(area);
+
+    match &app.history {
+        Load::Ready(records) => {
+            if records.is_empty() {
+                state_msg(frame, area, "暂无历史记录");
+                return;
+            }
+            let items: Vec<ListItem> = records
+                .iter()
+                .map(|r| {
+                    let preset = r.preset.clone().unwrap_or_else(|| "-".into());
+                    ListItem::new(Line::from(vec![
+                        Span::raw(format!("{}  ", history::format_ts(r.timestamp))),
+                        Span::styled(
+                            text::pad_end(&r.trigger, 9),
+                            Style::default().fg(Color::Cyan),
+                        ),
+                        Span::styled(
+                            format!("{:>9} ", human(r.moved_bytes)),
+                            Style::default().fg(Color::White),
+                        ),
+                        Span::styled(
+                            format!("{} 项", r.moved),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                        Span::raw(format!("  {preset}")),
+                    ]))
+                })
+                .collect();
+            let widget = List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!("历史 · {} 条", records.len())),
+                )
+                .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                .highlight_symbol("› ");
+            frame.render_stateful_widget(widget, parts[0], &mut app.list_states[app.tab]);
+
+            let cur = app.cursor();
+            let mut text: Vec<Line> = Vec::new();
+            if let Some(r) = records.get(cur) {
+                text.push(field("时间", &history::format_ts(r.timestamp)));
+                text.push(field("触发", &r.trigger));
+                text.push(field("预设", r.preset.as_deref().unwrap_or("-")));
+                if let Some(s) = &r.session {
+                    text.push(field("会话", s));
+                }
+                text.push(Line::from(""));
+                text.push(field("扫描", &format!("{} 项", r.scanned)));
+                text.push(field("通过", &format!("{} 项", r.approved)));
+                text.push(field(
+                    "移入",
+                    &format!("{} 项 · {}", r.moved, human(r.moved_bytes)),
+                ));
+                text.push(field("跳过", &format!("{} 项", r.skipped)));
+                if r.purged_sessions > 0 {
+                    text.push(field(
+                        "清理旧会话",
+                        &format!("{} 个 · {}", r.purged_sessions, human(r.purged_bytes)),
+                    ));
+                }
+            } else {
+                text.push(Line::from("（无）"));
+            }
+            frame.render_widget(
+                Paragraph::new(text)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .title("详情 · c 回填隔离区遗漏记录"),
+                    )
+                    .wrap(Wrap { trim: true }),
+                parts[1],
+            );
+        }
+        Load::Loading { progress, .. } => {
+            render_loading(frame, area, Some(progress), app.tick, "读取历史…")
+        }
+        Load::Failed(e) => state_msg(frame, area, e),
+        Load::Idle => state_msg(frame, area, "等待加载"),
     }
 }
 
@@ -1258,7 +1728,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.help {
         (
-            " 1-7/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · r 重载 · c 清理 · Esc 关闭提示/退出 · q 退出"
+            " 1-9/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · r 重载 · c 清理 · Esc 关闭提示/退出 · q 退出"
                 .to_string(),
             toast::bar_style(),
         )
@@ -1267,7 +1737,10 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             0 => {
                 " Tab 切页 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · c 清理 · r 重载 · ? 帮助 · q 退出"
             }
-            _ => " 1-7/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
+            QUARANTINE_TAB => " ↑↓/jk 移动 · Enter 恢复 · p 永久删除 · r 重载 · ? 帮助 · q 退出",
+            HISTORY_TAB => " ↑↓/jk 移动 · c 回填隔离区遗漏记录 · r 重载 · ? 帮助 · q 退出",
+            4 => " ↑↓/jk 移动 · u 卸载 · r 重载 · ? 帮助 · q 退出",
+            _ => " 1-9/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
         };
         (hint.to_string(), toast::bar_style())
     };
@@ -1275,7 +1748,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_confirm(frame: &mut Frame, app: &App) {
-    let area = centered_rect(56, 22, frame.area());
+    let area = centered_rect_fixed(60, 11, frame.area());
     frame.render_widget(Clear, area);
     let text = vec![
         Line::from(""),
@@ -1302,6 +1775,92 @@ fn render_confirm(frame: &mut Frame, app: &App) {
     frame.render_widget(popup, area);
 }
 
+fn render_purge_confirm(frame: &mut Frame, app: &App, session: &str) {
+    let area = centered_rect_fixed(60, 11, frame.area());
+    frame.render_widget(Clear, area);
+    let (n, size) = match &app.quarantine {
+        Load::Ready(list) => list
+            .iter()
+            .find(|j| j.session == session)
+            .map(|j| (j.entries.len(), j.total_size()))
+            .unwrap_or((0, 0)),
+        _ => (0, 0),
+    };
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "永久删除该隔离会话？",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!("会话 {session} · {n} 项 · {}", human(size))),
+        Line::from(""),
+        Line::from(Span::styled(
+            "永久删除后不可恢复。",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[y] 永久删除", Style::default().fg(Color::Red)),
+            Span::raw("    "),
+            Span::styled("[n / Esc] 取消", Style::default().fg(Color::Green)),
+        ]),
+    ];
+    let popup = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title("确认永久删除"),
+        )
+        .alignment(Alignment::Center);
+    frame.render_widget(popup, area);
+}
+
+fn render_uninstall_confirm(frame: &mut Frame, plan: &PendingUninstall) {
+    let area = centered_rect_fixed(66, 12, frame.area());
+    frame.render_widget(Clear, area);
+    let mut text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("卸载 {}？", plan.app_name),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(format!(
+            "将 {} 项（App 本体 + 关联残留）移入隔离区",
+            plan.items.len()
+        )),
+        Line::from(format!("可释放 {}", human(plan.approved_bytes))),
+    ];
+    if plan.skipped > 0 {
+        text.push(Line::from(Span::styled(
+            format!("{} 项需 sudo 或受保护，将跳过", plan.skipped),
+            Style::default().fg(Color::Yellow),
+        )));
+    } else {
+        text.push(Line::from(""));
+    }
+    text.push(Line::from(""));
+    text.push(Line::from(Span::styled(
+        "移入后可随时恢复；彻底删除用 thin quarantine purge",
+        Style::default().fg(Color::DarkGray),
+    )));
+    text.push(Line::from(""));
+    text.push(Line::from(vec![
+        Span::styled("[y] 卸载", Style::default().fg(Color::Red)),
+        Span::raw("    "),
+        Span::styled("[n / Esc] 取消", Style::default().fg(Color::Green)),
+    ]));
+    let popup = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title("确认卸载"),
+        )
+        .alignment(Alignment::Center);
+    frame.render_widget(popup, area);
+}
+
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
@@ -1321,6 +1880,257 @@ fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
         .split(vertical[1])[1]
 }
 
+/// 固定尺寸的居中矩形（避免内容被百分比高度截断）
+fn centered_rect_fixed(width: u16, height: u16, r: Rect) -> Rect {
+    let vertical = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(r.height.saturating_sub(height) / 2),
+            Constraint::Length(height.min(r.height)),
+            Constraint::Min(0),
+        ])
+        .split(r);
+    Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(r.width.saturating_sub(width) / 2),
+            Constraint::Length(width.min(r.width)),
+            Constraint::Min(0),
+        ])
+        .split(vertical[1])[1]
+}
+
 fn truncate(s: &str, width: usize) -> String {
     text::truncate(s, width)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
+
+    fn test_app() -> App {
+        App::new(PathBuf::from("/"), 0)
+    }
+
+    /// 把 TestBackend 的缓冲区按行拼成文本（跳过宽字符占用的后续单元格）
+    fn buffer_text(buf: &Buffer) -> String {
+        let area = buf.area;
+        let mut s = String::new();
+        for y in 0..area.height {
+            let mut skip = 0usize;
+            for x in 0..area.width {
+                if skip > 0 {
+                    skip -= 1;
+                    continue;
+                }
+                let sym = buf.cell((x, y)).map(|c| c.symbol()).unwrap_or(" ");
+                s.push_str(sym);
+                skip = text::width(sym).saturating_sub(1);
+            }
+            s.push('\n');
+        }
+        s
+    }
+
+    /// 渲染一帧并返回可断言的文本（不 spawn 线程、不碰终端）
+    fn render(app: &mut App, w: u16, h: u16) -> String {
+        let backend = TestBackend::new(w, h);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|f| ui(f, app)).unwrap();
+        buffer_text(terminal.backend().buffer())
+    }
+
+    fn journal(session: &str, size: u64) -> clean::Journal {
+        clean::Journal {
+            session: session.to_string(),
+            created_at: 1_700_000_000,
+            dry_run: false,
+            entries: vec![clean::JournalEntry {
+                index: 0,
+                original: PathBuf::from("/tmp/foo/cache"),
+                stored: PathBuf::from("/tmp/quarantine/foo"),
+                size,
+                rule_id: "test".into(),
+                name: "测试缓存".into(),
+                risk: Risk::Safe,
+            }],
+            skipped: vec![],
+        }
+    }
+
+    fn history_record() -> history::Record {
+        let mut r = history::Record::new("manual");
+        r.session = Some("20260101-000000".into());
+        r.scanned = 3;
+        r.approved = 2;
+        r.moved = 2;
+        r.moved_bytes = 2048;
+        r.skipped = 1;
+        r
+    }
+
+    fn app_info(name: &str, bundle: Option<&str>) -> AppInfo {
+        AppInfo {
+            name: name.into(),
+            path: PathBuf::from(format!("/Applications/{name}.app")),
+            bundle_id: bundle.map(str::to_string),
+            size: 1024,
+            leftovers: vec![],
+        }
+    }
+
+    fn clean_item(path: &str, size: u64) -> CleanItem {
+        CleanItem::synthetic(PathBuf::from(path), size, "test", "测试项", Risk::Safe)
+    }
+
+    #[test]
+    fn renders_every_tab_without_panic() {
+        let mut app = test_app();
+        for tab in 0..N_TABS {
+            app.tab = tab;
+            // 直接塞 Ready 空数据，避免 ensure 启动线程
+            app.clean = Load::Ready(vec![]);
+            app.overview = Load::Ready(vec![]);
+            app.large = Load::Ready(vec![]);
+            app.dupes = Load::Ready(vec![]);
+            app.apps = Load::Ready(vec![]);
+            app.quarantine = Load::Ready(vec![]);
+            app.history = Load::Ready(vec![]);
+            assert!(!render(&mut app, 100, 30).is_empty());
+        }
+        // 小窗口也不能 panic
+        app.tab = QUARANTINE_TAB;
+        let _ = render(&mut app, 40, 12);
+    }
+
+    #[test]
+    fn tab_bar_lists_quarantine_and_history() {
+        let mut app = test_app();
+        let text = render(&mut app, 120, 30);
+        assert!(text.contains("隔离区"), "{text}");
+        assert!(text.contains("历史"), "{text}");
+        assert!(text.contains("浏览"), "{text}");
+    }
+
+    #[test]
+    fn quarantine_tab_lists_sessions_and_actions() {
+        let mut app = test_app();
+        app.tab = QUARANTINE_TAB;
+        app.quarantine = Load::Ready(vec![journal("20260101-000000", 1024 * 1024)]);
+        let text = render(&mut app, 120, 30);
+        assert!(text.contains("隔离会话"), "{text}");
+        assert!(text.contains("20260101-000000"), "{text}");
+        assert!(text.contains("Enter 恢复"), "{text}");
+        assert!(text.contains("p 永久删除"), "{text}");
+    }
+
+    #[test]
+    fn quarantine_empty_state() {
+        let mut app = test_app();
+        app.tab = QUARANTINE_TAB;
+        app.quarantine = Load::Ready(vec![]);
+        assert!(render(&mut app, 100, 24).contains("隔离区为空"));
+    }
+
+    #[test]
+    fn history_tab_lists_records() {
+        let mut app = test_app();
+        app.tab = HISTORY_TAB;
+        app.history = Load::Ready(vec![history_record()]);
+        let text = render(&mut app, 120, 30);
+        assert!(text.contains("历史 ·"), "{text}");
+        assert!(text.contains("manual"), "{text}");
+        assert!(text.contains("20260101-000000"), "{text}");
+    }
+
+    #[test]
+    fn confirm_dialogs_show_action_buttons() {
+        // 清理确认
+        let mut app = test_app();
+        app.clean = Load::Ready(vec![clean_item("/nonexistent/thin-test-clean", 1024)]);
+        app.selected = vec![true];
+        app.confirm = true;
+        let text = render(&mut app, 100, 30);
+        assert!(
+            text.contains("确认清理") && text.contains("[y] 确认"),
+            "{text}"
+        );
+        assert!(text.contains("[n / Esc] 取消"), "{text}");
+
+        // 永久删除隔离会话
+        let mut app = test_app();
+        app.tab = QUARANTINE_TAB;
+        app.quarantine = Load::Ready(vec![journal("sess-1", 100)]);
+        app.purge_confirm = Some("sess-1".into());
+        let text = render(&mut app, 100, 30);
+        assert!(
+            text.contains("确认永久删除") && text.contains("[y] 永久删除"),
+            "{text}"
+        );
+        assert!(text.contains("[n / Esc] 取消"), "{text}");
+
+        // 卸载 App
+        let mut app = test_app();
+        app.tab = 4;
+        app.apps = Load::Ready(vec![app_info("Foo", Some("com.example.foo"))]);
+        app.uninstall_confirm = Some(PendingUninstall {
+            app_name: "Foo".into(),
+            app_path: PathBuf::from("/Applications/Foo.app"),
+            items: vec![clean_item("/Applications/Foo.app", 2048)],
+            approved_bytes: 2048,
+            skipped: 1,
+        });
+        let text = render(&mut app, 100, 30);
+        assert!(
+            text.contains("确认卸载") && text.contains("[y] 卸载"),
+            "{text}"
+        );
+        assert!(text.contains("[n / Esc] 取消"), "{text}");
+    }
+
+    #[test]
+    fn apps_tab_hint_mentions_uninstall() {
+        let mut app = test_app();
+        app.tab = 4;
+        app.apps = Load::Ready(vec![app_info("Foo", Some("com.example.foo"))]);
+        assert!(render(&mut app, 120, 30).contains("u 卸载"));
+    }
+
+    #[test]
+    fn p_opens_purge_confirm_and_esc_cancels() {
+        let mut app = test_app();
+        app.tab = QUARANTINE_TAB;
+        app.quarantine = Load::Ready(vec![journal("sess-1", 10)]);
+        app.on_key(KeyEvent::from(KeyCode::Char('p')));
+        assert_eq!(app.purge_confirm.as_deref(), Some("sess-1"));
+        app.on_key(KeyEvent::from(KeyCode::Esc));
+        assert!(app.purge_confirm.is_none());
+    }
+
+    #[test]
+    fn uninstall_refuses_system_app() {
+        let mut app = test_app();
+        app.tab = 4;
+        app.apps = Load::Ready(vec![app_info("Safari", Some("com.apple.Safari"))]);
+        app.on_key(KeyEvent::from(KeyCode::Char('u')));
+        assert!(app.uninstall_confirm.is_none());
+        let t = app.status.as_ref().expect("应有提示");
+        assert!(t.text().contains("系统关键"), "{}", t.text());
+    }
+
+    #[test]
+    fn n_key_cancels_uninstall_confirm() {
+        let mut app = test_app();
+        app.tab = 4;
+        app.uninstall_confirm = Some(PendingUninstall {
+            app_name: "Foo".into(),
+            app_path: PathBuf::from("/Applications/Foo.app"),
+            items: vec![],
+            approved_bytes: 0,
+            skipped: 0,
+        });
+        app.on_key(KeyEvent::from(KeyCode::Char('n')));
+        assert!(app.uninstall_confirm.is_none());
+    }
 }

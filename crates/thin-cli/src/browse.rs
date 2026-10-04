@@ -20,6 +20,7 @@ use thin_core::catalog::Safety;
 use thin_core::clean;
 use thin_core::fmt::human;
 use thin_core::fsutil::{self, EntryKind};
+use thin_core::history;
 use thin_core::model::{Category, CleanItem, Explain, Risk};
 use thin_core::progress::{Progress, ProgressSnapshot};
 use thin_core::recognize::{Recognition, Recognizer, Source};
@@ -375,6 +376,15 @@ impl BrowseState {
                 self.warn(format!("未清理：{reason}"));
             }
             Ok(journal) => {
+                // 与 CLI 一致：记录历史
+                let mut rec = history::Record::new("browse");
+                rec.scanned = 1;
+                rec.approved = journal.entries.len();
+                rec.session = Some(journal.session.clone());
+                rec.moved = journal.entries.len();
+                rec.moved_bytes = journal.total_size();
+                rec.skipped = journal.skipped.len();
+                let _ = history::append(&rec);
                 self.info(format!(
                     "已移入隔离区；可恢复：thin quarantine restore {}",
                     journal.session
