@@ -15,7 +15,7 @@ use thin_core::fmt::human;
 use thin_core::model::{Category, Risk};
 use thin_core::{
     CleanItem, Rule, apps, clean, discover, finder, fsutil, history, preset, probe, protect, rules,
-    scan, schedule,
+    scan, schedule, tree,
 };
 
 #[derive(Parser)]
@@ -123,6 +123,10 @@ struct ScanArgs {
     /// 同时列出需 sudo / 受系统保护、thin 不会处理的项（默认隐藏）
     #[arg(long)]
     manual: bool,
+
+    /// 以「按文件夹合并」的树形展示（只读）
+    #[arg(long)]
+    tree: bool,
 }
 
 #[derive(clap::Args)]
@@ -340,6 +344,10 @@ struct CleanArgs {
     /// 同时预览需 sudo / 受系统保护、thin 不会处理的项（默认隐藏）
     #[arg(long)]
     manual: bool,
+
+    /// 以「按文件夹合并」的树形预览清理项
+    #[arg(long)]
+    tree: bool,
 }
 
 #[derive(clap::Args)]
@@ -623,7 +631,11 @@ fn cmd_scan(args: ScanArgs) -> Result<()> {
             .collect()
     };
 
-    report::print_table(&visible);
+    if args.tree {
+        report::print_tree(&tree::build_forest(&visible, home_dir().as_deref()));
+    } else {
+        report::print_table(&visible);
+    }
     report::print_summary(&visible);
     if let Some(v) = &volume {
         println!(
@@ -981,7 +993,26 @@ fn select_scoped(
     Ok(selected)
 }
 
-fn print_plan(plan: &clean::Plan) {
+fn print_plan(plan: &clean::Plan, tree: bool) {
+    if tree {
+        report::print_tree(&tree::build_forest(&plan.approved, home_dir().as_deref()));
+        let total = plan.approved_bytes();
+        println!(
+            "\n共 {} 项，预计可释放 \x1b[1m{}\x1b[0m",
+            plan.approved.len(),
+            human(total)
+        );
+        if !plan.skipped.is_empty() {
+            println!(
+                "\n\x1b[33m安全门跳过 {} 项（不计入可释放）:\x1b[0m",
+                plan.skipped.len()
+            );
+            for s in &plan.skipped {
+                println!("  - {}：{}", shorten(&s.path), s.reason);
+            }
+        }
+        return;
+    }
     println!("\x1b[1m清理计划\x1b[0m");
     println!(
         "\x1b[90m以下为官方推荐的清理方式；thin 统一将目标移入隔离区（可恢复），不会执行这些命令。\x1b[0m\n"
@@ -1238,7 +1269,7 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
     }
 
     if !apply {
-        print_plan(&shown_plan);
+        print_plan(&shown_plan, args.tree);
         println!("\n（dry-run，未执行任何操作。加 --apply 移入隔离区，可恢复）");
         return Ok(());
     }
@@ -1394,6 +1425,15 @@ fn cmd_quarantine(args: QuarantineArgs) -> Result<()> {
 
 fn expand_root(s: &str) -> PathBuf {
     fsutil::expand(s).unwrap_or_else(|| PathBuf::from(s))
+}
+
+/// 规范化的家目录（解析 `/var` → `/private/var` 等符号链接），供树形视图裁剪前缀。
+fn home_dir() -> Option<PathBuf> {
+    let raw = std::env::var("HOME").ok()?;
+    if raw.is_empty() {
+        return None;
+    }
+    Some(fsutil::canonicalize_or(Path::new(&raw)))
 }
 
 /// 把家目录前缀显示为 ~
@@ -2074,7 +2114,7 @@ fn run_preset(preset_id: &str, trigger: &str, dry_run: bool) -> Result<()> {
     }
 
     if dry_run {
-        print_plan(&plan);
+        print_plan(&plan, false);
         println!("\n（dry-run，未 purge / 未隔离 / 未写历史。去掉 --dry-run 即执行）");
         return Ok(());
     }

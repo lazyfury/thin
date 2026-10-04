@@ -20,7 +20,8 @@ use thin_core::apps::AppInfo;
 use thin_core::fmt::human;
 use thin_core::model::{CleanItem, Risk};
 use thin_core::progress::Progress;
-use thin_core::{apps, clean, history, probe, protect, rules, scan};
+use thin_core::tree::TreeNode;
+use thin_core::{apps, clean, fsutil, history, probe, protect, rules, scan, tree};
 
 use crate::browse::{self, BrowseState};
 use crate::text;
@@ -103,6 +104,81 @@ struct PendingUninstall {
     skipped: usize,
 }
 
+/// 树形视图中已展开的一行（由 [`TreeNode`] 扁平化而来，便于用列表光标导航）。
+#[derive(Clone)]
+struct TreeRow {
+    /// 节点显示名（合并的单链用 `/` 连接）
+    name: String,
+    /// 规则名（目录分组节点为 `None`）
+    rule_name: Option<String>,
+    /// 去重后的可释放量
+    size: u64,
+    /// 子树中清理项数量
+    count: usize,
+    /// 节点自身命中的清理项下标
+    item: Option<usize>,
+    /// 子树中所有清理项下标（用于按文件夹整组勾选）
+    item_indices: Vec<usize>,
+    /// 每层的「是否最后一个兄弟」标记，用于画连接线
+    is_last: Vec<bool>,
+    risk: Option<Risk>,
+    protected: bool,
+    sudo: bool,
+    /// 位于某个命中项之下，已被父项覆盖
+    nested: bool,
+}
+
+impl TreeRow {
+    fn is_dir(&self) -> bool {
+        self.item.is_none()
+    }
+}
+
+fn flatten_forest(forest: &[TreeNode], out: &mut Vec<TreeRow>) {
+    let n = forest.len();
+    for (i, node) in forest.iter().enumerate() {
+        flatten_node(node, &[], i + 1 == n, out);
+    }
+}
+
+fn flatten_node(node: &TreeNode, ancestors: &[bool], is_last: bool, out: &mut Vec<TreeRow>) {
+    let mut flags = ancestors.to_vec();
+    flags.push(is_last);
+    let mut indices = Vec::new();
+    node.item_indices(&mut indices);
+    out.push(TreeRow {
+        name: node.name.clone(),
+        rule_name: node.item.as_ref().map(|i| i.name.clone()),
+        size: node.size,
+        count: node.count,
+        item: node.item_index,
+        item_indices: indices,
+        is_last: flags.clone(),
+        risk: node.item.as_ref().map(|i| i.risk),
+        protected: node.item.as_ref().map(|i| i.protected).unwrap_or(false),
+        sudo: node.item.as_ref().map(|i| i.sudo).unwrap_or(false),
+        nested: node.nested,
+    });
+    let n = node.children.len();
+    for (i, c) in node.children.iter().enumerate() {
+        flatten_node(c, &flags, i + 1 == n, out);
+    }
+}
+
+/// 根据「是否最后一个兄弟」标记生成树形连接线前缀。
+fn tree_prefix(flags: &[bool]) -> String {
+    let mut s = String::new();
+    let last = flags.len().saturating_sub(1);
+    for (i, is_last) in flags.iter().enumerate() {
+        if i == last {
+            s.push_str(if *is_last { "└─ " } else { "├─ " });
+        } else {
+            s.push_str(if *is_last { "   " } else { "│  " });
+        }
+    }
+    s
+}
+
 struct App {
     root: PathBuf,
     min: u64,
@@ -110,6 +186,10 @@ struct App {
     list_states: Vec<ListState>,
     clean: Load<Vec<CleanItem>>,
     selected: Vec<bool>,
+    /// 清理页以「按文件夹合并」的树形展示（键 t 切换）
+    tree_view: bool,
+    /// 树形视图扁平化后的行缓存
+    clean_rows: Vec<TreeRow>,
     /// 清理页是否显示「需 sudo / 受系统保护」的项（默认隐藏，键 m 切换）
     show_manual: bool,
     apps: Load<Vec<AppInfo>>,
@@ -142,6 +222,8 @@ impl App {
             list_states,
             clean: Load::Idle,
             selected: Vec::new(),
+            tree_view: true,
+            clean_rows: Vec::new(),
             show_manual: false,
             apps: Load::Idle,
             quarantine: Load::Idle,
@@ -218,15 +300,62 @@ impl App {
             b.poll();
             b.tick();
         }
-        if let Load::Ready(items) = &self.clean
-            && self.selected.len() != items.len()
-        {
-            self.selected = items
-                .iter()
-                .map(|i| i.risk == Risk::Safe && !i.protected)
-                .collect();
+        // 清理项变化时重建选择状态与树形行缓存。
+        // 注意：`items` 借用 self.clean，重建需先结束借用，故用标志位延后。
+        let rebuild = match &self.clean {
+            Load::Ready(items) => {
+                if self.selected.len() != items.len() {
+                    self.selected = items
+                        .iter()
+                        .map(|i| i.risk == Risk::Safe && !i.protected)
+                        .collect();
+                    true
+                } else {
+                    // 重载为空列表时同样要清掉旧行缓存
+                    items.is_empty() && !self.clean_rows.is_empty()
+                }
+            }
+            _ => false,
+        };
+        if rebuild {
+            self.rebuild_clean_rows();
         }
         self.expire_status();
+    }
+
+    /// 依据当前清理项重建树形扁平行缓存（仅在 items 变化时调用）。
+    fn rebuild_clean_rows(&mut self) {
+        let rows = match &self.clean {
+            Load::Ready(items) => {
+                let home = home_prefix();
+                let home_path = (!home.is_empty()).then(|| PathBuf::from(home));
+                let forest = tree::build_forest(items, home_path.as_deref());
+                let mut rows = Vec::new();
+                flatten_forest(&forest, &mut rows);
+                rows
+            }
+            _ => Vec::new(),
+        };
+        self.clean_rows = rows;
+    }
+
+    /// 某个清理项是否在保护名单（用于树形整组勾选时排除）。
+    fn item_protected(&self, i: usize) -> bool {
+        match &self.clean {
+            Load::Ready(items) => items.get(i).map(|it| it.protected).unwrap_or(false),
+            _ => false,
+        }
+    }
+
+    /// 切换树形 / 平铺视图，并把光标重置到首行。
+    fn toggle_tree_view(&mut self) {
+        self.tree_view = !self.tree_view;
+        self.list_states[CLEAN_TAB].select(Some(0));
+        if self.tree_view {
+            self.info("已切换为按文件夹合并的树形视图（t 切回平铺）");
+        } else {
+            self.info("已切换为平铺列表（t 切换树形）");
+        }
     }
 
     fn switch_tab(&mut self, tab: usize) {
@@ -248,6 +377,7 @@ impl App {
 
     fn current_len(&self) -> usize {
         match self.tab {
+            0 if self.tree_view => self.clean_rows.len(),
             0 => self.clean.ready().map_or(0, |v| v.len()),
             APPS_TAB => self.apps.ready().map_or(0, |v| v.len()),
             QUARANTINE_TAB => self.quarantine.ready().map_or(0, |v| v.len()),
@@ -303,6 +433,32 @@ impl App {
     }
 
     fn toggle(&mut self) {
+        if self.tree_view {
+            let row = self.clean_rows.get(self.cursor()).cloned();
+            let Some(row) = row else { return };
+            // 排除保护名单项；目录节点整组勾选/取消
+            let selectable: Vec<usize> = row
+                .item_indices
+                .iter()
+                .copied()
+                .filter(|&i| !self.item_protected(i))
+                .collect();
+            if selectable.is_empty() {
+                if row.is_dir() {
+                    self.warn("该目录下的项均已在保护名单");
+                } else {
+                    self.warn("该路径已在保护名单，按 P 解除后再清理");
+                }
+                return;
+            }
+            let all_on = selectable
+                .iter()
+                .all(|&i| self.selected.get(i).copied().unwrap_or(false));
+            for i in selectable {
+                self.selected[i] = !all_on;
+            }
+            return;
+        }
         let i = self.cursor();
         if i < self.selected.len() {
             // 保护名单项不可勾选
@@ -316,24 +472,55 @@ impl App {
         }
     }
 
-    /// 把当前清理项加入保护名单（thin protect），并就地更新标记
-    fn protect_current(&mut self) {
-        let i = self.cursor();
-        let path = match &self.clean {
-            Load::Ready(items) => items.get(i).map(|it| it.path.clone()),
+    /// 当前光标对应的路径（树形视图下目录节点用其显示路径展开）。
+    fn cursor_path(&self) -> Option<PathBuf> {
+        if self.tree_view {
+            let row = self.clean_rows.get(self.cursor())?;
+            if let Some(i) = row.item {
+                return match &self.clean {
+                    Load::Ready(items) => items.get(i).map(|it| it.path.clone()),
+                    _ => None,
+                };
+            }
+            // 目录分组节点：把 `~` 前缀展开为真实路径后保护整个目录
+            return fsutil::expand(&row.name);
+        }
+        match &self.clean {
+            Load::Ready(items) => items.get(self.cursor()).map(|it| it.path.clone()),
             _ => None,
+        }
+    }
+
+    /// 把当前清理项加入保护名单（thin protect），并就地更新标记。
+    ///
+    /// 树形视图下的目录分组节点会保护整个目录（及其下所有项）。
+    fn protect_current(&mut self) {
+        let Some(path) = self.cursor_path() else {
+            return;
         };
-        let Some(path) = path else { return };
+        let affected: Vec<usize> = if self.tree_view {
+            self.clean_rows
+                .get(self.cursor())
+                .map(|r| r.item_indices.clone())
+                .unwrap_or_default()
+        } else {
+            vec![self.cursor()]
+        };
         match protect::add(&path) {
             Ok(canon) => {
-                if let Load::Ready(items) = &mut self.clean
-                    && let Some(it) = items.get_mut(i)
-                {
-                    it.protected = true;
+                if let Load::Ready(items) = &mut self.clean {
+                    for &i in &affected {
+                        if let Some(it) = items.get_mut(i) {
+                            it.protected = true;
+                        }
+                    }
                 }
-                if i < self.selected.len() {
-                    self.selected[i] = false;
+                for &i in &affected {
+                    if i < self.selected.len() {
+                        self.selected[i] = false;
+                    }
                 }
+                self.rebuild_clean_rows();
                 self.info(format!("已保护 {}（含子目录）", canon.display()));
             }
             Err(e) => self.error(format!("加入保护名单失败：{e}")),
@@ -342,12 +529,9 @@ impl App {
 
     /// 从保护名单移除覆盖当前项的条目（`thin protect remove`），并重新扫描标注。
     fn unprotect_current(&mut self) {
-        let i = self.cursor();
-        let path = match &self.clean {
-            Load::Ready(items) => items.get(i).map(|it| it.path.clone()),
-            _ => None,
+        let Some(path) = self.cursor_path() else {
+            return;
         };
-        let Some(path) = path else { return };
         // 名单里可能是其父目录条目在覆盖该项，先找到真正命中的那条。
         let target = protect::covering(&protect::load(), &path)
             .cloned()
@@ -357,6 +541,7 @@ impl App {
                 // 解除后该项可能仍受静态安全门保护（SIP 等），重扫一次重新判定。
                 self.clean = Load::Idle;
                 self.selected.clear();
+                self.clean_rows.clear();
                 self.ensure(CLEAN_TAB);
                 self.info(format!("已解除保护 {}（含子目录）", target.display()));
             }
@@ -603,6 +788,7 @@ impl App {
                     }
                     self.selected = new_sel;
                     self.clean = Load::Ready(new_items);
+                    self.rebuild_clean_rows();
                 }
                 let c = self.cursor().min(self.current_len().saturating_sub(1));
                 self.list_states[0].select(Some(c));
@@ -740,6 +926,7 @@ impl App {
             KeyCode::Char('p') if self.tab == CLEAN_TAB => self.protect_current(),
             KeyCode::Char('P') if self.tab == CLEAN_TAB => self.unprotect_current(),
             KeyCode::Char('m') if self.tab == CLEAN_TAB => self.toggle_manual(),
+            KeyCode::Char('t') if self.tab == CLEAN_TAB => self.toggle_tree_view(),
             KeyCode::Char('c') if self.tab == CLEAN_TAB => {
                 if self.selected_count() > 0 {
                     self.confirm = true;
@@ -1199,66 +1386,166 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
 
     match &app.clean {
         Load::Ready(items) => {
-            let list_items: Vec<ListItem> = items
-                .iter()
-                .enumerate()
-                .map(|(i, it)| {
-                    let mark = if app.selected.get(i).copied().unwrap_or(false) {
-                        "[x]"
-                    } else {
-                        "[ ]"
-                    };
-                    let path = it.path.display().to_string();
-                    let shown = if !home.is_empty() && path.starts_with(&home) {
-                        path.replacen(&home, "~", 1)
-                    } else {
-                        path
-                    };
-                    ListItem::new(Line::from(vec![
-                        Span::styled(
-                            format!("{mark} "),
-                            Style::default().fg(if app.selected.get(i).copied().unwrap_or(false) {
-                                Color::Green
+            let list_items: Vec<ListItem> = if app.tree_view {
+                app.clean_rows
+                    .iter()
+                    .map(|row| {
+                        let (mark, mark_color) = if let Some(i) = row.item {
+                            if row.protected {
+                                ("[ ]", Color::DarkGray)
+                            } else if app.selected.get(i).copied().unwrap_or(false) {
+                                ("[x]", Color::Green)
                             } else {
-                                Color::DarkGray
-                            }),
-                        ),
-                        Span::styled(
-                            format!("{:>9} ", human(it.size)),
-                            Style::default().fg(Color::White),
-                        ),
-                        Span::styled(
-                            format!(
-                                "{} ",
-                                text::pad_end(
-                                    if it.protected {
-                                        "已保护"
-                                    } else if it.sudo {
-                                        "需 sudo"
-                                    } else {
-                                        it.risk.label()
-                                    },
-                                    8,
-                                )
+                                ("[ ]", Color::DarkGray)
+                            }
+                        } else {
+                            // 目录分组：全选 [x] / 部分 [-]
+                            let total = row
+                                .item_indices
+                                .iter()
+                                .filter(|&&i| !app.item_protected(i))
+                                .count();
+                            let sel = row
+                                .item_indices
+                                .iter()
+                                .filter(|&&i| {
+                                    !app.item_protected(i)
+                                        && app.selected.get(i).copied().unwrap_or(false)
+                                })
+                                .count();
+                            if total == 0 {
+                                ("[ ]", Color::DarkGray)
+                            } else if sel == total {
+                                ("[x]", Color::Green)
+                            } else if sel > 0 {
+                                ("[-]", Color::Yellow)
+                            } else {
+                                ("[ ]", Color::DarkGray)
+                            }
+                        };
+                        let (label, color) = match row.risk {
+                            Some(_) if row.protected => ("已保护", Color::DarkGray),
+                            Some(_) if row.sudo => ("需 sudo", Color::Yellow),
+                            Some(risk) => (risk.label(), risk_color(risk)),
+                            None => ("", Color::DarkGray),
+                        };
+                        let mut spans = vec![
+                            Span::styled(format!("{mark} "), Style::default().fg(mark_color)),
+                            Span::styled(
+                                format!("{:>9} ", human(row.size)),
+                                Style::default().fg(Color::White),
                             ),
-                            Style::default().fg(if it.protected {
-                                Color::DarkGray
-                            } else if it.sudo {
-                                Color::Yellow
-                            } else {
-                                risk_color(it.risk)
-                            }),
-                        ),
-                        Span::raw(it.name.clone()),
-                        Span::styled(format!("  {shown}"), Style::default().fg(Color::DarkGray)),
-                    ]))
-                })
-                .collect();
+                            Span::styled(
+                                format!("{} ", text::pad_end(label, 8)),
+                                Style::default().fg(color),
+                            ),
+                            Span::styled(
+                                tree_prefix(&row.is_last),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                            Span::styled(
+                                if row.is_dir() {
+                                    format!("{}/", row.name)
+                                } else {
+                                    row.name.clone()
+                                },
+                                Style::default().fg(if row.is_dir() {
+                                    Color::Cyan
+                                } else {
+                                    Color::Reset
+                                }),
+                            ),
+                        ];
+                        if row.is_dir() {
+                            spans.push(Span::styled(
+                                format!("  · {} 项", row.count),
+                                Style::default().fg(Color::DarkGray),
+                            ));
+                        } else if let Some(rule) = &row.rule_name
+                            && *rule != row.name
+                        {
+                            spans.push(Span::styled(
+                                format!("  ({rule})"),
+                                Style::default().fg(Color::DarkGray),
+                            ));
+                        }
+                        if row.nested {
+                            spans.push(Span::styled(
+                                "  (嵌套)",
+                                Style::default().fg(Color::DarkGray),
+                            ));
+                        }
+                        ListItem::new(Line::from(spans))
+                    })
+                    .collect()
+            } else {
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, it)| {
+                        let mark = if app.selected.get(i).copied().unwrap_or(false) {
+                            "[x]"
+                        } else {
+                            "[ ]"
+                        };
+                        let path = it.path.display().to_string();
+                        let shown = if !home.is_empty() && path.starts_with(&home) {
+                            path.replacen(&home, "~", 1)
+                        } else {
+                            path
+                        };
+                        ListItem::new(Line::from(vec![
+                            Span::styled(
+                                format!("{mark} "),
+                                Style::default().fg(
+                                    if app.selected.get(i).copied().unwrap_or(false) {
+                                        Color::Green
+                                    } else {
+                                        Color::DarkGray
+                                    },
+                                ),
+                            ),
+                            Span::styled(
+                                format!("{:>9} ", human(it.size)),
+                                Style::default().fg(Color::White),
+                            ),
+                            Span::styled(
+                                format!(
+                                    "{} ",
+                                    text::pad_end(
+                                        if it.protected {
+                                            "已保护"
+                                        } else if it.sudo {
+                                            "需 sudo"
+                                        } else {
+                                            it.risk.label()
+                                        },
+                                        8,
+                                    )
+                                ),
+                                Style::default().fg(if it.protected {
+                                    Color::DarkGray
+                                } else if it.sudo {
+                                    Color::Yellow
+                                } else {
+                                    risk_color(it.risk)
+                                }),
+                            ),
+                            Span::raw(it.name.clone()),
+                            Span::styled(
+                                format!("  {shown}"),
+                                Style::default().fg(Color::DarkGray),
+                            ),
+                        ]))
+                    })
+                    .collect()
+            };
 
             let title = format!(
-                "清理项 · 已选 {} · {}",
+                "清理项 · 已选 {} · {} · {}(t)",
                 app.selected_count(),
-                human(app.selected_total())
+                human(app.selected_total()),
+                if app.tree_view { "树形" } else { "平铺" }
             );
             let list = List::new(list_items)
                 .block(Block::default().borders(Borders::ALL).title(title))
@@ -1266,9 +1553,17 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
                 .highlight_symbol("› ");
             frame.render_stateful_widget(list, parts[0], &mut app.list_states[app.tab]);
 
-            // 详情
+            // 详情：树形视图先取行自身的命中项；目录分组则展示聚合信息
             let cur = app.cursor();
-            let text = if let Some(it) = items.get(cur) {
+            let detail = if app.tree_view {
+                app.clean_rows
+                    .get(cur)
+                    .and_then(|r| r.item)
+                    .and_then(|i| items.get(i))
+            } else {
+                items.get(cur)
+            };
+            let text = if let Some(it) = detail {
                 vec![
                     Line::from(Span::styled(
                         it.name.clone(),
@@ -1311,6 +1606,22 @@ fn render_clean(frame: &mut Frame, app: &mut App, area: Rect) {
                         it.path.display().to_string(),
                         Style::default().fg(Color::DarkGray),
                     )),
+                ]
+            } else if app.tree_view
+                && let Some(row) = app.clean_rows.get(cur)
+            {
+                vec![
+                    Line::from(Span::styled(
+                        format!("{}/", row.name),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(format!("大小: {}  ·  {} 项", human(row.size), row.count)),
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        "目录分组（按文件夹合并）",
+                        Style::default().fg(Color::Cyan),
+                    )),
+                    Line::from("space 整组勾选/取消；p 保护整个目录。"),
                 ]
             } else {
                 vec![Line::from("（无）")]
@@ -1438,14 +1749,14 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         )
     } else if app.help {
         (
-            " 1-9/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · P 解除 · m 需sudo · r 重载 · c 清理 · Esc 关闭提示/退出 · q 退出"
+            " 1-9/Tab 切换标签 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · t 树形 · p 保护 · P 解除 · m 需sudo · r 重载 · c 清理 · Esc 关闭提示/退出 · q 退出"
                 .to_string(),
             toast::bar_style(),
         )
     } else {
         let hint = match app.tab {
             0 => {
-                " Tab 切页 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · p 保护 · P 解除 · m 需sudo · c 清理 · r 重载 · ? 帮助 · q 退出"
+                " Tab 切页 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · t 树形 · p 保护 · P 解除 · m 需sudo · c 清理 · r 重载 · ? 帮助 · q 退出"
             }
             APPS_TAB => " ↑↓/jk 移动 · u 卸载 · r 重载 · ? 帮助 · q 退出",
             QUARANTINE_TAB => " ↑↓/jk 移动 · Enter 恢复 · p 永久删除 · r 重载 · ? 帮助 · q 退出",
@@ -1455,9 +1766,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
         (hint.to_string(), toast::bar_style())
     };
     frame.render_widget(
-        Paragraph::new(text)
-            .style(style)
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(text).style(style).wrap(Wrap { trim: false }),
         area,
     );
 }
@@ -1856,6 +2165,64 @@ mod tests {
         app.browse = Some(BrowseState::new(PathBuf::from("/")));
         app.on_key(KeyEvent::from(KeyCode::Char('q')));
         assert!(app.quit, "浏览页按 q 应退出整个 TUI");
+    }
+
+    /// 构造一个树形视图测试用 App：三个命中项共享 `/tmp`，其中一个目录含两项。
+    fn tree_app() -> App {
+        let mut app = test_app();
+        app.clean = Load::Ready(vec![
+            clean_item("/tmp/thin-t/A/blob", 100),
+            clean_item("/tmp/thin-t/B/blob", 300),
+            clean_item("/tmp/thin-other/foo", 50),
+        ]);
+        app.selected = vec![false; 3];
+        app.tree_view = true;
+        app.rebuild_clean_rows();
+        app
+    }
+
+    #[test]
+    fn tree_view_merges_folders_and_renders() {
+        let mut app = tree_app();
+        // `/tmp` -> `thin-t/`（2 项） + 合并单链的 `thin-other/foo`
+        assert_eq!(app.clean_rows.len(), 5);
+        assert_eq!(app.clean_rows[0].name, "/tmp");
+        assert!(app.clean_rows[0].is_dir());
+        assert_eq!(app.clean_rows[0].size, 450);
+        assert_eq!(app.clean_rows[1].name, "thin-t");
+        assert_eq!(app.clean_rows[2].name, "B/blob");
+        assert_eq!(app.clean_rows[4].name, "thin-other/foo");
+
+        let text = render(&mut app, 120, 30);
+        assert!(text.contains("树形(t)"), "{text}");
+        assert!(text.contains("thin-t/"), "{text}");
+        assert!(text.contains("thin-other/foo"), "{text}");
+        assert!(text.contains("· 2 项"), "{text}");
+    }
+
+    #[test]
+    fn t_key_toggles_tree_view() {
+        let mut app = test_app();
+        app.clean = Load::Ready(vec![clean_item("/tmp/x/a", 1)]);
+        app.selected = vec![false];
+        // TUI 默认树形，按 t 切回平铺
+        assert!(app.tree_view);
+        app.on_key(KeyEvent::from(KeyCode::Char('t')));
+        assert!(!app.tree_view);
+        app.on_key(KeyEvent::from(KeyCode::Char('t')));
+        assert!(app.tree_view);
+    }
+
+    #[test]
+    fn tree_space_selects_whole_folder() {
+        let mut app = tree_app();
+        // 光标在 `/tmp` 分组行：space 应勾选子树内全部 3 项
+        app.list_states[CLEAN_TAB].select(Some(0));
+        app.on_key(KeyEvent::from(KeyCode::Char(' ')));
+        assert_eq!(app.selected, vec![true, true, true]);
+        // 再次 space 取消整组
+        app.on_key(KeyEvent::from(KeyCode::Char(' ')));
+        assert_eq!(app.selected, vec![false, false, false]);
     }
 
     #[test]

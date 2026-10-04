@@ -1,5 +1,6 @@
 use thin_core::fmt::human;
 use thin_core::model::CleanItem;
+use thin_core::tree::TreeNode;
 
 fn char_width(s: &str) -> usize {
     s.chars().count()
@@ -43,6 +44,67 @@ pub fn print_table(items: &[CleanItem]) {
             truncate(&it.name, 26),
             shown
         );
+    }
+}
+
+/// 打印按文件夹合并的树形视图。
+///
+/// 目录节点显示聚合体积与命中项数；命中项叶子显示风险标签与体积。
+/// 被父项覆盖的嵌套项以「嵌套」标注，不计入父项聚合体积。
+pub fn print_tree(forest: &[TreeNode]) {
+    for node in forest {
+        print_tree_node(node, "", true, true);
+    }
+}
+
+fn print_tree_node(node: &TreeNode, prefix: &str, is_last: bool, root: bool) {
+    let branch = if root {
+        ""
+    } else if is_last {
+        "└─ "
+    } else {
+        "├─ "
+    };
+    if let Some(it) = &node.item {
+        let (label, color) = if it.protected {
+            ("已保护", "\x1b[90m")
+        } else if it.sudo {
+            ("需 sudo", "\x1b[33m")
+        } else {
+            (it.risk.label(), it.risk.color())
+        };
+        let nested = if node.nested {
+            " \x1b[90m(嵌套)\x1b[0m"
+        } else {
+            ""
+        };
+        // 树里用路径末段更有信息量（同级不同目录可区分）；规则名附在后面
+        let rule = if it.name != node.name {
+            format!(" \x1b[90m({})\x1b[0m", it.name)
+        } else {
+            String::new()
+        };
+        println!(
+            "{prefix}{branch}{}  \x1b[1m{}\x1b[0m  {color}{label}\x1b[0m{nested}{rule}",
+            node.name,
+            human(node.size),
+        );
+    } else {
+        println!(
+            "{prefix}{branch}{}/  \x1b[1m{}\x1b[0m  \x1b[90m· {} 项\x1b[0m",
+            node.name,
+            human(node.size),
+            node.count,
+        );
+    }
+    let child_prefix = if root {
+        String::new()
+    } else {
+        format!("{}{}", prefix, if is_last { "   " } else { "│  " })
+    };
+    let n = node.children.len();
+    for (i, c) in node.children.iter().enumerate() {
+        print_tree_node(c, &child_prefix, i + 1 == n, false);
     }
 }
 

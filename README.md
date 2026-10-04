@@ -106,6 +106,7 @@ thin scan --json                  # 机器可读输出
 thin scan --detail rust-target    # 查看某规则详细解释
 thin scan --preset dev            # 只看开发缓存
 thin scan --preset dev --root .   # 只看当前项目下的开发产物（target/、node_modules/ …）
+thin scan --tree                  # 按文件夹合并成树形展示（只读）
 thin top ~/Library --limit 20     # 某目录下最大的子项（类似 du -sh | sort -rh）
 thin discover --min 1G            # 找出「未被规则覆盖」的大目录
 thin discover --json              # 机器可读
@@ -116,6 +117,7 @@ thin ls ~/Library -l              # -l 显示说明与参考(如 man hier)
 thin ls /private --depth 2        # 递归两层
 thin ls /System/Volumes --json    # 机器可读
 # 交互式浏览在主 TUI 的「浏览」标签页（键 5）：↑↓ 移动 · Enter 进入 · / 过滤 · s 排序 · t 占用图 · c 清理
+# 主 TUI 的「清理」标签页（键 1）默认按文件夹合并的树形，按 t 切回平铺列表
 
 thin                              # 无参数：进入交互式 TUI
 thin tui                          # 显式进入 TUI（含「浏览」标签页，键 5）
@@ -151,6 +153,7 @@ thin clean --apply --yes          # 跳过确认
 thin clean --apply --all          # 连「需确认」项一起处理
 thin clean --apply --id rust-target --id chrome-optguide-model
 thin clean --preset dev --root .  # 定向清理：只清当前项目的开发产物
+thin clean --tree                 # dry-run 预览按文件夹合并成树形
 thin clean --json                 # 机器可读计划：approved / skipped / approvedBytes / protectedBytes
 thin clean --apply --json --yes   # 执行并输出账本 JSON
 
