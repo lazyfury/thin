@@ -83,7 +83,8 @@ thin quarantine purge --older-than 7d
 thin large ~/Documents --min 100MB --limit 30
 thin dupes ~/Downloads --min 10MB              # 只读报告
 thin dupes ~/Downloads --min 10MB --apply      # 每组保留首个，其余移入隔离区
-thin apps --min 500MB                          # 列出 App（含关联残留）
+thin apps                                      # 列出全部 App（含关联残留），带体积分级
+thin apps --min 500MB                          # 只看大件
 thin uninstall <名称>                           # 预览卸载计划
 thin uninstall <名称> --apply                   # 卸载并移入隔离区
 ```

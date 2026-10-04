@@ -131,8 +131,8 @@ struct DupesArgs {
 
 #[derive(clap::Args)]
 struct AppsArgs {
-    /// 最小总占用过滤
-    #[arg(long, default_value = "100MB")]
+    /// 最小总占用过滤（默认不过滤，列出全部）
+    #[arg(long, default_value = "0")]
     min: String,
 }
 
@@ -674,6 +674,15 @@ fn truncate(s: &str, width: usize) -> String {
     out
 }
 
+/// 体积分级对应的 ANSI 颜色
+fn tier_ansi(t: apps::Tier) -> &'static str {
+    match t {
+        apps::Tier::Large => "\x1b[31m",
+        apps::Tier::Medium => "\x1b[33m",
+        apps::Tier::Small => "\x1b[32m",
+    }
+}
+
 fn cmd_large(args: LargeArgs) -> Result<()> {
     let root = expand_root(&args.root);
     let min = parse_size(&args.min).unwrap_or(100 * 1024 * 1024);
@@ -747,19 +756,22 @@ fn cmd_dupes(args: DupesArgs) -> Result<()> {
 }
 
 fn cmd_apps(args: AppsArgs) -> Result<()> {
-    let min = parse_size(&args.min).unwrap_or(100 * 1024 * 1024);
+    let min = parse_size(&args.min).unwrap_or(0);
     let apps = apps::list_apps();
     println!(
-        "{:<28} {:>10}  {:<12} {}",
-        "App", "总占用", "关联残留", "Bundle ID"
+        "{:<6} {:>10}  {:<12} {:<28} {}",
+        "等级", "总占用", "关联残留", "App", "Bundle ID"
     );
-    println!("{}", "-".repeat(92));
+    println!("{}", "-".repeat(96));
     for a in apps.into_iter().filter(|a| a.total() >= min) {
+        let t = apps::tier(a.total());
         println!(
-            "{:<28} {:>10}  {:<12} {}",
-            truncate(&a.name, 28),
+            "  {}{}\x1b[0m   {:>10}  {:<12} {:<28} {}",
+            tier_ansi(t),
+            t.label(),
             human(a.total()),
             human(a.leftovers_size()),
+            truncate(&a.name, 28),
             a.bundle_id.unwrap_or_default()
         );
     }

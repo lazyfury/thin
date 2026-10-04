@@ -23,6 +23,37 @@ impl AppInfo {
     }
 }
 
+/// 体积分级
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tier {
+    Large,
+    Medium,
+    Small,
+}
+
+impl Tier {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Tier::Large => "大",
+            Tier::Medium => "中",
+            Tier::Small => "小",
+        }
+    }
+}
+
+/// 按总占用分级：>=1GB 大，>=100MB 中，其余小
+pub fn tier(bytes: u64) -> Tier {
+    const GB: u64 = 1024 * 1024 * 1024;
+    const MB100: u64 = 100 * 1024 * 1024;
+    if bytes >= GB {
+        Tier::Large
+    } else if bytes >= MB100 {
+        Tier::Medium
+    } else {
+        Tier::Small
+    }
+}
+
 fn app_roots() -> Vec<PathBuf> {
     let mut v = vec![PathBuf::from("/Applications")];
     if let Ok(h) = std::env::var("HOME") {
@@ -127,5 +158,12 @@ mod tests {
         // 几乎不可能存在的 bundle id
         let v = find_leftovers("com.thin.definitely-not-installed-xyz");
         assert!(v.is_empty());
+    }
+
+    #[test]
+    fn tier_thresholds() {
+        assert_eq!(tier(2 * 1024 * 1024 * 1024), Tier::Large);
+        assert_eq!(tier(200 * 1024 * 1024), Tier::Medium);
+        assert_eq!(tier(50 * 1024 * 1024), Tier::Small);
     }
 }

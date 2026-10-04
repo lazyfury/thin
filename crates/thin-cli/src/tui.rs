@@ -390,6 +390,14 @@ fn risk_color(risk: Risk) -> Color {
     }
 }
 
+fn tier_color(tier: apps::Tier) -> Color {
+    match tier {
+        apps::Tier::Large => Color::Red,
+        apps::Tier::Medium => Color::Yellow,
+        apps::Tier::Small => Color::Green,
+    }
+}
+
 fn bar(ratio: f64, width: usize) -> String {
     let filled = ((ratio.clamp(0.0, 1.0) * width as f64).round() as usize).min(width);
     format!("{}{}", "█".repeat(filled), "░".repeat(width - filled))
@@ -753,12 +761,21 @@ fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
             let items: Vec<ListItem> = list
                 .iter()
                 .map(|a| {
+                    let t = apps::tier(a.total());
                     ListItem::new(Line::from(vec![
                         Span::styled(
                             format!("{:>9} ", human(a.total())),
-                            Style::default().fg(Color::White),
+                            Style::default().fg(tier_color(t)),
                         ),
-                        Span::raw(truncate(&a.name, 30)),
+                        Span::styled(
+                            format!("{:<4} ", t.label()),
+                            Style::default().fg(tier_color(t)),
+                        ),
+                        Span::raw(truncate(&a.name, 26)),
+                        Span::styled(
+                            format!("  {}", a.bundle_id.clone().unwrap_or_default()),
+                            Style::default().fg(Color::DarkGray),
+                        ),
                     ]))
                 })
                 .collect();
