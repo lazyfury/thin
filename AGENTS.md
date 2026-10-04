@@ -125,10 +125,27 @@ echo '{
   "matcher": { "kind": "path", "paths": ["~/..."] }
   // 或 { "kind": "findDir", "roots": ["~/Documents"], "dirName": "target",
   //      "requireSibling": "Cargo.toml", "maxDepth": 6 }
+  // 或脚本型（动态产出路径，静态表达不了的场景，如“清 releases/* 但保留 current-version”）：
+  // { "kind": "script", "roots": ["~/.pi/agent/install/releases"],
+  //   "script": "...只枚举并 printf '%s\\0' 路径...", "timeoutSecs": 10,
+  //   "review": { "hash": "<blake3(script)>", "note": "..." } }
   ,
   "reclaim": "给人类看的清理方式/命令",
   "explain": { "what": "...", "cost": "...", "recover": "..." }
 }
+```
+
+**脚本型 matcher 的风险审查**（三层，缺一不可）：
+1. 写规则时：脚本必须带 `review.hash`（脚本内容的 blake3，用 `--approve-script` 自动写入），
+   脚本含 `rm`/`mv`/`sudo`/`curl`/重定向写盘等片段会被直接拒绝；`roots` 必填且不得为个人目录顶层/根。
+2. 运行时：脚本以 `/bin/sh -c` 执行（超时 1–120s），输出必须落在 `roots` 之下（containment），
+   非零退出/超时/超量输出一律丢弃。
+3. 清理时：候选仍过 `clean::plan` 统一安全门。
+脚本内容变更 → hash 不匹配 → 规则自动失效，需重新审查。
+
+```bash
+# 写入脚本型规则（--approve-script 会计算并钉住脚本哈希）
+thin rules add --json rule.json --approve-script
 ```
 
 写入位置（**统一**：`thin rules add` 只写 `rules.d/<id>.json`，一规则一文件，避免读改写竞态）：

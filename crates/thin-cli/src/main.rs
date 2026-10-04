@@ -257,6 +257,9 @@ struct RuleAddArgs {
     cost: Option<String>,
     #[arg(long)]
     recover: Option<String>,
+    /// 审查并批准规则中的脚本型 matcher（写入脚本内容哈希）
+    #[arg(long)]
+    approve_script: bool,
 }
 
 #[derive(clap::Args)]
@@ -789,7 +792,7 @@ fn cmd_rules_export(args: ExportArgs) -> Result<()> {
 }
 
 fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
-    let rule = if let Some(spec) = &args.json {
+    let mut rule = if let Some(spec) = &args.json {
         let raw = if spec == "-" {
             use std::io::Read;
             let mut s = String::new();
@@ -840,13 +843,25 @@ fn cmd_rule_add(args: RuleAddArgs) -> Result<()> {
         )
     };
 
+    // 脚本型 matcher：显式批准时写入脚本内容的审查哈希（脚本变更即失效）
+    if args.approve_script {
+        if let thin_core::Matcher::Script { script, review, .. } = &mut rule.matcher {
+            *review = Some(thin_core::ScriptReview {
+                hash: thin_core::script::hash(script),
+                note: Some("approved via `thin rules add --approve-script`".into()),
+            });
+        } else {
+            anyhow::bail!("--approve-script 仅适用于 script 型 matcher");
+        }
+    }
+
     // 预检：受保护 / 个人目录顶层不得建成清理规则（与 clean 安全门共用同一判断）；
     // findDir 规则不得在无 requireSibling 约束下按名字查找敏感目录。
     // 这样 `discover` 之类的建议即使被直接照做，也会在写盘前被拦下，
     // 而不是等到 clean 才发现「整份 ~/Documents 会被搬走」。
     if let Err(reason) = rules::check_rule_safety(&rule) {
         anyhow::bail!(
-            "拒绝写入规则 {}：{reason}\n提示：个人目录本身不可整体清理；如需清理其内部的具体缓存，请指向子路径，或为 findDir 规则设置 requireSibling。",
+            "拒绝写入规则 {}：{reason}\n提示：目标不得是受保护 / 过于宽泛的路径；findDir 需具体 dirName（必要时 requireSibling）；script 型需 roots 且脚本只应枚举路径、经 --approve-script 审查。",
             rule.id
         );
     }

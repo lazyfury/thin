@@ -329,6 +329,18 @@ thin scan --detail custom-someapp           # 验证命中
 thin rules export --new                     # 导出未并入内置的规则，合进 default.json 后重新构建
 ```
 
+**脚本型 matcher（动态路径）** —— 静态 `path` / `findDir` 表达不了的场景（如
+「`releases/*` 里清掉除 `current-version` 之外的所有旧版本」）可用 `kind: "script"`：
+脚本只负责**枚举并打印候选路径**，且必须经**风险审查**：
+
+- `roots` 必填：输出路径必须落在其下（containment）；
+- `review.hash` = 脚本内容的 blake3（`--approve-script` 自动写入）；脚本变更即失效，需重审；
+- 脚本含 `rm`/`mv`/`sudo`/`curl`/写盘重定向等片段会被拒绝；运行时带超时，候选仍过清理安全门。
+
+```bash
+thin rules add --json rule.json --approve-script   # 审查并钉住脚本哈希
+```
+
 </details>
 
 ## App 残留调查

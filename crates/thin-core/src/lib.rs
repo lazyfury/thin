@@ -23,7 +23,8 @@ pub mod recognize;
 pub mod rules;
 pub mod scan;
 pub mod schedule;
+pub mod script;
 pub mod status;
 pub mod tree;
 
-pub use model::{Category, CleanItem, Explain, Matcher, ReclaimSummary, Risk, Rule};
+pub use model::{Category, CleanItem, Explain, Matcher, ReclaimSummary, Risk, Rule, ScriptReview};

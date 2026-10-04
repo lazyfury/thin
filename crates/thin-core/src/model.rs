@@ -78,6 +78,34 @@ pub enum Matcher {
         require_sibling: Option<String>,
         max_depth: Option<usize>,
     },
+    /// 运行只读脚本，把 stdout 输出当作候选路径。
+    ///
+    /// 用于「一次性 / 动态」场景（如保留 current-version 指向的目录、清其余旧版本），
+    /// 这些无法用静态 path/findDir 表达。安全约束见 [`ScriptReview`]。
+    #[serde(rename_all = "camelCase")]
+    Script {
+        /// 输出路径必须落在此范围之下（containment，必需的爆燃半径限制）
+        roots: Vec<String>,
+        /// shell 脚本；以 `/bin/sh -c` 执行，只应枚举并打印路径（每行或 NUL 分隔）
+        script: String,
+        /// 超时秒数（默认 10，1–120）
+        #[serde(default)]
+        timeout_secs: Option<u64>,
+        /// 风险审查记录；哈希与脚本内容绑定，脚本变更后需重新审查
+        #[serde(default)]
+        review: Option<ScriptReview>,
+    },
+}
+
+/// 脚本型 matcher 的风险审查记录。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptReview {
+    /// 脚本内容的 blake3 哈希（审查后钉住；不匹配则拒绝运行）
+    pub hash: String,
+    /// 可选的人工说明（审查人 / 理由）
+    #[serde(default)]
+    pub note: Option<String>,
 }
 
 /// 一条清理规则

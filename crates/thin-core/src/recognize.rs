@@ -87,6 +87,8 @@ impl RuleIndex {
                     require_sibling,
                     ..
                 } => find_dirs.push((dir_name.clone(), require_sibling.clone(), i)),
+                // 脚本型 matcher 不预展开（避免浏览时执行脚本）；仅清理扫描时运行
+                Matcher::Script { .. } => {}
             }
         }
         RuleIndex {

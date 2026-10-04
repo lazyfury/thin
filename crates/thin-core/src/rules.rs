@@ -244,6 +244,27 @@ pub fn expand_rule_scoped(rule: &Rule, scope: Option<&Path>) -> Vec<PathBuf> {
             found.dedup();
             found
         }
+        Matcher::Script {
+            roots,
+            script,
+            timeout_secs,
+            review,
+        } => {
+            // 风险审查：脚本哈希不匹配（未审查 / 已变更）或含危险片段则拒绝运行。
+            // 运行时也查一遍，避免有人绕过 `rules add` 直接改写 rules.d。
+            if !crate::script::review_ok(script, review)
+                || crate::script::review_script(script).is_err()
+            {
+                return Vec::new();
+            }
+            // 指定作用域时收窄 roots，脚本输出随后仍会被 containment 过滤
+            let roots: Vec<PathBuf> = if let Some(root) = scope {
+                vec![root.to_path_buf()]
+            } else {
+                roots.iter().filter_map(|r| fsutil::expand(r)).collect()
+            };
+            crate::script::run(script, *timeout_secs, &roots)
+        }
     }
 }
 
@@ -277,6 +298,34 @@ pub fn check_rule_safety(rule: &Rule) -> Result<(), String> {
             {
                 return Err(format!(
                     "按名字查找 {dir_name:?}（{what}）且未设置 requireSibling，可能误命中受保护目录"
+                ));
+            }
+        }
+        Matcher::Script {
+            roots,
+            script,
+            review,
+            ..
+        } => {
+            if roots.is_empty() {
+                return Err("script 规则必须声明 roots（输出路径的允许范围）".into());
+            }
+            for raw in roots {
+                let Some(p) = fsutil::expand(raw) else {
+                    continue;
+                };
+                if let Some(reason) = clean::static_protection_reason(&p) {
+                    return Err(format!(
+                        "script roots {} 过于宽泛 / 受保护（{reason}）",
+                        p.display()
+                    ));
+                }
+            }
+            crate::script::review_script(script)?;
+            if !crate::script::review_ok(script, review) {
+                return Err(format!(
+                    "脚本未经风险审查或已变更；审查通过后设置 review.hash = {}（或 `thin rules add --approve-script`）",
+                    crate::script::hash(script)
                 ));
             }
         }
@@ -529,6 +578,70 @@ mod tests {
             *require_sibling = Some("Cargo.toml".into());
         }
         assert!(check_rule_safety(&r).is_ok());
+    }
+
+    #[test]
+    fn script_rule_requires_review_and_enforces_containment() {
+        let base = std::env::temp_dir().join(format!("thin-script-rule-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sub = base.join("releases");
+        let old = sub.join("0.1.0");
+        let cur = sub.join("0.2.0");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&cur).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+
+        let script = format!(
+            "printf '%s\\0' '{}' '{}' '{}'",
+            old.display(),
+            cur.display(),
+            outside.display()
+        );
+        let mut r = make_path_rule(
+            "s".into(),
+            "s".into(),
+            String::new(),
+            Category::Other,
+            Risk::Confirm,
+            true,
+            "x".into(),
+            "w".into(),
+            "c".into(),
+            "r".into(),
+        );
+        r.matcher = Matcher::Script {
+            roots: vec![sub.to_string_lossy().into_owned()],
+            script: script.clone(),
+            timeout_secs: Some(5),
+            review: None,
+        };
+        // 未审查 → 拒绝写入
+        assert!(check_rule_safety(&r).is_err());
+
+        if let Matcher::Script { review, .. } = &mut r.matcher {
+            *review = Some(crate::model::ScriptReview {
+                hash: crate::script::hash(&script),
+                note: None,
+            });
+        }
+        assert!(check_rule_safety(&r).is_ok());
+        // containment：roots 之下的 2 个被接受，outside 被丢弃
+        assert_eq!(expand_rule(&r).len(), 2);
+
+        // 脚本被篡改（hash 不变）→ 拒绝运行
+        if let Matcher::Script { script, .. } = &mut r.matcher {
+            *script = "echo tampered".into();
+        }
+        assert!(expand_rule(&r).is_empty());
+
+        // roots 为空 → 拒绝写入（roots 校验先于审查校验）
+        if let Matcher::Script { roots, .. } = &mut r.matcher {
+            roots.clear();
+        }
+        assert!(check_rule_safety(&r).is_err());
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]
