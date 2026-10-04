@@ -54,6 +54,30 @@ struct Loader {
     progress: Arc<Progress>,
 }
 
+#[derive(Clone, Copy, PartialEq)]
+enum SortMode {
+    Size,
+    Name,
+    Kind,
+}
+
+impl SortMode {
+    fn label(self) -> &'static str {
+        match self {
+            SortMode::Size => "大小",
+            SortMode::Name => "名称",
+            SortMode::Kind => "类型",
+        }
+    }
+    fn next(self) -> Self {
+        match self {
+            SortMode::Size => SortMode::Name,
+            SortMode::Name => SortMode::Kind,
+            SortMode::Kind => SortMode::Size,
+        }
+    }
+}
+
 struct App {
     stack: Vec<PathBuf>,
     rows: Vec<Row>,
@@ -66,9 +90,13 @@ struct App {
     generation: u64,
     show_hidden: bool,
     show_treemap: bool,
+    sort: SortMode,
     filter: String,
     filtering: bool,
     confirm: bool,
+    bookmarks: Vec<PathBuf>,
+    bookmark_pick: bool,
+    bookmark_sel: usize,
     help: bool,
     quit: bool,
     tick: usize,
@@ -88,9 +116,13 @@ impl App {
             generation: 0,
             show_hidden: false,
             show_treemap: false,
+            sort: SortMode::Size,
             filter: String::new(),
             filtering: false,
             confirm: false,
+            bookmarks: load_bookmarks(),
+            bookmark_pick: false,
+            bookmark_sel: 0,
             help: false,
             quit: false,
             tick: 0,
@@ -152,7 +184,7 @@ impl App {
     fn rebuild_visible(&mut self) {
         let needle = self.filter.to_lowercase();
         let show_hidden = self.show_hidden;
-        self.visible = self
+        let mut idx: Vec<usize> = self
             .rows
             .iter()
             .enumerate()
@@ -160,6 +192,20 @@ impl App {
             .filter(|(_, r)| needle.is_empty() || row_matches(r, &needle))
             .map(|(i, _)| i)
             .collect();
+        match self.sort {
+            SortMode::Size => {
+                idx.sort_by(|&a, &b| self.rows[b].child.size.cmp(&self.rows[a].child.size))
+            }
+            SortMode::Name => {
+                idx.sort_by(|&a, &b| name_key(&self.rows[a]).cmp(&name_key(&self.rows[b])))
+            }
+            SortMode::Kind => idx.sort_by(|&a, &b| {
+                kind_rank(self.rows[a].child.kind)
+                    .cmp(&kind_rank(self.rows[b].child.kind))
+                    .then(self.rows[b].child.size.cmp(&self.rows[a].child.size))
+            }),
+        }
+        self.visible = idx;
         if self.selected >= self.visible.len() {
             self.selected = self.visible.len().saturating_sub(1);
         }
@@ -267,6 +313,39 @@ impl App {
             }
             return;
         }
+        if self.bookmark_pick {
+            match code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if !self.bookmarks.is_empty() {
+                        self.bookmark_sel = (self.bookmark_sel + 1).min(self.bookmarks.len() - 1);
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.bookmark_sel = self.bookmark_sel.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    if let Some(p) = self.bookmarks.get(self.bookmark_sel).cloned() {
+                        self.bookmark_pick = false;
+                        self.stack = vec![p];
+                        self.load();
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if self.bookmark_sel < self.bookmarks.len() {
+                        self.bookmarks.remove(self.bookmark_sel);
+                        if self.bookmark_sel >= self.bookmarks.len() {
+                            self.bookmark_sel = self.bookmarks.len().saturating_sub(1);
+                        }
+                        let _ = save_bookmarks(&self.bookmarks);
+                    }
+                }
+                KeyCode::Char('B') | KeyCode::Esc | KeyCode::Char('q') => {
+                    self.bookmark_pick = false
+                }
+                _ => {}
+            }
+            return;
+        }
         if self.filtering {
             match code {
                 KeyCode::Enter => self.filtering = false,
@@ -320,6 +399,26 @@ impl App {
             }
             KeyCode::Char('/') => self.filtering = true,
             KeyCode::Char('t') => self.show_treemap = !self.show_treemap,
+            KeyCode::Char('s') => {
+                self.sort = self.sort.next();
+                self.rebuild_visible();
+                self.status = Some(format!("排序: {}", self.sort.label()));
+            }
+            KeyCode::Char('b') => {
+                let dir = self.cwd().to_path_buf();
+                if let Some(pos) = self.bookmarks.iter().position(|p| *p == dir) {
+                    self.bookmarks.remove(pos);
+                    self.status = Some("已取消书签".into());
+                } else {
+                    self.bookmarks.push(dir);
+                    self.status = Some("已加书签（B 打开列表）".into());
+                }
+                let _ = save_bookmarks(&self.bookmarks);
+            }
+            KeyCode::Char('B') => {
+                self.bookmark_pick = true;
+                self.bookmark_sel = 0;
+            }
             KeyCode::Char('c') => {
                 if let Some(row) = self.current() {
                     if row.rec.cleanable && !row.rec.protected {
@@ -432,6 +531,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
     }
     if app.confirm {
         render_confirm(frame, app);
+    }
+    if app.bookmark_pick {
+        render_bookmarks(frame, app);
     }
 }
 
@@ -553,14 +655,11 @@ fn render_list(frame: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     let title = format!(
-        "{}  ·  {} 项{}",
+        "{}  ·  {} 项 · 排序:{}{}",
         app.cwd().display(),
         app.visible.len(),
-        if app.show_hidden {
-            "（含隐藏）"
-        } else {
-            ""
-        }
+        app.sort.label(),
+        if app.show_hidden { " · 含隐藏" } else { "" }
     );
     let list = List::new(items)
         .block(Block::default().borders(Borders::ALL).title(title))
@@ -640,6 +739,8 @@ fn render_detail(frame: &mut Frame, app: &App, area: Rect) {
 fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
     let text = if app.confirm {
         "移入隔离区？ y 确认 / n 取消".into()
+    } else if app.bookmark_pick {
+        "书签：j/k 选择 · Enter 跳转 · d 删除 · Esc 关闭".into()
     } else if app.filtering {
         format!("过滤: {}▏  Enter 确认 · Esc 清除", app.filter)
     } else if let Some(s) = &app.status {
@@ -694,6 +795,39 @@ fn render_loading(
     }
 }
 
+fn render_bookmarks(frame: &mut Frame, app: &App) {
+    let a = centered_rect(72, 60, frame.area());
+    frame.render_widget(Clear, a);
+    let lines: Vec<Line> = if app.bookmarks.is_empty() {
+        vec![Line::from(Span::styled(
+            "（暂无书签，按 b 把当前目录加入）",
+            Style::default().fg(Color::DarkGray),
+        ))]
+    } else {
+        app.bookmarks
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let mark = if i == app.bookmark_sel { "› " } else { "  " };
+                let style = if i == app.bookmark_sel {
+                    Style::default().add_modifier(Modifier::REVERSED)
+                } else {
+                    Style::default()
+                };
+                Line::from(Span::styled(format!("{mark}{}", p.display()), style))
+            })
+            .collect()
+    };
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("书签  Enter 跳转 · d 删除 · Esc 关闭"),
+        ),
+        a,
+    );
+}
+
 fn render_confirm(frame: &mut Frame, app: &App) {
     let Some(row) = app.current() else {
         return;
@@ -740,7 +874,9 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::from("  Backspace / ← 返回上级"),
         Line::from("  g / G        跳到顶部 / 底部"),
         Line::from("  /            过滤（按名称/用途）"),
+        Line::from("  s            切换排序（大小/名称/类型）"),
         Line::from("  t            占用图切换"),
+        Line::from("  b / B        加/删当前目录书签 · 打开书签列表"),
         Line::from("  c            把当前可清理项移入隔离区（需确认）"),
         Line::from("  r            重新计算当前目录"),
         Line::from("  .            显示/隐藏 . 开头项"),
@@ -787,6 +923,44 @@ fn is_hidden(path: &Path) -> bool {
 }
 
 /// 过滤匹配：名称或用途标题包含关键字（均已小写）
+fn name_key(r: &Row) -> String {
+    r.child
+        .path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
+}
+
+fn kind_rank(kind: EntryKind) -> u8 {
+    match kind {
+        EntryKind::Dir => 0,
+        EntryKind::Mount => 1,
+        EntryKind::File => 2,
+        EntryKind::Symlink => 3,
+        EntryKind::Inaccessible => 4,
+    }
+}
+
+fn bookmarks_path() -> PathBuf {
+    clean::thin_home().join("bookmarks.json")
+}
+
+fn load_bookmarks() -> Vec<PathBuf> {
+    std::fs::read_to_string(bookmarks_path())
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<PathBuf>>(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_bookmarks(list: &[PathBuf]) -> Result<()> {
+    let p = bookmarks_path();
+    if let Some(dir) = p.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    std::fs::write(p, serde_json::to_vec_pretty(list)?)?;
+    Ok(())
+}
+
 fn row_matches(r: &Row, needle: &str) -> bool {
     let name = r
         .child
