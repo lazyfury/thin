@@ -211,6 +211,7 @@ thin apps --min 500MB                          # 只看大件
 thin uninstall <名称>                           # 预览卸载计划
 thin uninstall <名称> --deep                    # 预览时用 Spotlight 深扫补充带后缀/嵌套的关联残留
 thin uninstall <名称> --apply                   # 卸载并移入隔离区
+thin uninstall <名称> --kill --apply            # 先退出正在运行的 App（优雅退出 → 强制结束）再卸载
 ```
 
 </details>
@@ -257,7 +258,7 @@ thin schedule uninstall
 | 路径校验 | 拒绝空路径、控制字符、`..` 组件；符号链接先解析再判定 |
 | 预演=执行 | `clean` / `dupes` / `uninstall` 的 dry-run 与 `--apply` 共用同一安全门，跳过项不计入可释放 |
 | 卷隔离 | 目标必须与隔离区（`~/.thin`）同卷；外接盘/其他挂载被拒绝，避免跨卷复制 |
-| App 保护 | 运行中的 App 拒绝卸载（探测超时视为运行中）；系统关键 App 禁止卸载 |
+| App 保护 | 运行中的 App 拒绝卸载（探测超时视为运行中），加 `--kill` 可先退出其进程再卸载；系统关键 App 禁止卸载 |
 | 超时 | `tmutil`/`plutil`/`pgrep`/`mount`/`date` 均带超时，不会挂死 |
 | 需 sudo 项 | 自动跳过，提示手动处理，**不计入「可回收」** |
 | 风险分级 | 默认只处理「安全」项；`--all` 含「需确认」；「不可再生」需显式 `--id` |

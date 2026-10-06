@@ -102,6 +102,12 @@ struct PendingUninstall {
     skipped: usize,
 }
 
+/// 待确认的「退出运行中的 App 后卸载」
+struct PendingKill {
+    app_name: String,
+    app_path: PathBuf,
+}
+
 /// 树形视图中已展开的一行（由 [`TreeNode`] 扁平化而来，便于用列表光标导航）。
 #[derive(Clone)]
 struct TreeRow {
@@ -198,6 +204,8 @@ struct App {
     confirm: bool,
     /// 卸载 App 的二次确认
     uninstall_confirm: Option<PendingUninstall>,
+    /// 运行中的 App：是否先退出再卸载的确认
+    kill_confirm: Option<PendingKill>,
     status: Option<Toast>,
     help: bool,
     quit: bool,
@@ -228,6 +236,7 @@ impl App {
             browse: None,
             confirm: false,
             uninstall_confirm: None,
+            kill_confirm: None,
             status: None,
             help: false,
             quit: false,
@@ -607,7 +616,7 @@ impl App {
         }
     }
 
-    /// 组装卸载计划；系统关键 App / 运行中的 App 直接拒绝
+    /// 组装卸载计划；系统关键 App 直接拒绝，运行中的 App 先走「退出」确认
     fn begin_uninstall(&mut self) {
         let Some(app) = self.current_app() else {
             return;
@@ -617,9 +626,37 @@ impl App {
             return;
         }
         if apps::is_running(&app.path) {
-            self.error(format!("{} 正在运行，请先退出后再卸载", app.name));
+            self.kill_confirm = Some(PendingKill {
+                app_name: app.name.clone(),
+                app_path: app.path.clone(),
+            });
             return;
         }
+        self.plan_uninstall(&app);
+    }
+
+    /// 退出运行中的 App，成功后重新组装卸载计划
+    fn kill_and_uninstall(&mut self, pending: PendingKill) {
+        if let Err(e) = apps::kill_app(&pending.app_path) {
+            self.error(format!("退出 {} 失败：{e:#}", pending.app_name));
+            return;
+        }
+        // 列表可能已重载，按路径重新取回 App 组装计划
+        let app = match &self.apps {
+            Load::Ready(list) => list.iter().find(|a| a.path == pending.app_path).cloned(),
+            _ => None,
+        };
+        let Some(app) = app else {
+            self.warn(format!(
+                "已退出 {}，但 App 列表已变化，请重试",
+                pending.app_name
+            ));
+            return;
+        };
+        self.plan_uninstall(&app);
+    }
+
+    fn plan_uninstall(&mut self, app: &AppInfo) {
         let mut items: Vec<CleanItem> = vec![CleanItem::synthetic(
             app.path.clone(),
             app.size,
@@ -795,6 +832,16 @@ impl App {
                 KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => self.apply(),
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => self.confirm = false,
                 _ => {}
+            }
+            return;
+        }
+        if let Some(pending) = self.kill_confirm.take() {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    self.kill_and_uninstall(pending)
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {}
+                _ => self.kill_confirm = Some(pending),
             }
             return;
         }
@@ -995,9 +1042,48 @@ fn ui(frame: &mut Frame, app: &mut App) {
     if app.confirm {
         render_confirm(frame, app);
     }
+    if let Some(pending) = &app.kill_confirm {
+        render_kill_confirm(frame, pending);
+    }
     if let Some(plan) = &app.uninstall_confirm {
         render_uninstall_confirm(frame, plan);
     }
+}
+
+/// 「正在运行」的退出确认：退出进程是破坏性动作，单独确认一次。
+fn render_kill_confirm(frame: &mut Frame, pending: &PendingKill) {
+    let area = centered_rect_fixed(66, 10, frame.area());
+    frame.render_widget(Clear, area);
+    let text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("{} 正在运行", pending.app_name),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from("卸载前需先退出该 App（优雅退出 → 强制结束）。"),
+        Line::from(""),
+        Line::from(Span::styled(
+            "未保存的修改可能丢失；退出后仍会先移入废纸篓/隔离区。",
+            Style::default().fg(Color::DarkGray),
+        )),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("[y] 退出并卸载", Style::default().fg(Color::Red)),
+            Span::raw("    "),
+            Span::styled("[n / Esc] 取消", Style::default().fg(Color::Green)),
+        ]),
+    ];
+    let popup = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Yellow))
+                .title("退出运行中的 App"),
+        )
+        .alignment(Alignment::Center);
+    frame.render_widget(popup, area);
 }
 
 fn render_header(frame: &mut Frame, area: Rect) {
@@ -2041,6 +2127,32 @@ mod tests {
         // 再次 space 取消整组
         app.on_key(KeyEvent::from(KeyCode::Char(' ')));
         assert_eq!(app.selected, vec![false, false, false]);
+    }
+
+    #[test]
+    fn kill_confirm_prompts_to_quit_running_app() {
+        let mut app = test_app();
+        app.tab = APPS_TAB;
+        app.kill_confirm = Some(PendingKill {
+            app_name: "Foo".into(),
+            app_path: PathBuf::from("/Applications/Foo.app"),
+        });
+        let text = render(&mut app, 100, 30);
+        assert!(text.contains("退出运行中的 App"), "{text}");
+        assert!(text.contains("[y] 退出并卸载"), "{text}");
+        assert!(text.contains("[n / Esc] 取消"), "{text}");
+    }
+
+    #[test]
+    fn n_key_cancels_kill_confirm() {
+        let mut app = test_app();
+        app.tab = APPS_TAB;
+        app.kill_confirm = Some(PendingKill {
+            app_name: "Foo".into(),
+            app_path: PathBuf::from("/Applications/Foo.app"),
+        });
+        app.on_key(KeyEvent::from(KeyCode::Char('n')));
+        assert!(app.kill_confirm.is_none());
     }
 
     #[test]

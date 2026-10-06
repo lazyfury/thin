@@ -145,6 +145,52 @@ pub fn is_running(app: &Path) -> bool {
         .unwrap_or(true)
 }
 
+/// 退出正在运行的 App（先优雅退出，超时后按可执行文件路径强制结束）。
+///
+/// 只结束该 `.app` 自身的进程，不做任何文件删除；卸载仍走废纸篓/隔离区。
+/// 返回 `Ok` 表示已确认不再运行，`Err` 表示仍在运行（调用方应取消卸载）。
+pub fn kill_app(app: &Path) -> anyhow::Result<()> {
+    let name = app.file_stem().and_then(|s| s.to_str()).unwrap_or("该 App");
+
+    // 1) 真·GUI App（NSWorkspace 已注册）优先请求优雅退出，让它保存状态。
+    //    脚本直接 exec 的同路径进程不在此列，直接强制结束，避免无谓的 TCC 弹窗。
+    let is_gui = crate::platform::platform()
+        .is_app_running(app)
+        .unwrap_or(false);
+    if is_gui && let Some(stem) = app.file_stem().and_then(|s| s.to_str()) {
+        let script = format!("tell application \"{stem}\" to quit");
+        let _ =
+            crate::proc::output_with_timeout("osascript", &["-e", &script], Duration::from_secs(5));
+        if wait_until_stopped(app, Duration::from_secs(2)) {
+            return Ok(());
+        }
+    }
+
+    // 2) 强制结束：只匹配该 App 的可执行目录，避免误杀同名进程
+    let needle = app.join("Contents/MacOS");
+    let pattern = format!("{}/", needle.to_string_lossy());
+    let _ = crate::proc::output_with_timeout("pkill", &["-f", &pattern], Duration::from_secs(3));
+    if wait_until_stopped(app, Duration::from_secs(2)) {
+        return Ok(());
+    }
+
+    anyhow::bail!("无法退出 {name}，请手动退出后再试")
+}
+
+/// 轮询等待 App 停止（`is_running` 探测失败时保守视为仍在运行）。
+fn wait_until_stopped(app: &Path, timeout: Duration) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if !is_running(app) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
 /// 系统关键 App（不可卸载）。
 ///
 /// 刻意用显式列表而非 `com.apple.*` 通配：后者会连带阻止用户自行安装的
@@ -1055,6 +1101,29 @@ mod tests {
             .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(is_running(&app), "应检测到正在运行的 App");
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_dir_all(&app);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn kill_app_terminates_running_process() {
+        let app = std::env::temp_dir().join(format!("thin-kill-{}.app", std::process::id()));
+        let macos = app.join("Contents/MacOS");
+        std::fs::create_dir_all(&macos).unwrap();
+
+        let mut child = Command::new("bash")
+            .arg("-c")
+            .arg(format!("exec -a '{}/Foo' sleep 30", macos.display()))
+            .spawn()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(is_running(&app), "应检测到正在运行的 App");
+
+        kill_app(&app).expect("应能退出 App");
+        assert!(!is_running(&app), "退出后不应再检测到运行");
 
         let _ = child.kill();
         let _ = child.wait();

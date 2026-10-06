@@ -211,6 +211,9 @@ struct UninstallArgs {
     /// 启用 Spotlight 深扫，补充带后缀/嵌套的关联残留（较慢）
     #[arg(long)]
     deep: bool,
+    /// 卸载前先退出正在运行的 App（优雅退出 → 强制结束），仍移入废纸篓/隔离区
+    #[arg(long)]
+    kill: bool,
 }
 
 #[derive(clap::Args)]
@@ -1915,16 +1918,32 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
     };
     if !args.apply {
         println!("（预览；加 --apply 移入{}，可恢复）", mode.label());
+        if apps::is_running(&app.path) {
+            println!("注意：{} 正在运行；加 --kill 可先退出再卸载。", app.name);
+        }
         return Ok(());
     }
 
-    // SafetyGate：运行中的 App 不硬删
+    // SafetyGate：运行中的 App 不硬删。--kill 时先退出该 App 自身进程，
+    // 但仍走废纸篓/隔离区，不引入任何直接删除路径。
     if apps::is_running(&app.path) {
-        println!(
-            "\x1b[31m已取消：{} 正在运行，请先退出后再卸载。\x1b[0m",
-            app.name
-        );
-        return Ok(());
+        if !args.kill {
+            println!(
+                "\x1b[31m已取消：{} 正在运行，请先退出（或用 --kill）。\x1b[0m",
+                app.name
+            );
+            return Ok(());
+        }
+        // 退出进程是破坏性动作，即便 --yes 也单独确认一次
+        if !confirm(&format!("{} 正在运行，退出其进程后再卸载？", app.name))? {
+            println!("已取消。");
+            return Ok(());
+        }
+        if let Err(e) = apps::kill_app(&app.path) {
+            println!("\x1b[31m已取消：{e:#}\x1b[0m");
+            return Ok(());
+        }
+        println!("已退出 {}", app.name);
     }
     if plan.approved.is_empty() {
         println!("没有可通过安全门的项。");
