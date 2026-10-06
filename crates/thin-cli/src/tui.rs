@@ -938,16 +938,30 @@ impl App {
     }
 
     fn on_key(&mut self, key: KeyEvent) {
-        let code = key.code;
+        let mut code = key.code;
         // Ctrl+C 退出；带修饰键的其它按键不触发动作（避免把 Ctrl+C 当成 'c' 清理）
         if key.modifiers.contains(KeyModifiers::CONTROL) {
-            if matches!(code, KeyCode::Char('c')) {
+            if matches!(code, KeyCode::Char('c') | KeyCode::Char('C')) {
                 self.quit = true;
             }
             return;
         }
-        if !key.modifiers.is_empty() {
+        // Alt/Super 组合键一律忽略；Shift 是输入大写字母的正常方式，必须放行，
+        // 否则 kitty/wezterm 等增强键盘协议终端会把 Shift+P 标成 SHIFT 修饰，
+        // 导致「大写 P 解除保护」被误判为组合键而无响应。
+        if key
+            .modifiers
+            .intersects(KeyModifiers::ALT | KeyModifiers::SUPER)
+        {
             return;
+        }
+        // 部分终端把 Shift+字母上报为「小写 Char + SHIFT」，归一成大写，
+        // 保证 'P'/'A'/'G' 等分支能被命中。
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && let KeyCode::Char(c) = code
+            && c.is_ascii_lowercase()
+        {
+            code = KeyCode::Char(c.to_ascii_uppercase());
         }
         if self.confirm {
             match code {
@@ -2196,6 +2210,33 @@ mod tests {
 
     fn clean_item(path: &str, size: u64) -> CleanItem {
         CleanItem::synthetic(PathBuf::from(path), size, "test", "测试项", Risk::Safe)
+    }
+
+    #[test]
+    fn shifted_uppercase_keys_reach_action_handlers() {
+        // 回归：增强键盘协议终端（kitty/wezterm 等）会为 Shift+P 附带 SHIFT 修饰，
+        // 之前「非空修饰键一律 return」会让所有大写键失效（P 解除保护、A 全选等）。
+        let items = vec![
+            clean_item("/tmp/thin-shift-a", 1024),
+            clean_item("/tmp/thin-shift-b", 2048),
+        ];
+        let mut app = test_app();
+        app.tab = CLEAN_TAB;
+        app.clean = Load::Ready(items);
+
+        app.selected = vec![false, false];
+        app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::SHIFT));
+        assert_eq!(app.selected, vec![true, true], "Shift+A 应全选");
+
+        // 部分终端把 Shift+字母上报为「小写 Char + SHIFT」，也应识别为大写。
+        app.selected = vec![false, false];
+        app.on_key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::SHIFT));
+        assert_eq!(app.selected, vec![true, true], "小写+SHIFT 应归一为大写");
+
+        // Alt/Super 等组合键仍不得触发动作（保留原有安全意图）。
+        app.selected = vec![false, false];
+        app.on_key(KeyEvent::new(KeyCode::Char('A'), KeyModifiers::ALT));
+        assert_eq!(app.selected, vec![false, false], "Alt 组合键不应触发");
     }
 
     #[test]
