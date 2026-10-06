@@ -6,7 +6,9 @@
 //!   按 `bundleId` 覆盖内置条目。
 //!
 //! 用途：消除「厂商目录共享 / 同族 App」带来的歧义。
-//! - `tokens`：补充目录名 token（等价于原先硬编码的 hints）；
+//! - `tokens`：补充目录名 token（原样用作目录名，等价于原先硬编码的 hints）；
+//! - `aliases`：App 的别名 / 旧名（按显示名规则归一化，用于残留候选与 `--deep`
+//!   强 token，也可作为 `thin uninstall <别名>` 的查询词）；
 //! - `forcePaths`：精确补充候选路径（支持 `~` 展开）；
 //! - `require`：候选（相对 home 的归一化路径）必须命中其中任一子串；
 //! - `exclude`：候选命中任一子串即丢弃。
@@ -30,9 +32,12 @@ const DEFAULT_CONDITIONS: &str = include_str!("../rules/app-leftovers.json");
 pub struct AppCondition {
     /// 精确匹配的 bundle id（忽略大小写）
     pub bundle_id: String,
-    /// 额外目录名 token（原始名即可，会与显示名/ bundle 名一起归一化）
+    /// 额外目录名 token（原样用作目录名）
     #[serde(default)]
     pub tokens: Vec<String>,
+    /// App 的别名 / 旧名（按显示名规则归一化后参与残留匹配与 `uninstall` 查询）
+    #[serde(default)]
+    pub aliases: Vec<String>,
     /// 精确补充的候选路径（支持 `~` 展开）
     #[serde(default)]
     pub force_paths: Vec<String>,
@@ -170,7 +175,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("vscode.json"),
-            r#"{"bundleId":"com.microsoft.VSCode","tokens":["Override"]}"#,
+            r#"{"bundleId":"com.microsoft.VSCode","tokens":["Override"],"aliases":["VSCode","Visual Studio Code"]}"#,
         )
         .unwrap();
 
@@ -180,6 +185,10 @@ mod tests {
             .find(|x| x.bundle_id == "com.microsoft.VSCode")
             .unwrap();
         assert_eq!(vscode.tokens, vec!["Override".to_string()]);
+        assert_eq!(
+            vscode.aliases,
+            vec!["VSCode".to_string(), "Visual Studio Code".to_string()]
+        );
 
         // 未覆盖的其它条目仍在
         assert!(merged.iter().any(|x| x.bundle_id == "com.google.Chrome"));

@@ -56,7 +56,7 @@
     "exclude": ["firefox"]
   },
   { "bundleId": "com.brave.Browser", "tokens": ["BraveSoftware", "Brave Browser"] },
-  { "bundleId": "com.docker.docker", "tokens": ["Docker"] },
+  { "bundleId": "com.docker.docker", "tokens": ["Docker"], "aliases": ["Docker Desktop", "docker-desktop"] },
   { "bundleId": "com.electron.docker-frontend", "tokens": ["Docker Desktop"] },
   { "bundleId": "com.tinyspeck.slackmacgap", "tokens": ["Slack"] },
   { "bundleId": "com.spotify.client", "tokens": ["Spotify"] },
@@ -71,7 +71,7 @@
   { "bundleId": "com.microsoft.edgemac", "tokens": ["Microsoft Edge"], "exclude": ["vscode", "rdc", "appcenter", "office", "oneauth"] },
   { "bundleId": "com.operasoftware.Opera", "tokens": ["Opera"] },
   { "bundleId": "org.virtualbox.app.VirtualBox", "tokens": ["VirtualBox"] },
-  { "bundleId": "com.parallels.desktop.console", "tokens": ["Parallels"] },
+  { "bundleId": "com.parallels.desktop.console", "tokens": ["Parallels"], "aliases": ["Parallels Desktop"] },
   { "bundleId": "com.vmware.fusion", "tokens": ["VMware Fusion"] },
   { "bundleId": "com.raycast.macos", "tokens": ["Raycast"] },
   { "bundleId": "com.1password.1password", "tokens": ["1Password"] },

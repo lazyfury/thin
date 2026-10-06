@@ -373,8 +373,11 @@ thin rules add --json rule.json --approve-script   # 审查并钉住脚本哈希
 - **代码签名 entitlements**（Swift 后端）：沙盒 `Containers/<bundle-id>`、entitlements 声明的
   Group Containers、iCloud 容器（`Mobile Documents`）、team id 前缀的 Group Containers，
   并通过容器元数据（`MCMMetadataIdentifier`）把 **UUID 命名**的沙盒容器归回所属 App；
+- **每用户 Darwin 临时/缓存**：`/private/var/folders/<随机>/{0,T,C}`（即 `$TMPDIR` 与用户缓存），
+  用 `confstr` 解析随机前缀，按 bundle id / 别名匹配其中的 App 目录（`C/`、`T/` 里常见）；
 - **声明式条件表**：内置 `rules/app-leftovers.json`（编译期嵌入），用户可在
   `~/.thin/app-leftovers.d/*.json` 按 `bundleId` 覆盖。字段：`tokens`（补充目录名）、
+  `aliases`（App 别名/旧名，归一化后参与残留匹配，也可作为 `thin uninstall <别名>` 的查询词）、
   `forcePaths`（精确补路径）、`require`/`exclude`（收敛泛匹配，相对 home 归一化后子串匹配）。
   用于消除歧义：Chrome 只取 `Google/Chrome` 而不整包删除共享的 `Google` 厂商目录，
   VS Code 稳定版不碰 `Code - Insiders`，Firefox 不碰 Thunderbird 等；

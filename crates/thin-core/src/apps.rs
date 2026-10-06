@@ -119,12 +119,16 @@ pub fn list_apps() -> Vec<AppInfo> {
     apps
 }
 
-/// 按名字模糊匹配 App（不区分大小写）
+/// 按名字模糊匹配 App（不区分大小写，也认条件表里的别名）
 pub fn find_app(query: &str) -> Vec<AppInfo> {
     let q = query.to_lowercase();
     list_apps()
         .into_iter()
-        .filter(|a| a.name.to_lowercase().contains(&q))
+        .filter(|a| {
+            a.name.to_lowercase().contains(&q)
+                || crate::app_conditions::lookup(a.bundle_id.as_deref())
+                    .is_some_and(|c| c.aliases.iter().any(|al| al.to_lowercase().contains(&q)))
+        })
         .collect()
 }
 
@@ -310,6 +314,19 @@ fn push_token(out: &mut Vec<String>, raw: &str) {
     }
 }
 
+/// 加入一个 App 别名（显示名/旧名）：原样 + 归一化，阈值与显示名一致（>=3）。
+fn push_alias_token(out: &mut Vec<String>, alias: &str) {
+    let s = alias.trim();
+    if s.len() < 3 || s.chars().all(|c| c == '.') {
+        return;
+    }
+    out.push(s.to_string());
+    let norm = normalize_token(s);
+    if norm.len() >= 3 && norm != s {
+        out.push(norm);
+    }
+}
+
 /// `Contents/MacOS` 下明显非可执行文件的扩展名（避免把数据文件当 token）。
 const NON_EXECUTABLE_EXTS: &[&str] = &[
     "dat", "txt", "dylib", "so", "json", "plist", "png", "icns", "pdf", "html", "js", "css", "map",
@@ -441,6 +458,84 @@ const PLUGIN_DIRS: &[(&str, &str)] = &[
     ("Audio/Plug-Ins/CLAP", "clap"),
 ];
 
+/// macOS 每用户 Darwin 目录根：`0`（User）、`T`（Temp）、`C`（Cache）。
+///
+/// 形如 `/private/var/folders/<xx>/<随机串>/{0,T,C}`，随机前缀无法硬编码，
+/// 用 `confstr` 解析。非 macOS / 解析失败时返回空。
+fn darwin_user_dirs() -> Vec<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let names = [
+            libc::_CS_DARWIN_USER_DIR,
+            libc::_CS_DARWIN_USER_TEMP_DIR,
+            libc::_CS_DARWIN_USER_CACHE_DIR,
+        ];
+        let mut out: Vec<PathBuf> = Vec::new();
+        for name in names {
+            // 第一次取所需长度（含结尾 NUL），第二次取内容
+            let len = unsafe { libc::confstr(name, std::ptr::null_mut(), 0) };
+            if len == 0 {
+                continue;
+            }
+            let mut buf: Vec<libc::c_char> = vec![0; len];
+            let n = unsafe { libc::confstr(name, buf.as_mut_ptr(), len) };
+            if n == 0 || n > len {
+                continue;
+            }
+            let bytes: Vec<u8> = buf[..n - 1].iter().map(|&c| c as u8).collect();
+            if let Ok(s) = String::from_utf8(bytes) {
+                let p = PathBuf::from(s);
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
+        }
+        out
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Vec::new()
+    }
+}
+
+/// 缓存 Darwin 用户目录下的条目：`(路径, 小写文件名)`。只枚举一次。
+fn darwin_user_entries() -> &'static [(PathBuf, String)] {
+    static ENTRIES: OnceLock<Vec<(PathBuf, String)>> = OnceLock::new();
+    ENTRIES.get_or_init(|| {
+        let mut out = Vec::new();
+        for root in darwin_user_dirs() {
+            let Ok(rd) = std::fs::read_dir(&root) else {
+                continue;
+            };
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().to_lowercase();
+                out.push((e.path(), name));
+            }
+        }
+        out
+    })
+}
+
+/// 从 Darwin 用户目录条目里按 token 匹配候选：小写文件名等于 token，或（仅对含 `.`
+/// 的 bundle 式 token）以 `token.` 为前缀。这样既壮住 `.helper` 变体，又不会把
+/// `com.foo.bar` 误配成同前缀的 `com.foo.barista`。
+fn darwin_user_candidates(
+    tokens: &[String],
+    entries: &[(PathBuf, String)],
+) -> Vec<(PathBuf, bool)> {
+    let mut out = Vec::new();
+    for (path, name) in entries {
+        for t in tokens {
+            let tl = t.to_lowercase();
+            if *name == tl || (tl.contains('.') && name.starts_with(&format!("{tl}."))) {
+                out.push((path.clone(), false));
+                break;
+            }
+        }
+    }
+    out
+}
+
 /// 生成所有候选残留路径（path, sudo）
 fn candidate_paths(home: &Path, tokens: &[String]) -> Vec<(PathBuf, bool)> {
     let mut out: Vec<(PathBuf, bool)> = Vec::new();
@@ -519,6 +614,10 @@ fn candidate_paths(home: &Path, tokens: &[String]) -> Vec<(PathBuf, bool)> {
     for t in tokens {
         out.push((home.join(format!(".{t}")), false));
     }
+
+    // macOS 每用户 Darwin 临时/缓存目录（`/private/var/folders/<随机>/{0,T,C}`）：
+    // 不少 App 会在 `$TMPDIR` / 用户缓存下按 bundle id 建目录；安全门已允许该子树。
+    out.extend(darwin_user_candidates(tokens, darwin_user_entries()));
 
     // 共享目录（用户可写，无需 root）
     for sub in ["", "Library/Application Support"] {
@@ -637,6 +736,10 @@ pub fn find_leftovers(name: &str, bundle_id: Option<&str>, app_path: &Path) -> V
     // 声明式条件表补充的目录名 token
     if let Some(c) = cond {
         tokens.extend(c.tokens.iter().cloned());
+        // 别名按显示名规则补充：原样 + 归一化，供目录名与 `--deep` 强 token 命中
+        for a in &c.aliases {
+            push_alias_token(&mut tokens, a);
+        }
     }
     tokens.retain(|t| t.len() >= 3 && !t.chars().all(|c| c == '.'));
     tokens.sort();
@@ -766,6 +869,9 @@ fn spotlight_terms(name: &str, bundle_id: Option<&str>) -> Vec<String> {
     if let Some(c) = crate::app_conditions::lookup(bundle_id) {
         for t in &c.tokens {
             v.push(t.clone());
+        }
+        for a in &c.aliases {
+            v.push(a.clone());
         }
     }
     v.retain(|t| normalize_token(t).len() >= 5);
@@ -1085,6 +1191,38 @@ mod tests {
         assert!(!is_system_protected(Some("com.apple.dt.Xcode")));
         assert!(!is_system_protected(Some("com.apple.FinalCut")));
         assert!(!is_system_protected(Some("com.example.app")));
+    }
+
+    #[test]
+    fn darwin_user_candidates_match_bundle_and_helpers_only() {
+        let entries = vec![
+            (PathBuf::from("/p/C/com.foo.bar"), "com.foo.bar".to_string()),
+            (
+                PathBuf::from("/p/C/com.foo.bar.helper"),
+                "com.foo.bar.helper".to_string(),
+            ),
+            // 同前缀的另一个产品，不应被 `com.foo.bar` 命中
+            (
+                PathBuf::from("/p/C/com.foo.barista"),
+                "com.foo.barista".to_string(),
+            ),
+        ];
+        let got = darwin_user_candidates(&["com.foo.bar".to_string()], &entries);
+        let paths: Vec<&PathBuf> = got.iter().map(|(p, _)| p).collect();
+        assert!(paths.contains(&&PathBuf::from("/p/C/com.foo.bar")));
+        assert!(paths.contains(&&PathBuf::from("/p/C/com.foo.bar.helper")));
+        assert!(!paths.contains(&&PathBuf::from("/p/C/com.foo.barista")));
+        assert_eq!(got.len(), 2);
+    }
+
+    #[test]
+    fn alias_tokens_keep_raw_and_normalized() {
+        let mut tokens = Vec::new();
+        push_alias_token(&mut tokens, "Visual Studio Code");
+        push_alias_token(&mut tokens, "ab"); // 太短，忽略
+        assert!(tokens.contains(&"Visual Studio Code".to_string()));
+        assert!(tokens.contains(&"visualstudiocode".to_string()));
+        assert_eq!(tokens.iter().filter(|t| t.as_str() == "ab").count(), 0);
     }
 
     #[test]
