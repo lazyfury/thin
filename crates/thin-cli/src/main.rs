@@ -2030,12 +2030,22 @@ fn cmd_orphans(args: OrphansArgs) -> Result<()> {
         })
         .collect();
     let plan = clean::plan(&items);
+    // App 沙盒容器受 TCC 保护：缺 FDA 时只会得到「失败」，先明确提醒
+    let container_paths = |l: &thin_core::apps::Leftover| {
+        let s = l.path.to_string_lossy();
+        s.contains("/Library/Containers/") || s.contains("/Library/Group Containers/")
+    };
+    let needs_fda = probe::full_disk_access() == Some(false)
+        && found
+            .iter()
+            .any(|o| o.leftovers.iter().any(container_paths));
 
     if args.json {
         let out = serde_json::json!({
             "orphans": found,
             "totalBytes": found.iter().map(|o| o.total()).sum::<u64>(),
             "reclaimableBytes": plan.approved_bytes(),
+            "needsFullDiskAccess": needs_fda,
         });
         println!("{}", serde_json::to_string_pretty(&out)?);
         if !args.apply {
@@ -2043,6 +2053,14 @@ fn cmd_orphans(args: OrphansArgs) -> Result<()> {
         }
     } else {
         println!("\n\x1b[1m已卸载 App 的孤立残留\x1b[0m\n");
+        if needs_fda {
+            println!(
+                "\x1b[33m提示：包含 App 沙盒容器，但未授予「完全磁盘访问权限」，这些项会清理失败。\x1b[0m"
+            );
+            println!(
+                "\x1b[90m      系统设置 → 隐私与安全性 → 完全磁盘访问权限，勾选你的终端 App 后重试。\x1b[0m\n"
+            );
+        }
         for o in &found {
             println!("\x1b[1m{}\x1b[0m  {}", o.bundle_id, human(o.total()));
             for l in &o.leftovers {

@@ -233,6 +233,7 @@ thin quarantine purge --older-than 7d             # 二次确认后永久删除
 10. **写规则前先确认路径真实存在且可清理**；`regenerable=false` 的项风险应设为 `confirm` 或 `destructive`。
 11. 不确定时，宁可 `risk=confirm` 且 `--dry-run` 先看结果。
 12. **永久删除要确认**：`thin quarantine purge` 默认二次确认；agent 显式传 `--yes` 才跳过，并应先用 `--dry-run` 预览。
+13. **App 沙盒容器需要「完全磁盘访问权限」**：`~/Library/Containers`、`Group Containers` 受 TCC 保护，终端未授权时 `thin orphans` / `uninstall` 的容器项会失败（thin 会明确提示，不再只报「权限问题」）；应先授权再清理。
 
 ---
 

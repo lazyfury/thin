@@ -428,6 +428,22 @@ fn move_into(src: &Path, stored: &Path) -> Result<Moved> {
     }
 }
 
+/// 废纸篓失败的说明。App 沙盒容器（`~/Library/Containers`、`Group Containers`）
+/// 受 TCC 保护，未授予「完全磁盘访问权限」时目录及其内容都无法搬动，
+/// 底层只返回 `Operation not permitted`，这里补上可操作的建议。
+fn trash_failure_reason(path: &Path) -> String {
+    if is_app_container(path) && crate::probe::full_disk_access() == Some(false) {
+        return "受 macOS 隐私保护（App 容器）：请在 系统设置 → 隐私与安全性 → 完全磁盘访问权限 中授权后重试".to_string();
+    }
+    "移入废纸篓失败（权限或路径问题）".to_string()
+}
+
+/// App 沙盒容器（受 TCC 保护，需 FDA 才能搬动）。
+fn is_app_container(path: &Path) -> bool {
+    let s = path.to_string_lossy();
+    s.contains("/Library/Containers/") || s.contains("/Library/Group Containers/")
+}
+
 /// 移动失败是否因为目标带 `deny delete` ACL（EPERM / EACCES）。
 fn is_delete_denied(e: &anyhow::Error) -> bool {
     e.chain().any(|c| {
@@ -684,20 +700,18 @@ pub fn trash_with(
             Some(false) if it.path.is_dir() => {
                 let (moved, bytes, failed) = trash_contents(platform, &it.path);
                 if moved == 0 {
-                    report.failed.push((
-                        it.path.clone(),
-                        "移入废纸篓失败（权限或路径问题，内容也不可移动）".to_string(),
-                    ));
+                    report
+                        .failed
+                        .push((it.path.clone(), trash_failure_reason(&it.path)));
                 } else {
                     report.trashed_bytes = report.trashed_bytes.saturating_add(bytes);
                     report.contents_only.push(it.path.clone());
                 }
                 report.failed.extend(failed);
             }
-            Some(false) => report.failed.push((
-                it.path.clone(),
-                "移入废纸篓失败（权限或路径问题）".to_string(),
-            )),
+            Some(false) => report
+                .failed
+                .push((it.path.clone(), trash_failure_reason(&it.path))),
             None => anyhow::bail!("Swift 后端不可用，无法使用系统废纸篓；请改用默认隔离区模式"),
         }
     }
@@ -731,7 +745,10 @@ fn trash_contents(
                 moved += 1;
                 bytes = bytes.saturating_add(size);
             }
-            Some(false) => failed.push((child, "移入废纸篓失败（权限或路径问题）".to_string())),
+            Some(false) => {
+                let reason = trash_failure_reason(&child);
+                failed.push((child, reason));
+            }
             None => {
                 failed.push((child, "Swift 后端不可用".to_string()));
                 break;
@@ -831,7 +848,7 @@ fn describe_move_error(e: &anyhow::Error) -> String {
     let msg = format!("{e:#}");
     if is_eperm {
         format!(
-            "{msg}\n    提示：该目录受 macOS 隐私保护（TCC）。请在 系统设置 → 隐私与安全 → 完全磁盘访问权限 中授权 thin，或改清其内部的具体子项。"
+            "{msg}\n    提示：该目录受 macOS 隐私保护（TCC，App 沙盒容器常见）。请在 系统设置 → 隐私与安全 → 完全磁盘访问权限 中勾选你的终端 App（thin 随终端继承权限）后重试。"
         )
     } else {
         msg
@@ -1182,6 +1199,19 @@ mod tests {
         fn trash_available(&self) -> bool {
             true
         }
+    }
+
+    #[test]
+    fn detects_app_container_paths() {
+        assert!(is_app_container(Path::new(
+            "/Users/x/Library/Containers/com.foo.bar"
+        )));
+        assert!(is_app_container(Path::new(
+            "/Users/x/Library/Group Containers/TEAM.group.com.foo"
+        )));
+        assert!(!is_app_container(Path::new(
+            "/Users/x/Library/Application Support/com.foo.bar"
+        )));
     }
 
     /// 系统废纸篓模式下，带 `deny delete` ACL 的目录（如 `~/Library/Caches`）

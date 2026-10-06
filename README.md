@@ -394,6 +394,8 @@ thin rules add --json rule.json --approve-script   # 审查并钉住脚本哈希
   State,Caches,Logs,Application Support}` 与 Darwin `C/` 下「像 bundle id」的条目；排除系统 id
   （`com.apple.*`）、group id（`TEAMID.group.*`）与已安装 App 家族（含嵌套 `.app`/`.xpc`/`.appex`
   的 bundle id）。**只覆盖高置信来源**，App 名/厂商目录等中置信来源从略，仍走同一安全门。
+  注意：`~/Library/Containers` 等 App 沙盒容器受 TCC 保护，**终端需授予「完全磁盘访问权限」**
+  才能移入废纸篓/隔离区；缺权限时 thin 会明确提示（而非静默「失败」）。
 
 目录名只用强证据：完整 bundle id、bundle 末段（非通用词）、显示名/归一化名、Bundle 内可执行/
 helper 名，以及精确匹配的提示表（如 VS Code→`Code`、Chrome→`Google`、Docker→`Docker`）。
