@@ -95,6 +95,25 @@ enum Cmd {
 
     /// Agent 工作流：打印内嵌的用户提示词（探索 → 写规则 → 可恢复清理）
     Agents,
+
+    /// 内部：提权子进程入口，供 `clean --sudo` 通过系统授权框调用（不面向用户）
+    #[command(hide = true, name = "__elevated-move")]
+    ElevatedMove(ElevatedMoveArgs),
+}
+
+#[derive(clap::Args)]
+struct ElevatedMoveArgs {
+    /// 提权清单 JSON（由 `thin clean --sudo` 生成）
+    #[arg(long)]
+    manifest: String,
+
+    /// 调用者主目录：隔离区落在这里并 chown 回用户
+    #[arg(long)]
+    user_home: String,
+
+    /// 输出账本 JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(clap::Args)]
@@ -217,6 +236,9 @@ struct UninstallArgs {
     /// 卸载前先退出正在运行的 App（优雅退出 → 强制结束），仍移入废纸篓/隔离区
     #[arg(long)]
     kill: bool,
+    /// 对需要 root 的系统级残留弹出系统授权框，提权后移入隔离区
+    #[arg(long)]
+    sudo: bool,
 }
 
 #[derive(clap::Args)]
@@ -233,6 +255,9 @@ struct OrphansArgs {
     /// 改用 thin 隔离区（默认移入系统废纸篓）
     #[arg(long)]
     quarantine: bool,
+    /// 对需要 root 的系统级残留弹出系统授权框，提权后移入隔离区
+    #[arg(long)]
+    sudo: bool,
 }
 
 #[derive(clap::Args)]
@@ -375,6 +400,10 @@ struct CleanArgs {
     /// 同时预览需 sudo / 受系统保护、thin 不会处理的项（默认隐藏）
     #[arg(long)]
     manual: bool,
+
+    /// 对需要 root 的项弹出系统授权框，提权后移入隔离区（仅限内置 sudo 规则）
+    #[arg(long)]
+    sudo: bool,
 
     /// 以「按文件夹合并」的树形预览清理项
     #[arg(long)]
@@ -575,6 +604,11 @@ struct PurgeArgs {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    // 拒绝 `sudo thin`：整个进程提权会让 thin_home / protect 名单 / 废纸篓全部
+    // 落到 root 名下，静默绕过用户保护；提权只允许走内置的 __elevated-move 子进程。
+    if clean::is_root() && !matches!(&cli.cmd, Some(Cmd::ElevatedMove(_))) {
+        return reject_root();
+    }
     // 无子命令：默认进入 TUI（非交互环境下退化为打印帮助）
     let Some(cmd) = cli.cmd else {
         return default_entry();
@@ -604,6 +638,32 @@ fn main() -> Result<()> {
         Cmd::Schedule(args) => cmd_schedule(args)?,
         Cmd::Protect(args) => cmd_protect(args)?,
         Cmd::Agents => print_agents(),
+        Cmd::ElevatedMove(args) => cmd_elevated_move(args)?,
+    }
+    Ok(())
+}
+
+/// `sudo thin` 的拒绝提示：说明会破坏哪些安全不变量，并给出正确做法。
+fn reject_root() -> Result<()> {
+    Err(anyhow!(
+        "拒绝以 root 运行 thin：\n  \
+         · 会使用 root 的 ~/.thin，用户规则 / 保护名单 / 隔离区全部失效\n  \
+         · 废纸篓会落到 root 名下，Finder 看不到、无法恢复\n  \
+         · script 型规则与 ~/.thin/rules.d 会以 root 执行，存在提权风险\n\
+         请以普通用户运行；需要 root 的项用 `thin clean --apply --sudo`（会弹系统授权框）。"
+    ))
+}
+
+/// 内部提权子进程：复核清单并移入调用者隔离区，stdout 输出账本 JSON。
+fn cmd_elevated_move(args: ElevatedMoveArgs) -> Result<()> {
+    let home = PathBuf::from(&args.user_home);
+    let journal = clean::elevated_move(Path::new(&args.manifest), &home)?;
+    if args.json {
+        println!("{}", serde_json::to_string(&journal)?);
+    } else {
+        for e in &journal.entries {
+            println!("已移入隔离区 {}", e.original.display());
+        }
     }
     Ok(())
 }
@@ -1315,6 +1375,13 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
     let apply = args.apply && !args.dry_run;
     let mode = resolve_mode(args.quarantine, args.trash);
 
+    // 提权需要交互授权框，JSON 非交互模式不支持
+    if args.sudo && args.json {
+        return Err(anyhow!(
+            "提权清理需交互授权框，暂不支持 --json；请去掉 --json 或改用隔离区手动处理"
+        ));
+    }
+
     // JSON 模式：供 agent 直接消费；dry-run 输出计划，--apply 输出账本
     if args.json {
         if apply {
@@ -1386,8 +1453,8 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
     }
 
     // 默认把「需 sudo / 受系统保护」的项从预览里整个藏起来：它们本就不会被执行。
-    // --manual 才展示；真正执行仍走完整 selected（安全门逐项把关）。
-    let shown_selected: Vec<thin_core::CleanItem> = if args.manual {
+    // --manual 展示，--sudo 则视作提权执行目标；真正执行仍走完整 selected（安全门逐项把关）。
+    let shown_selected: Vec<thin_core::CleanItem> = if args.manual || args.sudo {
         selected.clone()
     } else {
         selected
@@ -1398,7 +1465,14 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
     };
     let shown_plan = clean::plan(&shown_selected);
 
-    if shown_plan.approved.is_empty() {
+    // 需提权的项：仅在显式 --sudo 时视为可执行目标
+    let sudo_pending: Vec<thin_core::CleanItem> = if args.sudo {
+        clean::sudo_items(&shown_selected)
+    } else {
+        Vec::new()
+    };
+
+    if shown_plan.approved.is_empty() && sudo_pending.is_empty() {
         if !shown_plan.skipped.is_empty() {
             println!("没有可通过安全门的清理项：");
             for s in &shown_plan.skipped {
@@ -1412,6 +1486,14 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
 
     if !apply {
         print_plan(&shown_plan, args.tree, mode);
+        if !sudo_pending.is_empty() {
+            let bytes: u64 = sudo_pending.iter().map(|i| i.size).sum();
+            println!(
+                "\n另有 {} 项需要管理员权限（{}），加 --apply --sudo 会弹系统授权框。",
+                sudo_pending.len(),
+                human(bytes)
+            );
+        }
         match mode {
             clean::Mode::Trash => {
                 println!("\n（dry-run，未执行任何操作。加 --apply 移入系统废纸篓）")
@@ -1425,9 +1507,14 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
 
     if !args.yes
         && !confirm(&format!(
-            "将 {} 项移入{}？",
+            "将 {} 项移入{}？{}",
             plan.approved.len(),
-            mode.label()
+            mode.label(),
+            if sudo_pending.is_empty() {
+                String::new()
+            } else {
+                format!("（另有 {} 项需管理员权限）", sudo_pending.len())
+            }
         ))?
     {
         println!("已取消。");
@@ -1460,6 +1547,30 @@ fn cmd_clean(args: CleanArgs) -> Result<()> {
                 (0, 0),
                 Some(journal),
             );
+        }
+    }
+
+    // 提权项：弹系统授权框，以 root 复核安全门后移入调用者隔离区
+    if !sudo_pending.is_empty() {
+        match clean::elevate_sudo(&sudo_pending) {
+            Ok(journal) => {
+                println!(
+                    "\n\x1b[1m提权清理\x1b[0m：移入隔离区 {} 项 · {}（会话 {}）",
+                    journal.entries.len(),
+                    human(journal.total_size()),
+                    journal.session
+                );
+                println!("可用 `thin quarantine restore {}` 恢复。", journal.session);
+                record_history(
+                    "manual-sudo",
+                    args.preset.as_deref(),
+                    sudo_pending.len(),
+                    journal.entries.len(),
+                    (0, 0),
+                    Some(&journal),
+                );
+            }
+            Err(e) => eprintln!("\x1b[33m提权清理未执行：{e:#}\x1b[0m"),
         }
     }
     warn_snapshots();
@@ -1922,6 +2033,13 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         println!("  \x1b[33m跳过\x1b[0m {}：{}", shorten(&s.path), s.reason);
     }
 
+    // 需 root 的系统级残留：仅在显式 --sudo 时作为提权执行目标
+    let sudo_pending: Vec<CleanItem> = if args.sudo {
+        clean::sudo_items(&items)
+    } else {
+        Vec::new()
+    };
+
     // 安装包记录（informational）
     let pkgs = apps::pkg_receipt_ids(app.bundle_id.as_deref(), &app.name);
     if !pkgs.is_empty() {
@@ -1938,6 +2056,12 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
     };
     if !args.apply {
         println!("（预览；加 --apply 移入{}，可恢复）", mode.label());
+        if !sudo_pending.is_empty() {
+            println!(
+                "其中 {} 项需管理员权限，加 --sudo 会弹系统授权框。",
+                sudo_pending.len()
+            );
+        }
         if apps::is_running(&app.path) {
             println!("注意：{} 正在运行；加 --kill 可先退出再卸载。", app.name);
         }
@@ -1965,11 +2089,22 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
         }
         println!("已退出 {}", app.name);
     }
-    if plan.approved.is_empty() {
+    if plan.approved.is_empty() && sudo_pending.is_empty() {
         println!("没有可通过安全门的项。");
         return Ok(());
     }
-    if !args.yes && !confirm(&format!("卸载 {} 并移入{}？", app.name, mode.label()))? {
+    if !args.yes
+        && !confirm(&format!(
+            "卸载 {} 并移入{}？{}",
+            app.name,
+            mode.label(),
+            if sudo_pending.is_empty() {
+                String::new()
+            } else {
+                format!("（另有 {} 项需管理员权限）", sudo_pending.len())
+            }
+        ))?
+    {
         println!("已取消。");
         return Ok(());
     }
@@ -1991,11 +2126,41 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
             );
         }
     }
+
+    // 需 root 的系统级残留（LaunchDaemons 等）：弹系统授权框
+    if !sudo_pending.is_empty() {
+        match clean::elevate_sudo(&sudo_pending) {
+            Ok(journal) => {
+                println!(
+                    "\n\x1b[1m提权清理\x1b[0m：移入隔离区 {} 项 · {}（会话 {}）",
+                    journal.entries.len(),
+                    human(journal.total_size()),
+                    journal.session
+                );
+                println!("可用 `thin quarantine restore {}` 恢复。", journal.session);
+                record_history(
+                    "uninstall-sudo",
+                    None,
+                    sudo_pending.len(),
+                    journal.entries.len(),
+                    (0, 0),
+                    Some(&journal),
+                );
+            }
+            Err(e) => eprintln!("\x1b[33m提权清理未执行：{e:#}\x1b[0m"),
+        }
+    }
     warn_snapshots();
     Ok(())
 }
 
 fn cmd_orphans(args: OrphansArgs) -> Result<()> {
+    // 提权需要交互授权框，JSON 非交互模式不支持；先于扫描直接拒绝
+    if args.sudo && args.json {
+        return Err(anyhow!(
+            "提权清理需交互授权框，暂不支持 --json；请去掉 --json 或改用隔离区手动处理"
+        ));
+    }
     let found = orphans::find_orphans();
 
     if found.is_empty() {
@@ -2030,6 +2195,12 @@ fn cmd_orphans(args: OrphansArgs) -> Result<()> {
         })
         .collect();
     let plan = clean::plan(&items);
+    // 需 root 的系统级残留：仅在显式 --sudo 时作为提权执行目标
+    let sudo_pending: Vec<CleanItem> = if args.sudo {
+        clean::sudo_items(&items)
+    } else {
+        Vec::new()
+    };
     // App 沙盒容器受 TCC 保护：缺 FDA 时只会得到「失败」，先明确提醒
     let container_paths = |l: &thin_core::apps::Leftover| {
         let s = l.path.to_string_lossy();
@@ -2085,17 +2256,28 @@ fn cmd_orphans(args: OrphansArgs) -> Result<()> {
     };
     if !args.apply {
         println!("（预览；加 --apply 移入{}，可恢复）", mode.label());
+        if !sudo_pending.is_empty() {
+            println!(
+                "其中 {} 项需管理员权限，加 --sudo 会弹系统授权框。",
+                sudo_pending.len()
+            );
+        }
         return Ok(());
     }
-    if plan.approved.is_empty() {
+    if plan.approved.is_empty() && sudo_pending.is_empty() {
         println!("没有可通过安全门的项。");
         return Ok(());
     }
     if !args.yes
         && !confirm(&format!(
-            "清理 {} 个孤立 bundle 的残留并移入{}？",
+            "清理 {} 个孤立 bundle 的残留并移入{}？{}",
             found.len(),
-            mode.label()
+            mode.label(),
+            if sudo_pending.is_empty() {
+                String::new()
+            } else {
+                format!("（另有 {} 项需管理员权限）", sudo_pending.len())
+            }
         ))?
     {
         println!("已取消。");
@@ -2116,6 +2298,29 @@ fn cmd_orphans(args: OrphansArgs) -> Result<()> {
                 (0, 0),
                 Some(&journal),
             );
+        }
+    }
+    // 需 root 的系统级残留：弹系统授权框
+    if !sudo_pending.is_empty() {
+        match clean::elevate_sudo(&sudo_pending) {
+            Ok(journal) => {
+                println!(
+                    "\n\x1b[1m提权清理\x1b[0m：移入隔离区 {} 项 · {}（会话 {}）",
+                    journal.entries.len(),
+                    human(journal.total_size()),
+                    journal.session
+                );
+                println!("可用 `thin quarantine restore {}` 恢复。", journal.session);
+                record_history(
+                    "orphans-sudo",
+                    None,
+                    sudo_pending.len(),
+                    journal.entries.len(),
+                    (0, 0),
+                    Some(&journal),
+                );
+            }
+            Err(e) => eprintln!("\x1b[33m提权清理未执行：{e:#}\x1b[0m"),
         }
     }
     warn_snapshots();

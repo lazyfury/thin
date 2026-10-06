@@ -77,6 +77,16 @@ pub fn quarantine_root() -> PathBuf {
     thin_home().join("quarantine")
 }
 
+/// 当前进程是否以 root 运行。
+///
+/// 用于拒绝「`sudo thin` 整个进程提权」——那会让 `thin_home` / `protect` /
+/// 废纸篓都落到 root 名下，静默绕过用户保护名单。提权只应走内置的
+/// `__elevated-move` 子进程（见 [`elevated_move`]）。
+pub fn is_root() -> bool {
+    // SAFETY: geteuid 无副作用。
+    unsafe { libc::geteuid() == 0 }
+}
+
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -488,12 +498,21 @@ fn remove_path(path: &Path) -> Result<()> {
 #[derive(Debug, Default, Serialize)]
 pub struct Plan {
     pub approved: Vec<CleanItem>,
+    /// 通过除 `sudo` 标记外全部安全门、但当前身份无权移动的项。
+    /// 仅由 [`plan_elevated_in`] 填充，供提权子进程复核后移动。
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sudo: Vec<CleanItem>,
     pub skipped: Vec<SkippedItem>,
 }
 
 impl Plan {
     pub fn approved_bytes(&self) -> u64 {
         self.approved.iter().map(|i| i.size).sum()
+    }
+
+    /// 提权后可移动的项（普通项 + sudo 项）。
+    fn moveable(&self) -> impl Iterator<Item = &CleanItem> {
+        self.approved.iter().chain(self.sudo.iter())
     }
 }
 
@@ -504,6 +523,16 @@ pub fn plan(items: &[CleanItem]) -> Plan {
 
 /// 内部实现（可指定数据目录，便于测试）
 pub fn plan_in(home: &Path, items: &[CleanItem]) -> Plan {
+    plan_impl(home, items, false)
+}
+
+/// 提权清理的规划：与 [`plan_in`] **同一套**安全门，但不再因 `sudo` 标记跳过，
+/// 而是把需要 root 的项放进 [`Plan::sudo`]，交由 root 子进程复核后移动。
+pub fn plan_elevated_in(home: &Path, items: &[CleanItem]) -> Plan {
+    plan_impl(home, items, true)
+}
+
+fn plan_impl(home: &Path, items: &[CleanItem], allow_sudo: bool) -> Plan {
     let mut p = Plan::default();
     for it in items {
         if !it.path.exists() {
@@ -513,13 +542,14 @@ pub fn plan_in(home: &Path, items: &[CleanItem]) -> Plan {
             });
             continue;
         }
-        if it.sudo {
+        if it.sudo && !allow_sudo {
             p.skipped.push(SkippedItem {
                 path: it.path.clone(),
                 reason: "需要 sudo，请手动处理".into(),
             });
             continue;
         }
+        // 无论是否提权，保护名单与静态保护 / 卷隔离都必须先通过。
         if crate::protect::is_protected_in(home, &it.path) {
             p.skipped.push(SkippedItem {
                 path: it.path.clone(),
@@ -534,7 +564,11 @@ pub fn plan_in(home: &Path, items: &[CleanItem]) -> Plan {
             });
             continue;
         }
-        p.approved.push(it.clone());
+        if it.sudo {
+            p.sudo.push(it.clone());
+        } else {
+            p.approved.push(it.clone());
+        }
     }
     p
 }
@@ -683,12 +717,22 @@ pub fn trash_with(
     platform: &dyn crate::platform::Platform,
     items: &[CleanItem],
 ) -> Result<TrashReport> {
-    let plan = plan(items);
+    trash_plan_with(platform, plan(items))
+}
+
+/// 按已算好的计划移入系统废纸篓（提权路径复用同一执行逻辑）。
+fn trash_plan_with(platform: &dyn crate::platform::Platform, plan: Plan) -> Result<TrashReport> {
+    let Plan {
+        approved,
+        sudo,
+        skipped,
+    } = plan;
     let mut report = TrashReport {
-        skipped: plan.skipped,
+        skipped,
         ..Default::default()
     };
-    for it in &plan.approved {
+    let moveable: Vec<CleanItem> = approved.into_iter().chain(sudo).collect();
+    for it in &moveable {
         match platform.trash_item(&it.path) {
             Some(true) => {
                 report.trashed_bytes = report.trashed_bytes.saturating_add(it.size);
@@ -769,21 +813,25 @@ pub fn quarantine(items: &[CleanItem], dry_run: bool) -> Result<Journal> {
 
 /// 内部实现（可指定数据目录，便于测试）
 pub fn quarantine_into(home: &Path, items: &[CleanItem], dry_run: bool) -> Result<Journal> {
+    quarantine_plan_into(home, plan_in(home, items), dry_run)
+}
+
+/// 按已算好的计划移入隔离区（提权路径复用同一执行逻辑）。
+pub fn quarantine_plan_into(home: &Path, mut plan: Plan, dry_run: bool) -> Result<Journal> {
     let session = now_session_id();
     let session_dir = home.join("quarantine").join(&session);
     let payload = session_dir.join("payload");
 
-    // 与 dry-run 使用同一安全门：被跳过项与预览一致
-    let plan = plan_in(home, items);
+    let skipped = std::mem::take(&mut plan.skipped);
     let mut journal = Journal {
         session: session.clone(),
         created_at: now_secs(),
         dry_run,
         entries: Vec::new(),
-        skipped: plan.skipped,
+        skipped,
     };
 
-    for (i, it) in plan.approved.iter().enumerate() {
+    for (i, it) in plan.moveable().enumerate() {
         let base = it
             .path
             .file_name()
@@ -853,6 +901,161 @@ fn describe_move_error(e: &anyhow::Error) -> String {
     } else {
         msg
     }
+}
+
+// ---------------------------------------------------------------------------
+// 提权清理（sudo 项）
+// ---------------------------------------------------------------------------
+
+/// 取出候选项里需要 root 才能移动的项（原始列表，未过安全门）。
+pub fn sudo_items(items: &[CleanItem]) -> Vec<CleanItem> {
+    items.iter().filter(|it| it.sudo).cloned().collect()
+}
+
+/// 通过系统授权框（`osascript`）提权，把 `items` 移入调用者 `~/.thin/quarantine`。
+///
+/// - 仅接受 `sudo == true` 的项；混入其它项一律拒绝（提权通道专用）。
+/// - 提权后由内置子命令 `__elevated-move` 重新过安全门再移动，**绝不 `rm`**。
+/// - 隔离物 `chown` 回调用者，保证 `thin quarantine restore` 可恢复。
+///
+/// 用户取消授权或超时时返回 `Err`，调用方应回退到「跳过」语义。
+pub fn run_elevated(items: &[CleanItem], user_home: &Path) -> Result<Journal> {
+    let sudo: Vec<CleanItem> = items.iter().filter(|it| it.sudo).cloned().collect();
+    if sudo.is_empty() {
+        anyhow::bail!("没有需要提权的项");
+    }
+    if sudo.len() != items.len() {
+        anyhow::bail!("提权通道只处理 sudo 项，收到非 sudo 项");
+    }
+    let exe = std::env::current_exe().context("无法定位 thin 可执行文件")?;
+    let data_home = thin_home();
+    std::fs::create_dir_all(&data_home).context("创建 thin 数据目录失败")?;
+    let manifest = data_home.join(format!("elevate-{}.json", std::process::id()));
+    std::fs::write(&manifest, serde_json::to_vec(&sudo)?).context("写入提权清单失败")?;
+
+    let script = elevation_applescript(&exe, &manifest, user_home);
+    let out = crate::proc::output_with_timeout(
+        "osascript",
+        &["-e", &script],
+        // 用户可能在授权框前停留很久；给足超时但仍避免永久挂死。
+        std::time::Duration::from_secs(600),
+    );
+    let _ = std::fs::remove_file(&manifest);
+    let out = out.ok_or_else(|| anyhow::anyhow!("未能启动系统授权（osascript 不可用或超时）"))?;
+
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr);
+        let err = err.trim();
+        if err.contains("User canceled") || err.contains("-128") {
+            anyhow::bail!("已取消授权");
+        }
+        anyhow::bail!("提权清理失败：{err}");
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let raw = raw.trim();
+    let journal: Journal = serde_json::from_str(raw).with_context(|| {
+        let preview: String = raw.chars().take(200).collect();
+        format!("无法解析提权子进程输出：{preview}")
+    })?;
+    Ok(journal)
+}
+
+/// 便捷入口：取出 `items` 中的 sudo 项，以调用者主目录为隔离区提权移动。
+///
+/// 供 `clean` / `uninstall` / `orphans` 与 TUI 共用；无 sudo 项时报错。
+pub fn elevate_sudo(items: &[CleanItem]) -> Result<Journal> {
+    let sudo = sudo_items(items);
+    if sudo.is_empty() {
+        anyhow::bail!("没有需要提权的项");
+    }
+    let home =
+        user_home().ok_or_else(|| anyhow::anyhow!("无法确定 HOME，提权清理需要用户主目录"))?;
+    run_elevated(&sudo, &home)
+}
+
+/// root 子命令 `__elevated-move` 的实现：复核清单并移入调用者隔离区。
+///
+/// 清单内容一律不可信：重新过 [`plan_elevated_in`]，只移动仍能通过安全门的
+/// sudo 项；结束后把隔离物所有者改回调用者。
+pub fn elevated_move(manifest: &Path, user_home: &Path) -> Result<Journal> {
+    if !is_root() {
+        anyhow::bail!("内部错误：__elevated-move 必须以 root 运行");
+    }
+    // root 子进程的 HOME 默认是 /var/root；重置为调用者主目录，
+    // 让 `static_protection_reason` 里基于 HOME 的隐私目录（Keychains、iCloud 等）
+    // 保护对调用者仍然生效。
+    // SAFETY: 这是提权子进程入口，此刻尚未启动其它线程，修改环境变量不会竞争。
+    unsafe { std::env::set_var("HOME", user_home) };
+    let raw = std::fs::read(manifest).context("读取提权清单失败")?;
+    let items: Vec<CleanItem> = serde_json::from_slice(&raw).context("解析提权清单失败")?;
+    if items.is_empty() {
+        anyhow::bail!("提权清单为空");
+    }
+    if items.iter().any(|it| !it.sudo) {
+        anyhow::bail!("提权清单包含非 sudo 项，拒绝执行");
+    }
+    // 重新过安全门；`plan_elevated_in` 会把 sudo 项放进 `sudo`、其它放进 `approved`。
+    let plan = plan_elevated_in(user_home, &items);
+    if !plan.approved.is_empty() {
+        // 清单已要求全为 sudo 项，理论上不可达；双重保险。
+        anyhow::bail!("提权清单安全检查异常，拒绝执行");
+    }
+    let journal = quarantine_plan_into(user_home, plan, false)?;
+    if !journal.entries.is_empty() {
+        let md = std::fs::metadata(user_home).context("读取用户主目录属性失败")?;
+        use std::os::unix::fs::MetadataExt;
+        chown_recursive(&journal.session_dir(user_home), md.uid(), md.gid())
+            .context("恢复隔离物归属失败")?;
+    }
+    Ok(journal)
+}
+
+/// 递归把 `dir` 及其内容的所有者改为 `uid:gid`（提权子进程专用）。
+pub fn chown_recursive(dir: &Path, uid: u32, gid: u32) -> Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    for entry in walkdir::WalkDir::new(dir)
+        .into_iter()
+        .filter_map(std::result::Result::ok)
+    {
+        let p = entry.path();
+        let c = std::ffi::CString::new(p.as_os_str().as_bytes())
+            .with_context(|| format!("路径含 NUL：{}", p.display()))?;
+        // SAFETY: `c` 是合法 C 字符串；lchown 失败仅影响归属，不影响数据安全。
+        let rc = unsafe { libc::lchown(c.as_ptr(), uid, gid) };
+        if rc != 0 {
+            let e = std::io::Error::last_os_error();
+            anyhow::bail!("chown {} 失败：{e}", p.display());
+        }
+    }
+    Ok(())
+}
+
+/// 构造 `osascript` 调用的 AppleScript：`do shell script … with administrator privileges`。
+///
+/// 路径先包成 AppleScript 字符串字面量，再用 `quoted form of` 转成 shell 安全形式，
+/// 避免空格 / 引号 / 特殊字符造成注入。
+fn elevation_applescript(exe: &Path, manifest: &Path, user_home: &Path) -> String {
+    let exe_lit = applescript_literal(&exe.to_string_lossy());
+    let man_lit = applescript_literal(&manifest.to_string_lossy());
+    let home_lit = applescript_literal(&user_home.to_string_lossy());
+    format!(
+        "do shell script (quoted form of {exe_lit}) & \" __elevated-move --manifest \" & (quoted form of {man_lit}) & \" --user-home \" & (quoted form of {home_lit}) & \" --json\" with administrator privileges"
+    )
+}
+
+/// 把字符串包成 AppleScript 字符串字面量（转义 `\` 与 `"`）。
+fn applescript_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            _ => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -1076,6 +1279,7 @@ mod tests {
         assert_eq!(p.approved.len(), 1, "只有合法项应通过");
         assert_eq!(p.approved_bytes(), 1024);
         assert_eq!(p.skipped.len(), 3);
+        assert!(p.sudo.is_empty(), "默认规划不暴露 sudo 项");
 
         // 真实执行使用同一安全门：跳过项数量一致
         let j = quarantine_into(&data_home, &candidates, false).unwrap();
@@ -1083,6 +1287,76 @@ mod tests {
         assert_eq!(j.skipped.len(), p.skipped.len());
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn plan_elevated_buckets_sudo_but_still_enforces_gate() {
+        let base = std::env::temp_dir().join(format!("thin-elev-{}", std::process::id()));
+        let data_home = base.join("data");
+        let work = base.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let target = work.join("cache");
+        std::fs::create_dir_all(&target).unwrap();
+
+        let mut sudo_item = item(target.clone(), 10);
+        sudo_item.sudo = true;
+        let normal = item(target.clone(), 1024);
+        let protected = item(PathBuf::from("/System/Library"), 10);
+        let missing = item(work.join("nope"), 10);
+
+        let candidates = vec![sudo_item, normal, protected, missing];
+        let p = plan_elevated_in(&data_home, &candidates);
+        assert_eq!(p.approved.len(), 1, "非 sudo 项走普通通道：{p:?}");
+        assert_eq!(p.sudo.len(), 1, "提权项进 sudo 桶：{p:?}");
+        assert_eq!(p.skipped.len(), 2, "受保护 / 不存在仍被拒");
+        assert_eq!(p.approved[0].size, 1024);
+        assert_eq!(p.sudo[0].path, target);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn sudo_items_only_returns_sudo() {
+        let mut s = item(PathBuf::from("/tmp/thin-sudo-a"), 1);
+        s.sudo = true;
+        let n = item(PathBuf::from("/tmp/thin-sudo-b"), 1);
+        let out = sudo_items(&[s, n]);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].sudo);
+    }
+
+    #[test]
+    fn run_elevated_rejects_non_sudo_items_without_spawning() {
+        let mut s = item(PathBuf::from("/tmp/thin-elev-a"), 1);
+        s.sudo = true;
+        let n = item(PathBuf::from("/tmp/thin-elev-b"), 1);
+        // 混入非 sudo 项：应在调用 osascript 之前就报错（不会弹授权框）
+        let err = run_elevated(&[s, n], Path::new("/tmp")).unwrap_err();
+        assert!(err.to_string().contains("非 sudo 项"), "{err:#}");
+        assert!(run_elevated(&[], Path::new("/tmp")).is_err());
+    }
+
+    #[test]
+    fn elevate_sudo_is_a_noop_error_without_sudo_items() {
+        // 无 sudo 项时直接报错，绝不启动 osascript（不会弹授权框）
+        let n = item(PathBuf::from("/tmp/thin-elev-sudo-x"), 1);
+        assert!(elevate_sudo(&[]).is_err());
+        assert!(elevate_sudo(&[n]).is_err());
+    }
+
+    #[test]
+    fn elevation_applescript_uses_quoted_form() {
+        let exe = Path::new("/Applications/My Thin/thin");
+        let manifest = Path::new("/Users/me/.thin/elevate-1.json");
+        let home = Path::new("/Users/me");
+        let script = elevation_applescript(exe, manifest, home);
+        assert!(script.contains("with administrator privileges"), "{script}");
+        assert!(script.contains("__elevated-move"), "{script}");
+        assert!(script.contains("quoted form of"), "{script}");
+        assert!(script.contains("/Applications/My Thin/thin"), "{script}");
+        assert!(script.contains("--user-home"), "{script}");
+        // 通过 applescript_literal 验证路径内引号 / 反斜杠被转义，避免注入。
+        assert_eq!(applescript_literal("a\"b\\c"), "\"a\\\"b\\\\c\"");
     }
 
     #[test]

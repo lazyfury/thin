@@ -32,8 +32,8 @@ thin schedule run --preset <id> --dry-run    # 预览一次预设清理，不 pu
 thin quarantine list|restore|purge
 thin large [ROOT] --min --limit [--json]
 thin dupes [ROOT] --min [--apply] [--json]   # 受保护副本标 [已保护] 且不计入可回收
-thin apps --min ; thin uninstall <名称> [--apply] [--deep]
-thin orphans [--json] [--apply]           # 已卸载 App 的孤立残留（无 App 本体，仅剩缓存/容器/偏好）
+thin apps --min ; thin uninstall <名称> [--apply] [--deep] [--sudo]
+thin orphans [--json] [--apply] [--sudo]  # 已卸载 App 的孤立残留（无 App 本体，仅剩缓存/容器/偏好）
 ```
 
 所有命令都可用 `THIN_HOME` 指向隔离的数据目录（便于在沙箱/测试中运行），
@@ -124,7 +124,7 @@ echo '{
   "category": "system-cache|app-cache|dev-cache|vm|log|trash|leftover|other",
   "risk": "safe|confirm|destructive",
   "regenerable": true,          // 删除后能否自动重建
-  "sudo": false,                // 是否需 root（M1 起自动跳过）
+  "sudo": false,                // 是否需 root：默认自动跳过；`clean --sudo` 会弹系统授权框，提权后仍入隔离区
   "matcher": { "kind": "path", "paths": ["~/..."] }
   // 或 { "kind": "findDir", "roots": ["~/Documents"], "dirName": "target",
   //      "requireSibling": "Cargo.toml", "maxDepth": 6 }
@@ -206,6 +206,8 @@ thin scan --detail custom-someapp
 # 清理（默认 dry-run；--apply 才执行，移入系统废纸篓）
 thin clean --apply --id custom-someapp --yes
 # 需 thin 隔离区（Journal/恢复）时：thin clean --quarantine --apply --id custom-someapp --yes
+# 需 root 的系统项（如 /var/log）：加 --sudo 弹系统授权框（仅限内置 sudo 规则，非交互 --json 不支持）
+# thin clean --apply --sudo --yes
 
 # 兜底（仅 --quarantine 模式会产生会话）：列出 / 恢复 / 永久删除
 thin quarantine list
@@ -234,6 +236,7 @@ thin quarantine purge --older-than 7d             # 二次确认后永久删除
 11. 不确定时，宁可 `risk=confirm` 且 `--dry-run` 先看结果。
 12. **永久删除要确认**：`thin quarantine purge` 默认二次确认；agent 显式传 `--yes` 才跳过，并应先用 `--dry-run` 预览。
 13. **App 沙盒容器需要「完全磁盘访问权限」**：`~/Library/Containers`、`Group Containers` 受 TCC 保护，终端未授权时 `thin orphans` / `uninstall` 的容器项会失败（thin 会明确提示，不再只报「权限问题」）；应先授权再清理。
+14. **绝不 `sudo thin`**：整个进程提权会让 `~/.thin`（用户规则 / 保护名单 / 隔离区）和废纸篓全部落到 root 名下，静默绕过保护。需要 root 的项用 `thin clean --apply --sudo`：提权子进程会**重新过同一安全门**，仍移入用户隔离区（可恢复），绝不 `rm`。
 
 ---
 

@@ -12,7 +12,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, ListState, Paragraph, Wrap},
 };
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
@@ -101,6 +101,8 @@ struct PendingUninstall {
     items: Vec<CleanItem>,
     approved_bytes: u64,
     skipped: usize,
+    /// 其中需 root、将走系统授权框的项数
+    sudo: usize,
 }
 
 /// 待确认的「退出运行中的 App 后卸载」
@@ -115,6 +117,8 @@ struct PendingOrphan {
     items: Vec<CleanItem>,
     approved_bytes: u64,
     skipped: usize,
+    /// 其中需 root、将走系统授权框的项数
+    sudo: usize,
 }
 
 /// 树形视图中已展开的一行（由 [`TreeNode`] 扁平化而来，便于用列表光标导航）。
@@ -429,6 +433,18 @@ impl App {
         self.selected.iter().filter(|s| **s).count()
     }
 
+    /// 已勾选中需 root 的项数（弹授权框前提示用）。
+    fn selected_sudo_count(&self) -> usize {
+        match &self.clean {
+            Load::Ready(items) => items
+                .iter()
+                .zip(&self.selected)
+                .filter(|(it, s)| **s && it.sudo)
+                .count(),
+            _ => 0,
+        }
+    }
+
     fn selected_total(&self) -> u64 {
         self.clean
             .ready()
@@ -450,10 +466,13 @@ impl App {
         if let Load::Ready(items) = &self.clean {
             if safe_only {
                 for (i, it) in items.iter().enumerate() {
-                    self.selected[i] = value && it.risk == Risk::Safe && !it.protected;
+                    self.selected[i] = value && it.risk == Risk::Safe && !it.protected && !it.sudo;
                 }
             } else {
-                self.selected.iter_mut().for_each(|s| *s = value);
+                // 批量选择不包含需 root 的项：提权必须逐项显式勾选，避免误触授权框
+                for (i, it) in items.iter().enumerate() {
+                    self.selected[i] = value && !it.sudo;
+                }
             }
         }
     }
@@ -583,7 +602,7 @@ impl App {
         self.selected.clear();
         self.ensure(CLEAN_TAB);
         if self.show_manual {
-            self.warn("已显示需 sudo / 受系统保护的项：thin 不会清理它们");
+            self.warn("已显示需 sudo / 受系统保护的项：需 sudo 的可勾选并弹授权框清理，受系统保护的仍会被跳过");
         } else {
             self.info("已隐藏需 sudo / 受系统保护的项");
         }
@@ -727,7 +746,8 @@ impl App {
             items.push(it);
         }
         let plan = clean::plan(&items);
-        if plan.approved.is_empty() {
+        let sudo = clean::sudo_items(&items).len();
+        if plan.approved.is_empty() && sudo == 0 {
             self.warn(format!("{} 没有可通过安全门的项", app.name));
             return;
         }
@@ -737,6 +757,7 @@ impl App {
             items,
             approved_bytes: plan.approved_bytes(),
             skipped: plan.skipped.len(),
+            sudo,
         });
     }
 
@@ -761,7 +782,8 @@ impl App {
             })
             .collect();
         let plan = clean::plan(&items);
-        if plan.approved.is_empty() {
+        let sudo = clean::sudo_items(&items).len();
+        if plan.approved.is_empty() && sudo == 0 {
             self.warn(format!("{} 没有可通过安全门的项", o.bundle_id));
             return;
         }
@@ -770,6 +792,7 @@ impl App {
             items,
             approved_bytes: plan.approved_bytes(),
             skipped: plan.skipped.len(),
+            sudo,
         });
     }
 
@@ -779,7 +802,13 @@ impl App {
             self.error(format!("{} 正在运行，已取消卸载", plan.app_name));
             return;
         }
-        match clean::apply(&plan.items, clean::default_mode()) {
+        let normal: Vec<CleanItem> = plan.items.iter().filter(|it| !it.sudo).cloned().collect();
+        let sudo_pending: Vec<CleanItem> =
+            plan.items.iter().filter(|it| it.sudo).cloned().collect();
+        let mut msg = format!("已卸载 {}", plan.app_name);
+        let mut elevated_err: Option<String> = None;
+
+        match clean::apply(&normal, clean::default_mode()) {
             Ok(applied) => {
                 // 与 CLI 一致：记录历史
                 let hist_err = {
@@ -792,13 +821,12 @@ impl App {
                     rec.skipped = applied.skipped() + applied.failed();
                     history::append(&rec).err()
                 };
-                let mut msg = format!(
-                    "已卸载 {}：移入{} {} 项 · {}",
-                    plan.app_name,
+                msg.push_str(&format!(
+                    "：移入{} {} 项 · {}",
                     applied.mode().label(),
                     applied.moved(),
                     human(applied.moved_bytes())
-                );
+                ));
                 if applied.skipped() > 0 {
                     msg.push_str(&format!("，跳过 {} 项", applied.skipped()));
                 }
@@ -808,18 +836,57 @@ impl App {
                 if let Some(e) = hist_err {
                     msg.push_str(&format!("（历史写入失败：{e:#}）"));
                 }
-                self.info(msg);
-                self.apps = Load::Idle;
-                self.ensure(APPS_TAB);
-                self.history = Load::Idle;
             }
-            Err(e) => self.error(format!("卸载失败：{e:#}")),
+            Err(e) => {
+                self.error(format!("卸载失败：{e:#}"));
+                return;
+            }
         }
+
+        // 需 root 的系统级残留（LaunchDaemons / PrivilegedHelperTools 等）：弹授权框
+        if !sudo_pending.is_empty() {
+            match clean::elevate_sudo(&sudo_pending) {
+                Ok(journal) => {
+                    msg.push_str(&format!(
+                        "；提权清理 {} 项 · {}（会话 {}）",
+                        journal.entries.len(),
+                        human(journal.total_size()),
+                        journal.session
+                    ));
+                    let mut rec = history::Record::new("uninstall-sudo");
+                    rec.scanned = sudo_pending.len();
+                    rec.approved = journal.entries.len();
+                    rec.session = Some(journal.session.clone());
+                    rec.moved = journal.entries.len();
+                    rec.moved_bytes = journal.total_size();
+                    rec.skipped = journal.skipped.len();
+                    if let Err(e) = history::append(&rec) {
+                        msg.push_str(&format!("（历史写入失败：{e:#}）"));
+                    }
+                }
+                Err(e) => elevated_err = Some(format!("{e:#}")),
+            }
+        }
+
+        if let Some(e) = elevated_err {
+            self.warn(format!("{msg}；提权清理未执行：{e}"));
+        } else {
+            self.info(msg);
+        }
+        self.apps = Load::Idle;
+        self.ensure(APPS_TAB);
+        self.history = Load::Idle;
     }
 
     /// 清理孤立残留：无 App 本体，直接走安全门并记录历史
     fn execute_orphan_cleanup(&mut self, plan: PendingOrphan) {
-        match clean::apply(&plan.items, clean::default_mode()) {
+        let normal: Vec<CleanItem> = plan.items.iter().filter(|it| !it.sudo).cloned().collect();
+        let sudo_pending: Vec<CleanItem> =
+            plan.items.iter().filter(|it| it.sudo).cloned().collect();
+        let mut msg = format!("已清理 {} 孤立残留", plan.bundle_id);
+        let mut elevated_err: Option<String> = None;
+
+        match clean::apply(&normal, clean::default_mode()) {
             Ok(applied) => {
                 let hist_err = {
                     let mut rec = history::Record::new("orphans");
@@ -831,13 +898,12 @@ impl App {
                     rec.skipped = applied.skipped() + applied.failed();
                     history::append(&rec).err()
                 };
-                let mut msg = format!(
-                    "已清理 {} 孤立残留：移入{} {} 项 · {}",
-                    plan.bundle_id,
+                msg.push_str(&format!(
+                    "：移入{} {} 项 · {}",
                     applied.mode().label(),
                     applied.moved(),
                     human(applied.moved_bytes())
-                );
+                ));
                 if applied.skipped() > 0 {
                     msg.push_str(&format!("，跳过 {} 项", applied.skipped()));
                 }
@@ -847,13 +913,46 @@ impl App {
                 if let Some(e) = hist_err {
                     msg.push_str(&format!("（历史写入失败：{e:#}）"));
                 }
-                self.info(msg);
-                self.orphans = Load::Idle;
-                self.ensure(APPS_TAB);
-                self.history = Load::Idle;
             }
-            Err(e) => self.error(format!("清理失败：{e:#}")),
+            Err(e) => {
+                self.error(format!("清理失败：{e:#}"));
+                return;
+            }
         }
+
+        // 需 root 的系统级残留：弹授权框
+        if !sudo_pending.is_empty() {
+            match clean::elevate_sudo(&sudo_pending) {
+                Ok(journal) => {
+                    msg.push_str(&format!(
+                        "；提权清理 {} 项 · {}（会话 {}）",
+                        journal.entries.len(),
+                        human(journal.total_size()),
+                        journal.session
+                    ));
+                    let mut rec = history::Record::new("orphans-sudo");
+                    rec.scanned = sudo_pending.len();
+                    rec.approved = journal.entries.len();
+                    rec.session = Some(journal.session.clone());
+                    rec.moved = journal.entries.len();
+                    rec.moved_bytes = journal.total_size();
+                    rec.skipped = journal.skipped.len();
+                    if let Err(e) = history::append(&rec) {
+                        msg.push_str(&format!("（历史写入失败：{e:#}）"));
+                    }
+                }
+                Err(e) => elevated_err = Some(format!("{e:#}")),
+            }
+        }
+
+        if let Some(e) = elevated_err {
+            self.warn(format!("{msg}；提权清理未执行：{e}"));
+        } else {
+            self.info(msg);
+        }
+        self.orphans = Load::Idle;
+        self.ensure(APPS_TAB);
+        self.history = Load::Idle;
     }
 
     fn apply(&mut self) {
@@ -875,65 +974,116 @@ impl App {
         }
 
         let mode = clean::default_mode();
-        match clean::apply(&chosen, mode) {
-            Ok(applied) => {
-                // 与 CLI 一致：把本次清理写入历史
-                let hist_err = {
-                    let mut rec = history::Record::new(match mode {
-                        clean::Mode::Trash => "manual-trash",
-                        clean::Mode::Quarantine => "manual",
-                    });
-                    rec.scanned = chosen.len();
-                    rec.approved = applied.moved();
-                    rec.session = applied.session().map(str::to_string);
-                    rec.moved = applied.moved();
-                    rec.moved_bytes = applied.moved_bytes();
-                    rec.skipped = applied.skipped() + applied.failed();
-                    history::append(&rec).err()
-                };
-                let moved: std::collections::HashSet<PathBuf> =
-                    applied.originals().into_iter().collect();
-                if let Load::Ready(items) = std::mem::replace(&mut self.clean, Load::Idle) {
-                    let mut new_items = Vec::new();
-                    let mut new_sel = Vec::new();
-                    for (it, sel) in items.into_iter().zip(std::mem::take(&mut self.selected)) {
-                        // 丢弃已移动的项，以及被已移动父目录覆盖的嵌套子项
-                        let gone = moved.contains(&it.path)
-                            || moved
-                                .iter()
-                                .any(|m| it.path != *m && it.path.starts_with(m));
-                        if !gone {
-                            new_sel.push(sel);
-                            new_items.push(it);
-                        }
+        // sudo 项不能用普通身份移动，单独走提权通道（弹系统授权框）
+        let normal: Vec<CleanItem> = chosen.iter().filter(|it| !it.sudo).cloned().collect();
+        let sudo_pending: Vec<CleanItem> = chosen.iter().filter(|it| it.sudo).cloned().collect();
+
+        let mut moved: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
+        let mut msg = String::new();
+        let mut elevated_err: Option<String> = None;
+
+        if !normal.is_empty() {
+            match clean::apply(&normal, mode) {
+                Ok(applied) => {
+                    // 与 CLI 一致：把本次清理写入历史
+                    let hist_err = {
+                        let mut rec = history::Record::new(match mode {
+                            clean::Mode::Trash => "manual-trash",
+                            clean::Mode::Quarantine => "manual",
+                        });
+                        rec.scanned = normal.len();
+                        rec.approved = applied.moved();
+                        rec.session = applied.session().map(str::to_string);
+                        rec.moved = applied.moved();
+                        rec.moved_bytes = applied.moved_bytes();
+                        rec.skipped = applied.skipped() + applied.failed();
+                        history::append(&rec).err()
+                    };
+                    moved.extend(applied.originals());
+                    msg.push_str(&format!(
+                        "已移入{} {} 项 · {}",
+                        mode.label(),
+                        applied.moved(),
+                        human(applied.moved_bytes())
+                    ));
+                    if let Some(s) = applied.session() {
+                        msg.push_str(&format!("  （会话 {s}）"));
                     }
-                    self.selected = new_sel;
-                    self.clean = Load::Ready(new_items);
-                    self.rebuild_clean_rows();
+                    if applied.skipped() > 0 {
+                        msg.push_str(&format!("  跳过 {} 项", applied.skipped()));
+                    }
+                    if applied.failed() > 0 {
+                        msg.push_str(&format!("  失败 {} 项", applied.failed()));
+                    }
+                    if let Some(e) = hist_err {
+                        msg.push_str(&format!("  （历史写入失败：{e:#}）"));
+                    }
                 }
-                let c = self.cursor().min(self.current_len().saturating_sub(1));
-                self.list_states[0].select(Some(c));
-                let mut msg = format!(
-                    "已移入{} {} 项 · {}",
-                    mode.label(),
-                    applied.moved(),
-                    human(applied.moved_bytes())
-                );
-                if let Some(s) = applied.session() {
-                    msg.push_str(&format!("  （会话 {s}）"));
+                Err(e) => {
+                    self.error(format!("清理失败：{e:#}"));
+                    return;
                 }
-                if applied.skipped() > 0 {
-                    msg.push_str(&format!("  跳过 {} 项", applied.skipped()));
-                }
-                if applied.failed() > 0 {
-                    msg.push_str(&format!("  失败 {} 项", applied.failed()));
-                }
-                if let Some(e) = hist_err {
-                    msg.push_str(&format!("  （历史写入失败：{e:#}）"));
-                }
-                self.info(msg);
             }
-            Err(e) => self.error(format!("清理失败：{e:#}")),
+        }
+
+        // 需 root 的项：通过系统授权框提权，复核安全门后移入调用者隔离区
+        if !sudo_pending.is_empty() {
+            let home = std::env::var("HOME").unwrap_or_default();
+            match clean::run_elevated(&sudo_pending, Path::new(&home)) {
+                Ok(journal) => {
+                    if !msg.is_empty() {
+                        msg.push('；');
+                    }
+                    msg.push_str(&format!(
+                        "提权清理 {} 项 · {}（会话 {}）",
+                        journal.entries.len(),
+                        human(journal.total_size()),
+                        journal.session
+                    ));
+                    moved.extend(journal.entries.iter().map(|e| e.original.clone()));
+                    let mut rec = history::Record::new("manual-sudo");
+                    rec.scanned = sudo_pending.len();
+                    rec.approved = journal.entries.len();
+                    rec.session = Some(journal.session.clone());
+                    rec.moved = journal.entries.len();
+                    rec.moved_bytes = journal.total_size();
+                    rec.skipped = journal.skipped.len();
+                    if let Err(e) = history::append(&rec) {
+                        msg.push_str(&format!("（历史写入失败：{e:#}）"));
+                    }
+                }
+                Err(e) => elevated_err = Some(format!("{e:#}")),
+            }
+        }
+
+        if let Load::Ready(items) = std::mem::replace(&mut self.clean, Load::Idle) {
+            let mut new_items = Vec::new();
+            let mut new_sel = Vec::new();
+            for (it, sel) in items.into_iter().zip(std::mem::take(&mut self.selected)) {
+                // 丢弃已移动的项，以及被已移动父目录覆盖的嵌套子项
+                let gone = moved.contains(&it.path)
+                    || moved
+                        .iter()
+                        .any(|m| it.path != *m && it.path.starts_with(m));
+                if !gone {
+                    new_sel.push(sel);
+                    new_items.push(it);
+                }
+            }
+            self.selected = new_sel;
+            self.clean = Load::Ready(new_items);
+            self.rebuild_clean_rows();
+        }
+        let c = self.cursor().min(self.current_len().saturating_sub(1));
+        self.list_states[0].select(Some(c));
+        if let Some(e) = elevated_err {
+            if msg.is_empty() {
+                self.error(format!("提权清理未执行：{e}"));
+            } else {
+                self.warn(format!("{msg}；提权清理未执行：{e}"));
+            }
+        } else if !msg.is_empty() {
+            self.info(msg);
         }
     }
 
@@ -1987,7 +2137,7 @@ fn render_confirm(frame: &mut Frame, app: &App) {
         clean::Mode::Trash => "可在 Finder 废纸篓中恢复",
         clean::Mode::Quarantine => "移入后可随时恢复（thin quarantine restore）",
     };
-    let text = vec![
+    let mut text = vec![
         Line::from(""),
         Line::from(Span::styled(
             format!("将 {} 项移入{}？", app.selected_count(), mode.label()),
@@ -2003,6 +2153,17 @@ fn render_confirm(frame: &mut Frame, app: &App) {
             Span::styled("[n / Esc] 取消", Style::default().fg(Color::Red)),
         ]),
     ];
+    let sudo_n = app.selected_sudo_count();
+    if sudo_n > 0 {
+        // 插在释放提示之前，提醒后面还有一次系统授权框
+        text.insert(
+            4,
+            Line::from(Span::styled(
+                format!("其中 {sudo_n} 项需管理员权限，将弹系统授权框"),
+                Style::default().fg(Color::Yellow),
+            )),
+        );
+    }
     let popup = Paragraph::new(text)
         .block(Block::default().borders(Borders::ALL).title("确认清理"))
         .alignment(Alignment::Center);
@@ -2023,12 +2184,20 @@ fn render_orphan_confirm(frame: &mut Frame, plan: &PendingOrphan) {
         Line::from(format!("将 {} 项移入{}", plan.items.len(), mode.label())),
         Line::from(format!("可释放 {}", human(plan.approved_bytes))),
     ];
-    if plan.skipped > 0 {
+    if plan.sudo > 0 {
         text.push(Line::from(Span::styled(
-            format!("{} 项需 sudo 或受保护，将跳过", plan.skipped),
+            format!("其中 {} 项需管理员权限，将弹系统授权框", plan.sudo),
             Style::default().fg(Color::Yellow),
         )));
-    } else {
+    }
+    let skipped_other = plan.skipped.saturating_sub(plan.sudo);
+    if skipped_other > 0 {
+        text.push(Line::from(Span::styled(
+            format!("{skipped_other} 项受保护/不存在，将跳过"),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+    if plan.sudo == 0 && skipped_other == 0 {
         text.push(Line::from(""));
     }
     text.push(Line::from(""));
@@ -2073,12 +2242,20 @@ fn render_uninstall_confirm(frame: &mut Frame, plan: &PendingUninstall) {
         )),
         Line::from(format!("可释放 {}", human(plan.approved_bytes))),
     ];
-    if plan.skipped > 0 {
+    if plan.sudo > 0 {
         text.push(Line::from(Span::styled(
-            format!("{} 项需 sudo 或受保护，将跳过", plan.skipped),
+            format!("其中 {} 项需管理员权限，将弹系统授权框", plan.sudo),
             Style::default().fg(Color::Yellow),
         )));
-    } else {
+    }
+    let skipped_other = plan.skipped.saturating_sub(plan.sudo);
+    if skipped_other > 0 {
+        text.push(Line::from(Span::styled(
+            format!("{skipped_other} 项受保护/不存在，将跳过"),
+            Style::default().fg(Color::Yellow),
+        )));
+    }
+    if plan.sudo == 0 && skipped_other == 0 {
         text.push(Line::from(""));
     }
     text.push(Line::from(""));
@@ -2239,6 +2416,53 @@ mod tests {
         assert_eq!(app.selected, vec![false, false], "Alt 组合键不应触发");
     }
 
+    fn sudo_clean_item(path: &str, size: u64) -> CleanItem {
+        let mut it = clean_item(path, size);
+        it.sudo = true;
+        it
+    }
+
+    #[test]
+    fn bulk_select_skips_sudo_items() {
+        let mut app = test_app();
+        app.tab = CLEAN_TAB;
+        app.clean = Load::Ready(vec![
+            clean_item("/tmp/thin-bulk-a", 1),
+            sudo_clean_item("/tmp/thin-bulk-sudo", 1),
+        ]);
+        app.selected = vec![false, false];
+        app.on_key(KeyEvent::from(KeyCode::Char('A')));
+        assert_eq!(app.selected, vec![true, false], "A 全选不应包含 sudo 项");
+
+        app.selected = vec![false, false];
+        app.on_key(KeyEvent::from(KeyCode::Char('a')));
+        assert_eq!(app.selected, vec![true, false], "a 选安全不应包含 sudo 项");
+    }
+
+    #[test]
+    fn selected_sudo_count_counts_only_selected_sudo() {
+        let mut app = test_app();
+        app.clean = Load::Ready(vec![
+            clean_item("/tmp/thin-sudo-count-a", 1),
+            sudo_clean_item("/tmp/thin-sudo-count-b", 1),
+        ]);
+        app.selected = vec![false, true];
+        assert_eq!(app.selected_sudo_count(), 1);
+        app.selected = vec![true, false];
+        assert_eq!(app.selected_sudo_count(), 0);
+    }
+
+    #[test]
+    fn confirm_dialog_warns_about_sudo() {
+        let mut app = test_app();
+        app.tab = CLEAN_TAB;
+        app.clean = Load::Ready(vec![sudo_clean_item("/tmp/thin-confirm-sudo", 1)]);
+        app.selected = vec![true];
+        app.confirm = true;
+        let text = render(&mut app, 100, 30);
+        assert!(text.contains("管理员权限"), "{text}");
+    }
+
     #[test]
     fn renders_every_tab_without_panic() {
         let mut app = test_app();
@@ -2338,6 +2562,7 @@ mod tests {
             items: vec![clean_item("/Applications/Foo.app", 2048)],
             approved_bytes: 2048,
             skipped: 1,
+            sudo: 0,
         });
         let text = render(&mut app, 100, 30);
         assert!(
@@ -2345,6 +2570,27 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("[n / Esc] 取消"), "{text}");
+    }
+
+    #[test]
+    fn uninstall_confirm_warns_about_sudo() {
+        let mut app = test_app();
+        app.tab = APPS_TAB;
+        app.apps = Load::Ready(vec![app_info("Foo", Some("com.example.foo"))]);
+        app.uninstall_confirm = Some(PendingUninstall {
+            app_name: "Foo".into(),
+            app_path: PathBuf::from("/Applications/Foo.app"),
+            items: vec![clean_item("/Applications/Foo.app", 2048)],
+            approved_bytes: 2048,
+            skipped: 2,
+            sudo: 2,
+        });
+        let text = render(&mut app, 100, 30);
+        assert!(text.contains("需管理员权限"), "{text}");
+        assert!(
+            !text.contains("需 sudo 或受保护"),
+            "不应再显示「将跳过」文案：{text}"
+        );
     }
 
     #[test]
@@ -2408,6 +2654,7 @@ mod tests {
             items: vec![clean_item("/x/com.example.gone", 2048)],
             approved_bytes: 2048,
             skipped: 0,
+            sudo: 0,
         });
         let text = render(&mut app, 120, 30);
         assert!(text.contains("确认清理孤立残留"), "{text}");
@@ -2424,6 +2671,7 @@ mod tests {
             items: vec![],
             approved_bytes: 0,
             skipped: 0,
+            sudo: 0,
         });
         app.on_key(KeyEvent::from(KeyCode::Char('n')));
         assert!(app.orphan_confirm.is_none());
@@ -2532,6 +2780,7 @@ mod tests {
             items: vec![],
             approved_bytes: 0,
             skipped: 0,
+            sudo: 0,
         });
         app.on_key(KeyEvent::from(KeyCode::Char('n')));
         assert!(app.uninstall_confirm.is_none());

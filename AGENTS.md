@@ -92,6 +92,10 @@ cargo build -p thin-core --no-default-features
 9. **`deny delete` ACL**：`~/Library/Caches`、`~/Library/Logs` 等目录带 `group:everyone deny delete`，
    无法整体移动。**废纸篓与隔离区两条清理路径**都必须退化为「只搬内容」（等价 `rm -rf <dir>/*`），
    不得让整项失败——只改其中一条会重现「扫描得到却清不掉」的回归。
+10. **提权只能走单一入口**：拒绝 `sudo thin` 整个进程提权（会让 `thin_home`/`protect`/
+    废纸篓落到 root 名下）；需 root 的项统一走 `clean::run_elevated` → 内置 `__elevated-move`
+    子进程：root 侧必须重过 `plan_elevated_in` 安全门、只接受 `sudo==true` 项、仍移入调用者
+    隔离区并 `chown` 回用户，绝不 `rm`。
 
 ---
 
@@ -103,12 +107,12 @@ cargo build -p thin-core --no-default-features
 | `thin scan` / `plan` / `apply` | `scan.rs`、`clean.rs` |
 | `thin discover` / `top` | `discover.rs`、`thin-cli/src/top.rs` |
 | `thin rules ...` | `rules.rs` + `thin-cli/src/main.rs` `cmd_rules` |
-| `thin clean` / quarantine | `clean.rs` |
+| `thin clean` / quarantine | `clean.rs`（`--sudo` 提权见 `clean::run_elevated` / `elevated_move`） |
 | `thin protect` | `protect.rs` |
 | `thin preset` / `history` / `schedule` | `preset.rs` / `history.rs` / `schedule.rs` |
 | `thin large` / `dupes` | `finder.rs` |
-| `thin apps` / `uninstall` | `apps.rs`、`app_conditions.rs`、`spotlight.rs`、`recognize.rs` |
-| `thin orphans` | `orphans.rs`（已卸载 App 的孤立残留，复用 `clean::plan` 安全门） |
+| `thin apps` / `uninstall` | `apps.rs`、`app_conditions.rs`、`spotlight.rs`、`recognize.rs`（`--sudo` 提权同 clean） |
+| `thin orphans` | `orphans.rs`（已卸载 App 的孤立残留，复用 `clean::plan` 安全门；`--sudo` 提权同 clean） |
 | `thin ls` / `tui` | `thin-cli/src/ls.rs` / `tui.rs`、`browse.rs`、`treemap.rs` |
 | `thin agents` | `thin-cli/src/main.rs`（内嵌 `docs/agent-prompt.md`） |
 

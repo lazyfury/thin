@@ -29,7 +29,7 @@ macOS 的「系统数据 / 系统缓存」是个兜底分类，会把虚拟机�
 - 🧮 **诚实核算** —— 按实际分配块统计（稀疏文件不虚高）、按 inode 去重（硬链接不重复）、排除嵌套重复路径
 - 🎚️ **风险分级** —— `安全` / `需确认` / `不可再生`，默认只把前两类计入「可回收」
 - ♻️ **默认可恢复** —— 清理 = 移入 `~/.thin/quarantine`，随时 `restore`；只有显式 `purge` 才永久删除
-- 🛡️ **安全门** —— 受保护路径 / 裸顶层目录 / 卷隔离 / 需 sudo 项自动跳过
+- 🛡️ **安全门** —— 受保护路径 / 裸顶层目录 / 卷隔离 / 需 sudo 项默认跳过（可 `--sudo` 弹系统授权框）
 - 📌 **保护在研项目** —— `thin protect add .` 让正在开发的 `target/`、`node_modules/` 不再被清理
 - 🤖 **Agent 友好** —— 关键命令都有 `--json`，`discover → rules add → clean` 可非交互跑通
 
@@ -63,6 +63,7 @@ thin scan                      # 扫描已知可清理项，按体积排序
 thin clean                     # 默认 dry-run 预览，不执行任何操作
 thin clean --apply             # 确认后移入系统废纸篓（可恢复）
 thin clean --quarantine --apply # 改用 thin 隔离区（quarantine restore 可恢复）
+thin clean --apply --sudo      # 需 root 的项弹系统授权框，提权后仍移入隔离区（可恢复）
 thin quarantine list           # 查看隔离会话（仅 --quarantine 模式）
 thin quarantine restore <会话>  # 撤回
 thin                            # 无参数：进入交互式 TUI
@@ -105,6 +106,8 @@ $ thin clean
 > Esc 在无提示时退出；浏览页用 `Tab`/`Shift-Tab`/数字键切换标签（`l`/`h` 留给进入/上级）。
 > `q` 在任意标签页都退出整个 TUI；`Esc` 先关闭提示/模态，无提示时退出。
 > 清理页默认隐藏「需 sudo / 受系统保护」与「thin protect 保护」的项：`m` 显示前者、`b` 显示后者；
+> 显示后勾选需 root 的项并清理时，会弹出系统授权框，提权后仍移入隔离区（可恢复）；
+> 批量选择（`a`/`A`）不会包含需 root 的项，必须逐项勾选以避免误触授权框；
 > 没有可清理项时显示「✨ 您的电脑很干净！」。
 
 ## 命令速查
@@ -212,9 +215,11 @@ thin uninstall <名称>                           # 预览卸载计划
 thin uninstall <名称> --deep                    # 预览时用 Spotlight 深扫补充带后缀/嵌套的关联残留
 thin uninstall <名称> --apply                   # 卸载并移入隔离区
 thin uninstall <名称> --kill --apply            # 先退出正在运行的 App（优雅退出 → 强制结束）再卸载
+thin uninstall <名称> --sudo --apply            # 系统级残留（LaunchDaemons 等）弹系统授权框后移入隔离区
 thin orphans                                   # 已卸载 App 的孤立残留（App 本体已不存在）
 thin orphans --json                            # 机器可读
 thin orphans --apply                           # 清理（移入废纸篓，可恢复）
+thin orphans --sudo --apply                    # 系统级残留弹系统授权框后移入隔离区
 ```
 
 </details>
@@ -263,7 +268,7 @@ thin schedule uninstall
 | 卷隔离 | 目标必须与隔离区（`~/.thin`）同卷；外接盘/其他挂载被拒绝，避免跨卷复制 |
 | App 保护 | 运行中的 App 拒绝卸载（探测超时视为运行中），加 `--kill` 可先退出其进程再卸载；系统关键 App 禁止卸载 |
 | 超时 | `tmutil`/`plutil`/`pgrep`/`mount`/`date` 均带超时，不会挂死 |
-| 需 sudo 项 | 自动跳过，提示手动处理，**不计入「可回收」** |
+| 需 sudo 项 | 默认自动跳过，**不计入「可回收」**；`clean --sudo`（或 TUI 勾选后清理）弹系统授权框，root 子进程**重新过同一安全门**后仍移入隔离区（可恢复），绝不 `rm`；拒绝 `sudo thin` 整个进程提权 |
 | 风险分级 | 默认只处理「安全」项；`--all` 含「需确认」；「不可再生」需显式 `--id` |
 
 ## 准确性说明
