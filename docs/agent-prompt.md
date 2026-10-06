@@ -33,6 +33,7 @@ thin quarantine list|restore|purge
 thin large [ROOT] --min --limit [--json]
 thin dupes [ROOT] --min [--apply] [--json]   # 受保护副本标 [已保护] 且不计入可回收
 thin apps --min ; thin uninstall <名称> [--apply] [--deep]
+thin orphans [--json] [--apply]           # 已卸载 App 的孤立残留（无 App 本体，仅剩缓存/容器/偏好）
 ```
 
 所有命令都可用 `THIN_HOME` 指向隔离的数据目录（便于在沙箱/测试中运行），

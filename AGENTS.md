@@ -27,8 +27,8 @@ thin 是 macOS 系统空间扫描与安全清理的 **Rust CLI + TUI**。核心�
 crates/
   thin-core/   核心库（无 UI 依赖）
     src/{lib,model,fsutil,probe,rules,scan,clean,protect,discover,finder,
-         apps,app_conditions,spotlight,preset,history,schedule,status,progress,proc,recognize,
-         catalog,script,platform,tree}.rs
+         apps,app_conditions,orphans,spotlight,preset,history,schedule,status,progress,proc,
+         recognize,catalog,script,platform,tree}.rs
     rules/default.json        内置清理规则
     rules/app-leftovers.json  内置 App 残留条件表（tokens/aliases/forcePaths/require/exclude）
   thin-cli/    前端：clap CLI (main.rs) + ratatui TUI (tui.rs) + report/browse/ls/top/treemap
@@ -108,6 +108,7 @@ cargo build -p thin-core --no-default-features
 | `thin preset` / `history` / `schedule` | `preset.rs` / `history.rs` / `schedule.rs` |
 | `thin large` / `dupes` | `finder.rs` |
 | `thin apps` / `uninstall` | `apps.rs`、`app_conditions.rs`、`spotlight.rs`、`recognize.rs` |
+| `thin orphans` | `orphans.rs`（已卸载 App 的孤立残留，复用 `clean::plan` 安全门） |
 | `thin ls` / `tui` | `thin-cli/src/ls.rs` / `tui.rs`、`browse.rs`、`treemap.rs` |
 | `thin agents` | `thin-cli/src/main.rs`（内嵌 `docs/agent-prompt.md`） |
 

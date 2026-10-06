@@ -1,7 +1,8 @@
 //! App 列表与卸载（含关联残留）（M2）。
 
 use rayon::prelude::*;
-use std::collections::HashMap;
+use serde::Serialize;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -19,7 +20,8 @@ pub struct AppInfo {
 }
 
 /// 一条关联残留
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Leftover {
     pub path: PathBuf,
     pub size: u64,
@@ -74,6 +76,71 @@ fn app_roots() -> Vec<PathBuf> {
         v.push(PathBuf::from(h).join("Applications"));
     }
     v
+}
+
+/// 已安装 App 的 bundle id 集合（小写），含系统 App，用于孤儿残留判定。
+///
+/// 与 [`list_apps`] 不同：只看 bundle id、不算体积/残留，因此很轻。
+/// 必须包含 `/System/Applications`，否则系统 App 的容器会被误判为孤儿。
+pub fn installed_bundle_ids() -> HashSet<String> {
+    let mut roots = vec![
+        PathBuf::from("/Applications"),
+        PathBuf::from("/System/Applications"),
+    ];
+    if let Ok(h) = std::env::var("HOME") {
+        roots.push(PathBuf::from(h).join("Applications"));
+    }
+    let mut ids = HashSet::new();
+    for root in roots {
+        let Ok(rd) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for e in rd.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|s| s.to_str()) == Some("app") {
+                if let Some(b) = bundle_id(&path) {
+                    ids.insert(b.to_lowercase());
+                }
+                // 登录项 / 扩展等嵌套 bundle 也是该 App 合法的一部分，
+                // 否则它们的容器会被误判为孤儿残留。
+                collect_nested_bundle_ids(&path.join("Contents"), &mut ids, 5);
+            }
+        }
+    }
+    ids
+}
+
+/// 递归收集 App 内部嵌套 bundle（`.app`/`.xpc`/`.appex`）的 bundle id。
+///
+/// 只沿已知容器目录下钻，限定深度，避免遍历整个资源树。
+fn collect_nested_bundle_ids(dir: &Path, ids: &mut HashSet<String>, depth: u8) {
+    const NESTED_DIRS: &[&str] = &[
+        "Library",
+        "LoginItems",
+        "XPCServices",
+        "PlugIns",
+        "Helpers",
+        "SystemExtensions",
+    ];
+    if depth == 0 {
+        return;
+    }
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in rd.flatten() {
+        let path = e.path();
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if (name.ends_with(".app") || name.ends_with(".xpc") || name.ends_with(".appex"))
+            && let Some(b) = bundle_id(&path)
+        {
+            ids.insert(b.to_lowercase());
+        }
+        if path.is_dir() && NESTED_DIRS.contains(&name.as_ref()) {
+            collect_nested_bundle_ids(&path, ids, depth - 1);
+        }
+    }
 }
 
 /// 列出已安装的 App（按总占用降序）
@@ -465,29 +532,16 @@ const PLUGIN_DIRS: &[(&str, &str)] = &[
 fn darwin_user_dirs() -> Vec<PathBuf> {
     #[cfg(target_os = "macos")]
     {
-        let names = [
+        let mut out: Vec<PathBuf> = Vec::new();
+        for name in [
             libc::_CS_DARWIN_USER_DIR,
             libc::_CS_DARWIN_USER_TEMP_DIR,
             libc::_CS_DARWIN_USER_CACHE_DIR,
-        ];
-        let mut out: Vec<PathBuf> = Vec::new();
-        for name in names {
-            // 第一次取所需长度（含结尾 NUL），第二次取内容
-            let len = unsafe { libc::confstr(name, std::ptr::null_mut(), 0) };
-            if len == 0 {
-                continue;
-            }
-            let mut buf: Vec<libc::c_char> = vec![0; len];
-            let n = unsafe { libc::confstr(name, buf.as_mut_ptr(), len) };
-            if n == 0 || n > len {
-                continue;
-            }
-            let bytes: Vec<u8> = buf[..n - 1].iter().map(|&c| c as u8).collect();
-            if let Ok(s) = String::from_utf8(bytes) {
-                let p = PathBuf::from(s);
-                if !out.contains(&p) {
-                    out.push(p);
-                }
+        ] {
+            if let Some(p) = confstr_dir(name)
+                && !out.contains(&p)
+            {
+                out.push(p);
             }
         }
         out
@@ -495,6 +549,36 @@ fn darwin_user_dirs() -> Vec<PathBuf> {
     #[cfg(not(target_os = "macos"))]
     {
         Vec::new()
+    }
+}
+
+/// 解析一个 `confstr` 目录（第一次取长度，第二次取内容）。
+#[cfg(target_os = "macos")]
+fn confstr_dir(name: libc::c_int) -> Option<PathBuf> {
+    let len = unsafe { libc::confstr(name, std::ptr::null_mut(), 0) };
+    if len == 0 {
+        return None;
+    }
+    let mut buf: Vec<libc::c_char> = vec![0; len];
+    let n = unsafe { libc::confstr(name, buf.as_mut_ptr(), len) };
+    if n == 0 || n > len {
+        return None;
+    }
+    let bytes: Vec<u8> = buf[..n - 1].iter().map(|&c| c as u8).collect();
+    String::from_utf8(bytes).ok().map(PathBuf::from)
+}
+
+/// Darwin 每用户缓存目录（`_CS_DARWIN_USER_CACHE_DIR`）。
+///
+/// 供孤儿残留检测枚举 `C/<bundle-id>` 使用；非 macOS / 解析失败返回 `None`。
+pub fn darwin_user_cache_dir() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        confstr_dir(libc::_CS_DARWIN_USER_CACHE_DIR)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        None
     }
 }
 

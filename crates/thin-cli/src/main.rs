@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use thin_core::fmt::human;
 use thin_core::model::{Category, Risk};
 use thin_core::{
-    CleanItem, Rule, apps, clean, discover, finder, fsutil, history, preset, probe, protect, rules,
-    scan, schedule, tree,
+    CleanItem, Rule, apps, clean, discover, finder, fsutil, history, orphans, preset, probe,
+    protect, rules, scan, schedule, tree,
 };
 
 #[derive(Parser)]
@@ -77,6 +77,9 @@ enum Cmd {
 
     /// 卸载 App（App 及其残留一并移入隔离区）
     Uninstall(UninstallArgs),
+
+    /// 已卸载 App 的孤立残留（App 本体已不存在，仅剩缓存/容器/偏好）
+    Orphans(OrphansArgs),
 
     /// 清理预设：列出 / 查看 / 新增 / 删除（定时任务只执行用户预设）
     Preset(PresetArgs),
@@ -214,6 +217,22 @@ struct UninstallArgs {
     /// 卸载前先退出正在运行的 App（优雅退出 → 强制结束），仍移入废纸篓/隔离区
     #[arg(long)]
     kill: bool,
+}
+
+#[derive(clap::Args)]
+struct OrphansArgs {
+    /// 输出 JSON
+    #[arg(long)]
+    json: bool,
+    /// 实际执行（默认只预览）
+    #[arg(long)]
+    apply: bool,
+    /// 跳过确认
+    #[arg(long)]
+    yes: bool,
+    /// 改用 thin 隔离区（默认移入系统废纸篓）
+    #[arg(long)]
+    quarantine: bool,
 }
 
 #[derive(clap::Args)]
@@ -579,6 +598,7 @@ fn main() -> Result<()> {
         Cmd::Dupes(args) => cmd_dupes(args)?,
         Cmd::Apps(args) => cmd_apps(args)?,
         Cmd::Uninstall(args) => cmd_uninstall(args)?,
+        Cmd::Orphans(args) => cmd_orphans(args)?,
         Cmd::Preset(args) => cmd_preset(args)?,
         Cmd::History(args) => cmd_history(args)?,
         Cmd::Schedule(args) => cmd_schedule(args)?,
@@ -1968,6 +1988,115 @@ fn cmd_uninstall(args: UninstallArgs) -> Result<()> {
                 plan.approved.len(),
                 (0, 0),
                 Some(journal),
+            );
+        }
+    }
+    warn_snapshots();
+    Ok(())
+}
+
+fn cmd_orphans(args: OrphansArgs) -> Result<()> {
+    let found = orphans::find_orphans();
+
+    if found.is_empty() {
+        if args.json {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &serde_json::json!({ "orphans": [], "totalBytes": 0, "reclaimableBytes": 0 })
+                )?
+            );
+        } else {
+            println!("未发现已卸载 App 的孤立残留。");
+        }
+        return Ok(());
+    }
+
+    // 所有残留拼成清理项，走与 clean / uninstall 同一个安全门
+    let items: Vec<CleanItem> = found
+        .iter()
+        .flat_map(|o| {
+            o.leftovers.iter().map(|l| {
+                let mut it = CleanItem::synthetic(
+                    l.path.clone(),
+                    l.size,
+                    "orphan-leftover",
+                    &format!("{} 孤立残留", o.bundle_id),
+                    Risk::Confirm,
+                );
+                it.sudo = l.sudo;
+                it
+            })
+        })
+        .collect();
+    let plan = clean::plan(&items);
+
+    if args.json {
+        let out = serde_json::json!({
+            "orphans": found,
+            "totalBytes": found.iter().map(|o| o.total()).sum::<u64>(),
+            "reclaimableBytes": plan.approved_bytes(),
+        });
+        println!("{}", serde_json::to_string_pretty(&out)?);
+        if !args.apply {
+            return Ok(());
+        }
+    } else {
+        println!("\n\x1b[1m已卸载 App 的孤立残留\x1b[0m\n");
+        for o in &found {
+            println!("\x1b[1m{}\x1b[0m  {}", o.bundle_id, human(o.total()));
+            for l in &o.leftovers {
+                println!("    {:<44} {:>10}", shorten(&l.path), human(l.size));
+            }
+        }
+        println!(
+            "\n共 {} 个 bundle、{} 项，可自动释放 \x1b[1m{}\x1b[0m",
+            found.len(),
+            items.len(),
+            human(plan.approved_bytes())
+        );
+        for s in &plan.skipped {
+            println!("  \x1b[33m跳过\x1b[0m {}：{}", shorten(&s.path), s.reason);
+        }
+    }
+
+    let mode = if args.quarantine {
+        clean::Mode::Quarantine
+    } else {
+        clean::default_mode()
+    };
+    if !args.apply {
+        println!("（预览；加 --apply 移入{}，可恢复）", mode.label());
+        return Ok(());
+    }
+    if plan.approved.is_empty() {
+        println!("没有可通过安全门的项。");
+        return Ok(());
+    }
+    if !args.yes
+        && !confirm(&format!(
+            "清理 {} 个孤立 bundle 的残留并移入{}？",
+            found.len(),
+            mode.label()
+        ))?
+    {
+        println!("已取消。");
+        return Ok(());
+    }
+    match clean::apply(&items, mode)? {
+        clean::Applied::Trash(report) => {
+            print_trash_report(&report);
+            record_history_trash(None, items.len(), plan.approved.len(), &report);
+        }
+        clean::Applied::Quarantine(journal) => {
+            print_journal(&journal);
+            record_history(
+                "orphans",
+                None,
+                items.len(),
+                plan.approved.len(),
+                (0, 0),
+                Some(&journal),
             );
         }
     }

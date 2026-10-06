@@ -19,9 +19,10 @@ use std::time::Duration;
 use thin_core::apps::AppInfo;
 use thin_core::fmt::human;
 use thin_core::model::{CleanItem, Risk};
+use thin_core::orphans::OrphanApp;
 use thin_core::progress::Progress;
 use thin_core::tree::TreeNode;
-use thin_core::{apps, clean, fsutil, history, probe, protect, rules, scan, tree};
+use thin_core::{apps, clean, fsutil, history, orphans, probe, protect, rules, scan, tree};
 
 use crate::browse::{self, BrowseState};
 use crate::text;
@@ -106,6 +107,14 @@ struct PendingUninstall {
 struct PendingKill {
     app_name: String,
     app_path: PathBuf,
+}
+
+/// 待确认的「已卸载 App 孤立残留清理」
+struct PendingOrphan {
+    bundle_id: String,
+    items: Vec<CleanItem>,
+    approved_bytes: u64,
+    skipped: usize,
 }
 
 /// 树形视图中已展开的一行（由 [`TreeNode`] 扁平化而来，便于用列表光标导航）。
@@ -199,6 +208,10 @@ struct App {
     /// 清理页是否显示「受 thin protect 保护」的项（默认隐藏，键 b 切换）
     show_protected: bool,
     apps: Load<Vec<AppInfo>>,
+    /// 已卸载 App 的孤立残留（Apps 页按 `o` 切换）
+    orphans: Load<Vec<OrphanApp>>,
+    /// Apps 页当前是否展示孤立残留（false = 已安装应用列表）
+    show_orphans: bool,
     history: Load<Vec<history::Record>>,
     browse: Option<BrowseState>,
     confirm: bool,
@@ -206,6 +219,8 @@ struct App {
     uninstall_confirm: Option<PendingUninstall>,
     /// 运行中的 App：是否先退出再卸载的确认
     kill_confirm: Option<PendingKill>,
+    /// 孤立残留清理的二次确认
+    orphan_confirm: Option<PendingOrphan>,
     status: Option<Toast>,
     help: bool,
     quit: bool,
@@ -232,11 +247,14 @@ impl App {
             show_manual: false,
             show_protected: false,
             apps: Load::Idle,
+            orphans: Load::Idle,
+            show_orphans: false,
             history: Load::Idle,
             browse: None,
             confirm: false,
             uninstall_confirm: None,
             kill_confirm: None,
+            orphan_confirm: None,
             status: None,
             help: false,
             quit: false,
@@ -285,7 +303,10 @@ impl App {
                     Ok(items)
                 });
             }
-            APPS_TAB if self.apps.is_idle() => {
+            APPS_TAB if self.show_orphans && self.orphans.is_idle() => {
+                self.orphans = Load::spawn(move |_p| Ok(orphans::find_orphans()));
+            }
+            APPS_TAB if !self.show_orphans && self.apps.is_idle() => {
                 self.apps = Load::spawn(move |_p| Ok(apps::list_apps()));
             }
             HISTORY_TAB if self.history.is_idle() => {
@@ -301,6 +322,7 @@ impl App {
     fn poll_loaders(&mut self) {
         self.clean.poll();
         self.apps.poll();
+        self.orphans.poll();
         self.history.poll();
         if let Some(b) = &mut self.browse {
             b.poll();
@@ -383,6 +405,7 @@ impl App {
         match self.tab {
             0 if self.tree_view => self.clean_rows.len(),
             0 => self.clean.ready().map_or(0, |v| v.len()),
+            APPS_TAB if self.show_orphans => self.orphans.ready().map_or(0, |v| v.len()),
             APPS_TAB => self.apps.ready().map_or(0, |v| v.len()),
             HISTORY_TAB => self.history.ready().map_or(0, |v| v.len()),
             _ => 0,
@@ -585,7 +608,10 @@ impl App {
                 self.clean = Load::Idle;
                 self.selected.clear();
             }
-            APPS_TAB => self.apps = Load::Idle,
+            APPS_TAB => {
+                self.apps = Load::Idle;
+                self.orphans = Load::Idle;
+            }
             HISTORY_TAB => self.history = Load::Idle,
             _ => {}
         }
@@ -616,8 +642,32 @@ impl App {
         }
     }
 
+    /// 当前选中的孤立残留
+    fn current_orphan(&self) -> Option<OrphanApp> {
+        match &self.orphans {
+            Load::Ready(list) => list.get(self.cursor()).cloned(),
+            _ => None,
+        }
+    }
+
+    /// Apps 页在「已安装应用」与「已卸载残留」间切换
+    fn toggle_orphans(&mut self) {
+        self.show_orphans = !self.show_orphans;
+        self.list_states[APPS_TAB].select(Some(0));
+        self.ensure(APPS_TAB);
+        if self.show_orphans {
+            self.info("显示已卸载 App 的孤立残留（o 切回应用列表）");
+        } else {
+            self.info("显示已安装应用列表（o 查看孤立残留）");
+        }
+    }
+
     /// 组装卸载计划；系统关键 App 直接拒绝，运行中的 App 先走「退出」确认
     fn begin_uninstall(&mut self) {
+        if self.show_orphans {
+            self.begin_orphan_cleanup();
+            return;
+        }
         let Some(app) = self.current_app() else {
             return;
         };
@@ -690,6 +740,39 @@ impl App {
         });
     }
 
+    /// 组装孤立残留清理计划（无 App 本体，不需运行状态检查）
+    fn begin_orphan_cleanup(&mut self) {
+        let Some(o) = self.current_orphan() else {
+            return;
+        };
+        let items: Vec<CleanItem> = o
+            .leftovers
+            .iter()
+            .map(|l| {
+                let mut it = CleanItem::synthetic(
+                    l.path.clone(),
+                    l.size,
+                    "orphan-leftover",
+                    &format!("{} 孤立残留", o.bundle_id),
+                    Risk::Confirm,
+                );
+                it.sudo = l.sudo;
+                it
+            })
+            .collect();
+        let plan = clean::plan(&items);
+        if plan.approved.is_empty() {
+            self.warn(format!("{} 没有可通过安全门的项", o.bundle_id));
+            return;
+        }
+        self.orphan_confirm = Some(PendingOrphan {
+            bundle_id: o.bundle_id.clone(),
+            items,
+            approved_bytes: plan.approved_bytes(),
+            skipped: plan.skipped.len(),
+        });
+    }
+
     fn execute_uninstall(&mut self, plan: PendingUninstall) {
         // 确认期间 App 可能已被启动
         if apps::is_running(&plan.app_path) {
@@ -731,6 +814,45 @@ impl App {
                 self.history = Load::Idle;
             }
             Err(e) => self.error(format!("卸载失败：{e:#}")),
+        }
+    }
+
+    /// 清理孤立残留：无 App 本体，直接走安全门并记录历史
+    fn execute_orphan_cleanup(&mut self, plan: PendingOrphan) {
+        match clean::apply(&plan.items, clean::default_mode()) {
+            Ok(applied) => {
+                let hist_err = {
+                    let mut rec = history::Record::new("orphans");
+                    rec.scanned = plan.items.len();
+                    rec.approved = applied.moved();
+                    rec.session = applied.session().map(str::to_string);
+                    rec.moved = applied.moved();
+                    rec.moved_bytes = applied.moved_bytes();
+                    rec.skipped = applied.skipped() + applied.failed();
+                    history::append(&rec).err()
+                };
+                let mut msg = format!(
+                    "已清理 {} 孤立残留：移入{} {} 项 · {}",
+                    plan.bundle_id,
+                    applied.mode().label(),
+                    applied.moved(),
+                    human(applied.moved_bytes())
+                );
+                if applied.skipped() > 0 {
+                    msg.push_str(&format!("，跳过 {} 项", applied.skipped()));
+                }
+                if applied.failed() > 0 {
+                    msg.push_str(&format!("，失败 {} 项", applied.failed()));
+                }
+                if let Some(e) = hist_err {
+                    msg.push_str(&format!("（历史写入失败：{e:#}）"));
+                }
+                self.info(msg);
+                self.orphans = Load::Idle;
+                self.ensure(APPS_TAB);
+                self.history = Load::Idle;
+            }
+            Err(e) => self.error(format!("清理失败：{e:#}")),
         }
     }
 
@@ -855,6 +977,16 @@ impl App {
             }
             return;
         }
+        if let Some(plan) = self.orphan_confirm.take() {
+            match code {
+                KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                    self.execute_orphan_cleanup(plan)
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {}
+                _ => self.orphan_confirm = Some(plan),
+            }
+            return;
+        }
 
         if self.tab == BROWSE_TAB {
             // 浏览页处于输入/模态状态时，普通按键应交给组件，
@@ -941,6 +1073,7 @@ impl App {
             }
             KeyCode::Char('c') if self.tab == HISTORY_TAB => self.reconcile_history(),
             KeyCode::Char('u') if self.tab == APPS_TAB => self.begin_uninstall(),
+            KeyCode::Char('o') if self.tab == APPS_TAB => self.toggle_orphans(),
             KeyCode::Char('r') => self.reload_current(),
             KeyCode::Char('?') => self.help = !self.help,
             _ => {}
@@ -1047,6 +1180,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
     }
     if let Some(plan) = &app.uninstall_confirm {
         render_uninstall_confirm(frame, plan);
+    }
+    if let Some(plan) = &app.orphan_confirm {
+        render_orphan_confirm(frame, plan);
     }
 }
 
@@ -1608,6 +1744,10 @@ fn render_clean_empty(frame: &mut Frame, app: &App, parts: &[Rect]) {
 
 /// 应用
 fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
+    if app.show_orphans {
+        render_orphans(frame, app, area);
+        return;
+    }
     let home = home_prefix();
     let parts = Layout::default()
         .direction(Direction::Horizontal)
@@ -1704,6 +1844,82 @@ fn render_apps(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// 已卸载 App 的孤立残留列表（Apps 页按 `o` 切换）
+fn render_orphans(frame: &mut Frame, app: &mut App, area: Rect) {
+    let home = home_prefix();
+    let parts = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
+        .split(area);
+
+    match &app.orphans {
+        Load::Ready(list) => {
+            let items: Vec<ListItem> = list
+                .iter()
+                .map(|o| {
+                    let t = apps::tier(o.total());
+                    ListItem::new(Line::from(vec![
+                        Span::styled(
+                            format!("{:>9} ", human(o.total())),
+                            Style::default().fg(tier_color(t)),
+                        ),
+                        Span::styled(
+                            format!("{:<4} ", t.label()),
+                            Style::default().fg(tier_color(t)),
+                        ),
+                        Span::styled("○ ", Style::default().fg(Color::DarkGray)),
+                        Span::raw(truncate(&o.bundle_id, 30)),
+                    ]))
+                })
+                .collect();
+            let widget = List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(format!("已卸载残留 · {} 个（o 切回应用）", list.len())),
+                )
+                .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+                .highlight_symbol("› ");
+            frame.render_stateful_widget(widget, parts[0], &mut app.list_states[app.tab]);
+
+            let mut text = Vec::new();
+            if let Some(o) = list.get(app.cursor()) {
+                text.push(Line::from(Span::styled(
+                    o.bundle_id.clone(),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                text.push(Line::from(Span::styled(
+                    "App 本体已不存在，以下残留未匹配到已安装应用",
+                    Style::default().fg(Color::DarkGray),
+                )));
+                text.push(Line::from(""));
+                for l in &o.leftovers {
+                    let sp = l.path.display().to_string();
+                    let shown = if !home.is_empty() && sp.starts_with(&home) {
+                        sp.replacen(&home, "~", 1)
+                    } else {
+                        sp
+                    };
+                    let tag = if l.sudo { "  需 sudo" } else { "" };
+                    text.push(Line::from(format!("{:<9} {}{}", human(l.size), shown, tag)));
+                }
+            }
+            frame.render_widget(
+                Paragraph::new(text)
+                    .block(Block::default().borders(Borders::ALL).title("详情"))
+                    .wrap(Wrap { trim: true }),
+                parts[1],
+            );
+        }
+        Load::Loading { progress, .. } => {
+            render_loading(frame, parts[0], Some(progress), app.tick, "扫描孤立残留…");
+            state_msg(frame, parts[1], "");
+        }
+        Load::Failed(e) => state_msg(frame, parts[0], e),
+        Load::Idle => state_msg(frame, parts[0], "等待加载"),
+    }
+}
+
 /// 基本信息的一行：标签 + 值
 fn field(label: &str, value: &str) -> Line<'static> {
     Line::from(vec![
@@ -1737,7 +1953,7 @@ fn render_footer(frame: &mut Frame, app: &App, area: Rect) {
             0 => {
                 " Tab 切页 · ↑↓/jk 移动 · space 勾选 · a 选安全 · A 全选 · n 清空 · t 树形 · p 保护 · P 解除 · m 需sudo · b 保护项 · c 清理 · r 重载 · ? 帮助 · q 退出"
             }
-            APPS_TAB => " ↑↓/jk 移动 · u 卸载 · r 重载 · ? 帮助 · q 退出",
+            APPS_TAB => " ↑↓/jk 移动 · u 卸载/清理 · o 孤立残留 · r 重载 · ? 帮助 · q 退出",
             HISTORY_TAB => " ↑↓/jk 移动 · c 回填隔离区遗漏记录 · r 重载 · ? 帮助 · q 退出",
             _ => " 1-5/Tab 切换标签 · ↑↓/jk 移动 · r 重载 · ? 帮助 · q 退出",
         };
@@ -1775,6 +1991,53 @@ fn render_confirm(frame: &mut Frame, app: &App) {
     ];
     let popup = Paragraph::new(text)
         .block(Block::default().borders(Borders::ALL).title("确认清理"))
+        .alignment(Alignment::Center);
+    frame.render_widget(popup, area);
+}
+
+fn render_orphan_confirm(frame: &mut Frame, plan: &PendingOrphan) {
+    let area = centered_rect_fixed(66, 12, frame.area());
+    frame.render_widget(Clear, area);
+    let mode = clean::default_mode();
+    let mut text = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("清理 {} 的孤立残留？", plan.bundle_id),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from("该 App 本体已不存在，以下残留保留无益。"),
+        Line::from(format!("将 {} 项移入{}", plan.items.len(), mode.label())),
+        Line::from(format!("可释放 {}", human(plan.approved_bytes))),
+    ];
+    if plan.skipped > 0 {
+        text.push(Line::from(Span::styled(
+            format!("{} 项需 sudo 或受保护，将跳过", plan.skipped),
+            Style::default().fg(Color::Yellow),
+        )));
+    } else {
+        text.push(Line::from(""));
+    }
+    text.push(Line::from(""));
+    text.push(Line::from(Span::styled(
+        match mode {
+            clean::Mode::Trash => "可在 Finder 废纸篓中恢复",
+            clean::Mode::Quarantine => "移入后可随时恢复；彻底删除用 thin quarantine purge",
+        },
+        Style::default().fg(Color::DarkGray),
+    )));
+    text.push(Line::from(""));
+    text.push(Line::from(vec![
+        Span::styled("[y] 清理", Style::default().fg(Color::Red)),
+        Span::raw("    "),
+        Span::styled("[n / Esc] 取消", Style::default().fg(Color::Green)),
+    ]));
+    let popup = Paragraph::new(text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red))
+                .title("确认清理孤立残留"),
+        )
         .alignment(Alignment::Center);
     frame.render_widget(popup, area);
 }
@@ -2060,6 +2323,69 @@ mod tests {
         assert!(app.uninstall_confirm.is_none());
         let t = app.status.as_ref().expect("应有提示");
         assert!(t.text().contains("系统关键"), "{}", t.text());
+    }
+
+    #[test]
+    fn o_key_toggles_orphans_view() {
+        let mut app = test_app();
+        app.tab = APPS_TAB;
+        // 预置为 Ready，避免 toggle 时 spawn 真实扫描线程
+        app.apps = Load::Ready(vec![]);
+        app.orphans = Load::Ready(vec![]);
+        app.on_key(KeyEvent::from(KeyCode::Char('o')));
+        assert!(app.show_orphans, "按 o 应切换到孤立残留视图");
+        app.on_key(KeyEvent::from(KeyCode::Char('o')));
+        assert!(!app.show_orphans, "再按 o 应切回应用列表");
+    }
+
+    #[test]
+    fn render_orphans_lists_bundle_ids() {
+        use thin_core::apps::Leftover;
+        let mut app = test_app();
+        app.tab = APPS_TAB;
+        app.show_orphans = true;
+        app.orphans = Load::Ready(vec![OrphanApp {
+            bundle_id: "com.example.gone".into(),
+            leftovers: vec![Leftover {
+                path: PathBuf::from("/Users/x/Library/Containers/com.example.gone"),
+                size: 4096,
+                sudo: false,
+            }],
+        }]);
+        let text = render(&mut app, 120, 30);
+        assert!(text.contains("已卸载残留"), "{text}");
+        assert!(text.contains("com.example.gone"), "{text}");
+    }
+
+    #[test]
+    fn orphan_confirm_prompts_to_clean() {
+        let mut app = test_app();
+        app.tab = APPS_TAB;
+        app.show_orphans = true;
+        app.orphan_confirm = Some(PendingOrphan {
+            bundle_id: "com.example.gone".into(),
+            items: vec![clean_item("/x/com.example.gone", 2048)],
+            approved_bytes: 2048,
+            skipped: 0,
+        });
+        let text = render(&mut app, 120, 30);
+        assert!(text.contains("确认清理孤立残留"), "{text}");
+        assert!(text.contains("[y] 清理"), "{text}");
+        assert!(text.contains("[n / Esc] 取消"), "{text}");
+    }
+
+    #[test]
+    fn n_key_cancels_orphan_confirm() {
+        let mut app = test_app();
+        app.tab = APPS_TAB;
+        app.orphan_confirm = Some(PendingOrphan {
+            bundle_id: "com.example.gone".into(),
+            items: vec![],
+            approved_bytes: 0,
+            skipped: 0,
+        });
+        app.on_key(KeyEvent::from(KeyCode::Char('n')));
+        assert!(app.orphan_confirm.is_none());
     }
 
     #[test]

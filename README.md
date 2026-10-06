@@ -212,6 +212,9 @@ thin uninstall <名称>                           # 预览卸载计划
 thin uninstall <名称> --deep                    # 预览时用 Spotlight 深扫补充带后缀/嵌套的关联残留
 thin uninstall <名称> --apply                   # 卸载并移入隔离区
 thin uninstall <名称> --kill --apply            # 先退出正在运行的 App（优雅退出 → 强制结束）再卸载
+thin orphans                                   # 已卸载 App 的孤立残留（App 本体已不存在）
+thin orphans --json                            # 机器可读
+thin orphans --apply                           # 清理（移入废纸篓，可恢复）
 ```
 
 </details>
@@ -386,6 +389,11 @@ thin rules add --json rule.json --approve-script   # 审查并钉住脚本哈希
   结果须落在受信任根（`~/Library`、`~/.config`、`~/.cache`、`~/.local`）之下、
   **文件名**命中强 token（App 名/bundle id/条件表 token），并过滤受保护路径与废纸篓；
   父目录优先、子项去重。候选仍走同一安全门，不改变删除语义。
+- **孤立残留**（`thin orphans` / TUI 应用页 `o`）：App 本体已卸载、残留还在时，按 bundle id
+  聚合 `~/Library/{Containers,Application Scripts,HTTPStorages,WebKit,Preferences,Saved Application
+  State,Caches,Logs,Application Support}` 与 Darwin `C/` 下「像 bundle id」的条目；排除系统 id
+  （`com.apple.*`）、group id（`TEAMID.group.*`）与已安装 App 家族（含嵌套 `.app`/`.xpc`/`.appex`
+  的 bundle id）。**只覆盖高置信来源**，App 名/厂商目录等中置信来源从略，仍走同一安全门。
 
 目录名只用强证据：完整 bundle id、bundle 末段（非通用词）、显示名/归一化名、Bundle 内可执行/
 helper 名，以及精确匹配的提示表（如 VS Code→`Code`、Chrome→`Google`、Docker→`Docker`）。
