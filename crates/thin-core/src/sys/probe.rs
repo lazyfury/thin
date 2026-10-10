@@ -244,5 +244,38 @@ pub fn probe_summary() -> Result<()> {
             println!("  {}", s);
         }
     }
+
+    println!("\n\x1b[1m系统状态\x1b[0m");
+    let info = crate::status::collect_info();
+    println!(
+        "  {} · {} · {} 核（物理 {}） · {}",
+        info.model, info.os_version, info.logical_cores, info.physical_cores, info.hostname
+    );
+    println!(
+        "  内存 {}   开机时长 {}",
+        human(info.mem_total),
+        crate::status::format_uptime(info.uptime_secs)
+    );
+    // CPU 占用需要两次采样（间隔取 tick 差值）
+    let mut cpu = crate::status::CpuSampler::new();
+    let _ = cpu.sample();
+    std::thread::sleep(Duration::from_millis(200));
+    let live = crate::status::collect_live(&mut cpu);
+    println!(
+        "  CPU {:.0}%   负载 {:.2} {:.2} {:.2}",
+        live.cpu_usage, live.load1, live.load5, live.load15
+    );
+    println!(
+        "  内存已用 {} / {}",
+        human(live.mem_used),
+        human(live.mem_total)
+    );
+    if let Some(b) = &live.battery {
+        println!(
+            "  电池 {}%{}",
+            b.percent,
+            if b.charging { "（充电中）" } else { "" }
+        );
+    }
     Ok(())
 }
