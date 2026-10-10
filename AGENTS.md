@@ -97,6 +97,9 @@ Swift `dir_usage` 目前只接在 `discover` 的 `fsutil::usage` 上。
 - **逻辑分层**：`thin-core` 不依赖 UI；CLI/TUI/未来 SwiftUI 都复用其 API。
 - **规则优先**：新增可清理项优先写成声明式规则（`rules/default.json` + 用户 `~/.thin/rules.d/*.json`），
   而不是在代码里硬编码路径。
+- **可测核心 + 便捷包装**：`_in` / `_with` / `_progress` 变体是注入点（便于测试与复用），
+  `xxx()` 是便捷包装。当调用方直接用 `_in` 变体时，包装会变成死代码——新增/修改时
+  优先删掉无人调用的包装；确需保留的公共 API 加 `#[allow(dead_code)]` 并写明用途。
 - **App 残留条件**：常见 App 的目录名提示、别名（`aliases`）与歧义消除写成
   `rules/app-leftovers.json`（+ 用户 `~/.thin/app-leftovers.d/*.json`，按 `bundleId` 覆盖），
   而不是在 `apps.rs` 里硬编码 `APP_HINTS`。
@@ -135,7 +138,7 @@ Swift `dir_usage` 目前只接在 `discover` 的 `fsutil::usage` 上。
 
 | 命令 | 主要实现 |
 |---|---|
-| `thin probe` | `thin-core/src/probe.rs`、`platform.rs` |
+| `thin probe` | `thin-core/src/sys/probe.rs`、`platform.rs`、`status.rs`（系统状态段） |
 | `thin scan` / `plan` / `apply` | `scan.rs`、`clean.rs` |
 | `thin discover` / `top` | `discover.rs`、`thin-cli/src/top.rs` |
 | `thin rules ...` | `rules.rs` + `thin-cli/src/main.rs` `cmd_rules` |
