@@ -36,6 +36,7 @@ crates/
 docs/
   agent-prompt.md   ★ 面向使用者的 agent 提示词（`thin agents` 内嵌）
   swift-ffi.md      Swift FFI 落地计划
+  thin-fs-plan.md   文件系统库抽象计划 + 模块拆分体检
 swift/         ThinKit Swift 源码（FFI 后端）
 experiments/   FFI 等实验代码
 DESIGN.md      产品设计愿景（以 README + 代码现状为准）
