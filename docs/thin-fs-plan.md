@@ -1,6 +1,6 @@
 # thin-fs 抽象计划 + 模块拆分体检
 
-> 状态：**S0–S3 已落地**（`crates/thin-fs` + `thin-core` 接入）；S4 native 后端、S5 会话缓存待做。
+> 状态：**S0–S4 已落地**（`crates/thin-fs` + `thin-core` 接入 + native 后端）；S5 会话缓存待做。
 > 目标是把散落的文件系统遍历收敛成一个独立、只读、可双后端的 crate，
 > 为后续「全盘搜索 / 更快的文件检查」打底；并顺带评估 `thin-core` / `thin-cli` 里其他值得拆分的模块。
 >
@@ -279,7 +279,7 @@ pub struct UsageCache { /* canonical path -> (dev, ino, mtime, Usage) */ }
 | **S1** | 实现 `Walk`；用新实现重写 `dir_size`/`logical_size`/`find_files`/`find_dirs`/`walk_files` | ✅（含不变量 + 等价测试） |
 | **S2** | 合并为单遍 `usage`，去掉 `size_of`+`logical_size` 双走；修硬链接逻辑去重 | ✅ |
 | **S3** | `fsutil` 退化为 re-export 薄层；删除重复遍历代码 | ✅（仅剩 `clean::chown_recursive` 写操作） |
-| **S4** | 实现 `NativeBackend`（`getattrlistbulk`）+ `backend_parity` 对拍测试 | ⏳ |
+| **S4** | 实现 `NativeBackend`（`getattrlistbulk`）+ `backend_parity` 对拍测试 | ✅（`--features native`） |
 | **S5** | 接入会话缓存，验证 `scan` 重复遍历次数下降 | ⏳ |
 | **S6** | 清理死代码与文档，更新 `AGENTS.md` 命令索引 | 部分（文档已更新） |
 

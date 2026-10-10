@@ -18,3 +18,8 @@ serde_json.workspace = true
 ratatui.workspace = true
 crossterm.workspace = true
 unicode-width = "0.2"
+
+[features]
+default = []
+# 启用 thin-fs 的 macOS getattrlistbulk 批量遍历后端（可选）
+native = ["thin-core/native"]

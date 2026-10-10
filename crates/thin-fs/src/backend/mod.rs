@@ -9,12 +9,17 @@
 
 mod rust;
 
+#[cfg(all(target_os = "macos", feature = "native"))]
+mod native;
+
 use crate::kind::Entry;
 use crate::progress::Control;
 use crate::walk::{Visit, WalkOptions, WalkStats};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 
+#[cfg(all(target_os = "macos", feature = "native"))]
+pub use native::NativeBackend;
 pub use rust::RustBackend;
 
 /// 遍历后端。
@@ -45,6 +50,12 @@ pub fn backend_name() -> &'static str {
 }
 
 fn select() -> Box<dyn Backend> {
-    // S4 起：`native` feature + macOS + 未被 `THIN_FS_BACKEND=rust` 覆盖时用 NativeBackend。
+    #[cfg(all(target_os = "macos", feature = "native"))]
+    {
+        // 允许 `THIN_FS_BACKEND=rust` 强制回退，便于对拍。
+        if std::env::var("THIN_FS_BACKEND").as_deref() != Ok("rust") {
+            return Box::new(NativeBackend);
+        }
+    }
     Box::new(RustBackend)
 }

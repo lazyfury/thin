@@ -58,6 +58,10 @@ cargo fmt
 
 # 无 Swift 工具链时验证纯 Rust 降级路径
 cargo build -p thin-core --no-default-features
+
+# thin-fs 的 macOS getattrlistbulk 批量后端（可选）
+cargo test -p thin-fs --features native        # Rust/native 两后端对拍
+cargo build -p thin-cli --features native      # 整机启用 native 遍历
 ```
 
 工具链：stable（edition 2024 + let-chains，见 `rust-toolchain.toml`）。Swift 后端缺失时构建仍须成功。

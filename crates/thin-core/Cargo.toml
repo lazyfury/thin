@@ -11,6 +11,8 @@ description = "thin 核心：磁盘探测、规则扫描与诚实核算"
 # 为纯 Rust 实现，因此默认开启不会破坏构建。
 default = ["swift"]
 swift = ["dep:thin-sys"]
+# 透传 thin-fs 的 macOS getattrlistbulk 批量后端（可选）
+native = ["thin-fs/native"]
 
 [dependencies]
 serde.workspace = true
