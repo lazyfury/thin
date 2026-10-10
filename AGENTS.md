@@ -148,6 +148,7 @@ Swift `dir_usage` 目前只接在 `discover` 的 `fsutil::usage` 上。
 | `thin ls` / `tui` | `thin-cli/src/ls.rs` / `tui.rs`、`browse.rs`、`treemap.rs` |
 | `thin agents` | `thin-cli/src/main.rs`（内嵌 `docs/agent-prompt.md`） |
 | `thin update` | `thin-cli/src/cmd/update.rs`（`cargo install --git … thin-cli --force`） |
+| `thin version` / `--version` | `thin-cli/build.rs`（构建时间 + 目标三元组）、`main.rs::print_version` |
 
 ---
 

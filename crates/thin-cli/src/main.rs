@@ -31,7 +31,9 @@ use cmd::update::cmd_update;
     name = "thin",
     about = "macOS 系统空间扫描与安全清理 (M5 · 预设/历史/定时)",
     after_help = "Agent 工作流: thin agents（探索 → 写规则 → 可恢复清理；含安全约束与命令速查）",
-    version
+    version,
+    // 构建时间 + 目标平台：`cargo install` 本地构建时版本号不变，靠它区分构建。
+    long_version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("THIN_BUILD_INFO"), ")")
 )]
 struct Cli {
     #[command(subcommand)]
@@ -103,6 +105,9 @@ enum Cmd {
 
     /// Agent 工作流：打印内嵌的用户提示词（探索 → 写规则 → 可恢复清理）
     Agents,
+
+    /// 打印版本、构建时间与目标平台
+    Version,
 
     /// 通过 cargo 从 git 安装/更新 thin 自身
     Update(UpdateArgs),
@@ -662,6 +667,7 @@ fn main() -> Result<()> {
         Cmd::Schedule(args) => cmd_schedule(args)?,
         Cmd::Protect(args) => cmd_protect(args)?,
         Cmd::Agents => print_agents(),
+        Cmd::Version => print_version(),
         Cmd::Update(args) => cmd_update(args)?,
         Cmd::ElevatedMove(args) => cmd_elevated_move(args)?,
     }
@@ -699,6 +705,15 @@ fn cmd_elevated_move(args: ElevatedMoveArgs) -> Result<()> {
 const AGENT_PROMPT: &str = include_str!("../../../docs/agent-prompt.md");
 
 /// `thin agents`：把 agent 工作流原样打到 stdout，便于 `thin agents | ...` 或直接喂给 agent。
+/// `thin version`：与 `thin --version` 一致，打印版本 + 构建时间 + 目标平台。
+fn print_version() {
+    println!(
+        "thin {} ({})",
+        env!("CARGO_PKG_VERSION"),
+        env!("THIN_BUILD_INFO")
+    );
+}
+
 fn print_agents() {
     print!("{AGENT_PROMPT}");
     if !AGENT_PROMPT.ends_with('\n') {
