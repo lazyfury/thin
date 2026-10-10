@@ -66,6 +66,22 @@ cargo build -p thin-cli --features native      # 整机启用 native 遍历
 
 工具链：stable（edition 2024 + let-chains，见 `rust-toolchain.toml`）。Swift 后端缺失时构建仍须成功。
 
+### 平台后端对比 / 性能排查
+
+同一二进制可用 `THIN_BACKEND=libc`（或 `THIN_NO_SWIFT=1`）强制走纯 Rust，对比 Swift 与 Rust 的耗时与结果：
+
+```bash
+THIN_BACKEND=libc thin discover <dir>   # 纯 Rust 目录用量
+thin discover <dir>                     # Swift 目录用量
+
+# 隔离基准（同一目录，两示例结果应一致，只看耗时）
+cargo run --release -p thin-fs  --example fs-usage -- <dir>   # Rust
+cargo run --release -p thin-sys --example usage    -- <dir>   # Swift
+```
+
+注意：`scan`/`size_of`/`dir_size` 走的是 `thin-fs`（Rust/native），**不经过 Swift**；
+Swift `dir_usage` 目前只接在 `discover` 的 `fsutil::usage` 上。
+
 ---
 
 ## 4. 架构约定

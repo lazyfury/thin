@@ -5,10 +5,14 @@
 //! - 否则 → [`LibcPlatform`]（`statfs` 等；App/权限能力返回 `None`）
 //!
 //! 具体能力的语义与回退见各方法注释，FFI 约定见 `docs/swift-ffi.md`。
+//!
+//! **排查开关**：设置环境变量 `THIN_BACKEND=libc`（或 `THIN_NO_SWIFT=1`）可在同一
+//! 二进制内强制走 [`LibcPlatform`]，用于对比 Swift 与纯 Rust 路径的耗时/结果。
 
 use crate::fsutil::Usage;
 use crate::probe::{Capacity, CapacitySource};
 use std::path::Path;
+use std::sync::OnceLock;
 
 /// App 沙盒信息（来自代码签名 entitlements）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -188,10 +192,24 @@ static LIBC: LibcPlatform = LibcPlatform;
 #[cfg(feature = "swift")]
 static SWIFT: SwiftPlatform = SwiftPlatform;
 
+/// 是否被环境变量强制走纯 Rust（`THIN_BACKEND=libc|rust` 或 `THIN_NO_SWIFT!=0`）。
+fn force_libc() -> bool {
+    static FORCE: OnceLock<bool> = OnceLock::new();
+    *FORCE.get_or_init(|| {
+        matches!(
+            std::env::var("THIN_BACKEND").as_deref(),
+            Ok("libc") | Ok("rust")
+        ) || std::env::var("THIN_NO_SWIFT").is_ok_and(|v| v != "0")
+    })
+}
+
 /// 当前平台的默认实现。
 pub fn platform() -> &'static dyn Platform {
     #[cfg(feature = "swift")]
     {
+        if force_libc() {
+            return &LIBC;
+        }
         &SWIFT
     }
     #[cfg(not(feature = "swift"))]
