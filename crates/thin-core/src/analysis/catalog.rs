@@ -12,7 +12,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-const BUILTIN: &str = include_str!("../catalog/purposes.json");
+const BUILTIN: &str = include_str!("../../catalog/purposes.json");
 
 /// 用途大类（用于分组与着色）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

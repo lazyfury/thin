@@ -12,6 +12,7 @@
 use crate::fsutil::Usage;
 use crate::probe::{Capacity, CapacitySource};
 use std::path::Path;
+#[cfg(feature = "swift")]
 use std::sync::OnceLock;
 
 /// App 沙盒信息（来自代码签名 entitlements）。
@@ -156,6 +157,8 @@ impl Platform for SwiftPlatform {
                 logical: u.logical,
                 dataless: u.dataless,
                 files: u.files,
+                // Swift 后端不区分「无权限」，记 0。
+                denied: 0,
             });
         }
         LibcPlatform.dir_usage(path)
@@ -205,6 +208,7 @@ static LIBC: LibcPlatform = LibcPlatform;
 static SWIFT: SwiftPlatform = SwiftPlatform;
 
 /// 是否被环境变量强制走纯 Rust（`THIN_BACKEND=libc|rust` 或 `THIN_NO_SWIFT!=0`）。
+#[cfg(feature = "swift")]
 fn force_libc() -> bool {
     static FORCE: OnceLock<bool> = OnceLock::new();
     *FORCE.get_or_init(|| {

@@ -64,6 +64,25 @@ impl Progress {
     }
 }
 
+/// 让 [`Progress`] 直接作为 `thin-fs` 遍历的进度接收器。
+///
+/// 这样 `thin-fs` 的 [`thin_fs::Control`] 可以把逐条遍历进度回传到 CLI/TUI，
+/// 无需在 `thin-fs` 里反向依赖 `thin-core`（依赖方向保持单向）。
+impl thin_fs::ProgressSink for Progress {
+    fn set_label(&self, label: &str) {
+        Progress::set_label(self, label);
+    }
+    fn set_total(&self, total: u64) {
+        Progress::set_total(self, total);
+    }
+    fn inc(&self) {
+        Progress::inc(self);
+    }
+    fn touch(&self) {
+        Progress::touch(self);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

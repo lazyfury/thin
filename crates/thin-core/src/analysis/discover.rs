@@ -54,6 +54,9 @@ pub struct Report {
     pub uncovered: u64,
     /// 直接子项中 iCloud 未下载占位的逻辑字节合计
     pub dataless: u64,
+    /// 直接子项中元数据不可读的条目数（权限 / TCC）。
+    /// **诚实核算**：总量可能因此偏低，需提示用户授权完全磁盘访问。
+    pub denied: u64,
 }
 
 impl Report {
@@ -111,6 +114,7 @@ pub fn analyze_opts(root: &Path, min_size: u64, catalog: &[Rule], include_icloud
         let size = usage.allocated;
         report.dataless = report.dataless.saturating_add(dataless);
         report.total = report.total.saturating_add(size);
+        report.denied = report.denied.saturating_add(usage.denied);
         let coverage = classify(&path, &rule_paths);
         match &coverage {
             Coverage::Full(_) => report.covered = report.covered.saturating_add(size),
@@ -182,6 +186,7 @@ mod tests {
             partial: 100,
             uncovered: 500,
             dataless: 0,
+            denied: 0,
         };
         assert!((r.coverage_ratio() - 0.5).abs() < 1e-9);
         let empty = Report::default();

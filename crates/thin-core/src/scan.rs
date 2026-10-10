@@ -254,7 +254,7 @@ pub fn nested_count(items: &[CleanItem]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Category, CleanItem, Explain, Risk};
+    use crate::model::{Category, CleanItem, Explain, Matcher, Risk};
     use std::path::PathBuf;
 
     fn item(path: &str, size: u64, risk: Risk, sudo: bool) -> CleanItem {
@@ -291,6 +291,40 @@ mod tests {
             .map(|i| i.path.display().to_string())
             .collect();
         assert_eq!(paths, vec!["/a/proj/target", "/a/proj"]);
+    }
+
+    /// 回归：曾经在 `scan` 热路径上加过「扫描内计量缓存」，因 `match cache.lock()`
+    /// 的 `MutexGuard` 存活到 match 结束，在 `None` 分支里再次加锁导致**自锁挂死**。
+    /// 这个测试保证扫描路径能在合理时间内返回（挂死会让测试超时失败）。
+    #[test]
+    fn scoped_scan_completes_and_finds_path_rule() {
+        let base = std::env::temp_dir().join(format!("thin-scan-regress-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::write(base.join("x.bin"), vec![0u8; 4096]).unwrap();
+
+        let rule = Rule {
+            id: "regress".into(),
+            name: "回归".into(),
+            category: Category::Other,
+            risk: Risk::Safe,
+            regenerable: true,
+            sudo: false,
+            matcher: Matcher::Path {
+                paths: vec![base.to_string_lossy().into_owned()],
+            },
+            reclaim: "手动删除".into(),
+            explain: Explain {
+                what: "x".into(),
+                cost: "x".into(),
+                recover: "x".into(),
+            },
+        };
+        let items = scan_scoped(&[rule], true, 0, Some(&base));
+        assert_eq!(items.len(), 1, "应命中路径规则: {items:?}");
+        assert!(items[0].size >= 4096);
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     #[test]

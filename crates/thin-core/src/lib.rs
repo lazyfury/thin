@@ -4,30 +4,26 @@
 //!
 //! 设计原则见仓库根目录 `DESIGN.md`：还原真实路径、诚实核算、风险分级。
 
+pub mod analysis;
 pub mod app_conditions;
 pub mod apps;
-pub mod catalog;
 pub mod clean;
-pub mod discover;
 pub mod finder;
-pub mod fmt;
 pub mod fsutil;
-pub mod history;
 pub mod model;
 pub mod orphans;
-pub mod platform;
-pub mod preset;
-pub mod probe;
-pub mod proc;
-pub mod progress;
-pub mod protect;
-pub mod recognize;
 pub mod rules;
 pub mod scan;
-pub mod schedule;
 pub mod script;
-pub mod spotlight;
-pub mod status;
+pub mod state;
+pub mod sys;
 pub mod tree;
+pub mod util;
+
+// 保持既有路径：`crate::probe` / `crate::discover` / `crate::proc` 等。
+pub use analysis::{catalog, discover, recognize, spotlight};
+pub use state::{history, preset, protect, schedule};
+pub use sys::{platform, probe, status};
+pub use util::{fmt, proc, progress};
 
 pub use model::{Category, CleanItem, Explain, Matcher, ReclaimSummary, Risk, Rule, ScriptReview};

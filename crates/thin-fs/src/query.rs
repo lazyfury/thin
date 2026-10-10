@@ -3,7 +3,7 @@
 use crate::kind::{Entry, Kind};
 use crate::progress::Control;
 use crate::walk::{Visit, Walk, WalkOptions};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// 查找谓词。可组合（[`Predicate::All`]）。
 #[derive(Clone, Debug)]
@@ -137,12 +137,4 @@ pub fn find_files(
     }
     let spec = FindSpec::new(Predicate::All(preds), opts);
     find(roots, &spec, ctl)
-}
-
-/// 便于测试 / 诊断：路径是否为挂载点或跨设备（保留给上层组合使用）。
-pub fn is_same_device(root: &Path, path: &Path) -> bool {
-    match (crate::mount::device_of(root), crate::mount::device_of(path)) {
-        (Some(a), Some(b)) => a == b,
-        _ => false,
-    }
 }

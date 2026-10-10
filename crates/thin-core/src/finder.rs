@@ -32,6 +32,11 @@ fn walk_files(roots: &[PathBuf], min_size: u64, progress: Option<&Progress>) -> 
     if let Some(p) = progress {
         p.set_label("遍历文件");
     }
+    // 逐条遍历进度经 `thin_fs::ProgressSink` 回传；无进度时用不可取消的空控制。
+    let ctl = match progress {
+        Some(p) => thin_fs::Control::with_progress(p),
+        None => thin_fs::Control::none(),
+    };
     let mut out = Vec::new();
     for root in roots {
         if !root.exists() {
@@ -51,7 +56,7 @@ fn walk_files(roots: &[PathBuf], min_size: u64, progress: Option<&Progress>) -> 
             continue;
         }
         let walk = thin_fs::Walk::new(thin_fs::WalkOptions::default());
-        walk.run(std::slice::from_ref(root), &thin_fs::Control::none(), |e| {
+        walk.run(std::slice::from_ref(root), &ctl, |e| {
             let Some(m) = e.meta else {
                 return thin_fs::Visit::Continue;
             };
@@ -68,9 +73,6 @@ fn walk_files(roots: &[PathBuf], min_size: u64, progress: Option<&Progress>) -> 
                         alloc: m.alloc,
                         inode: (m.dev, m.ino),
                     });
-                    if let Some(p) = progress {
-                        p.touch();
-                    }
                 }
                 _ => {}
             }

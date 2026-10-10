@@ -25,6 +25,11 @@ pub struct Usage {
     pub logical: u64,
     /// 去重后的普通文件数。
     pub files: u64,
+    /// 元数据不可读的条目数（权限 / TCC）。**诚实核算**：让「读不到」可见，
+    /// 而不是静默当作 0 字节。
+    pub denied: u64,
+    /// 因卷边界 / 深度被剪枝的目录数。
+    pub pruned: u64,
 }
 
 /// 单遍统计 `root` 的用量。
@@ -37,12 +42,14 @@ pub fn usage(root: &Path, opts: &WalkOptions, ctl: &Control<'_>) -> Usage {
             allocated: md.blocks().saturating_mul(512),
             logical: md.len(),
             files: 1,
+            denied: 0,
+            pruned: 0,
         };
     }
 
     let mut u = Usage::default();
     let mut seen: HashSet<(u64, u64)> = HashSet::new();
-    Walk::new(opts.clone()).run(&[root.to_path_buf()], ctl, |e| {
+    let stats = Walk::new(opts.clone()).run(&[root.to_path_buf()], ctl, |e| {
         if let Some(m) = e.meta
             && m.kind == Kind::File
         {
@@ -54,5 +61,7 @@ pub fn usage(root: &Path, opts: &WalkOptions, ctl: &Control<'_>) -> Usage {
         }
         Visit::Continue
     });
+    u.denied = stats.denied;
+    u.pruned = stats.pruned;
     u
 }

@@ -43,10 +43,3 @@ pub fn is_mount_point(path: &Path) -> bool {
 pub fn device_of(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|m| m.dev())
 }
-
-/// 当前系统所有挂载点（只读快照）。
-pub fn mount_point_list() -> Vec<PathBuf> {
-    let mut v: Vec<PathBuf> = mount_points().iter().cloned().collect();
-    v.sort();
-    v
-}

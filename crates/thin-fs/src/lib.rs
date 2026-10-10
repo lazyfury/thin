@@ -12,7 +12,6 @@
 //! 受保护路径、隔离区等概念。
 
 pub mod backend;
-pub mod error;
 pub mod kind;
 pub mod mount;
 pub mod progress;
@@ -20,7 +19,6 @@ pub mod query;
 pub mod usage;
 pub mod walk;
 
-pub use error::FsError;
 pub use kind::{Entry, Kind, Meta};
 pub use mount::{device_of, is_mount_point};
 pub use progress::{Control, ProgressSink};

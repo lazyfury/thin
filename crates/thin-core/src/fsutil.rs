@@ -75,6 +75,9 @@ pub struct Usage {
     pub dataless: u64,
     /// 文件数（硬链接去重；纯 Rust 后端也提供）
     pub files: u64,
+    /// 元数据不可读的条目数（权限 / TCC）。诚实核算：总量可能因此偏低。
+    /// Swift 后端不提供时记 0。
+    pub denied: u64,
 }
 
 /// 纯 Rust 单遍用量（无 iCloud 占位识别）。
@@ -85,6 +88,7 @@ pub(crate) fn rust_usage(path: &Path) -> Usage {
         logical: u.logical,
         dataless: 0,
         files: u.files,
+        denied: u.denied,
     }
 }
 
