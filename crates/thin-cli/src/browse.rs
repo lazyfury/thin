@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
-use thin_core::catalog::Safety;
+use thin_core::catalog::{PurposeKind, Safety};
 use thin_core::clean;
 use thin_core::fmt::human;
 use thin_core::fsutil::{self, EntryKind};
@@ -33,6 +33,8 @@ use crate::treemap;
 struct Row {
     child: fsutil::ChildEntry,
     rec: Recognition,
+    /// 置顶的「..」虚拟行：回到上级目录（可越过浏览起点，直到 `/`）。
+    parent: bool,
 }
 
 struct Loader {
@@ -122,16 +124,25 @@ impl BrowseState {
     fn load(&mut self) {
         let dir = self.cwd().to_path_buf();
         self.generation += 1;
-        if let Some(rows) = self.cache.get(&dir) {
-            self.rows = rows.clone();
-            self.selected = 0;
-            self.rebuild_visible();
+        if let Some(rows) = self.cache.get(&dir).cloned() {
+            self.set_rows(rows);
             self.loader = None;
             return;
         }
         self.rows.clear();
         self.rebuild_visible();
         self.loader = Some(spawn_load(dir, self.generation));
+    }
+
+    /// 设置真实子项列表，并在最前插入「..」虚拟行（回到上级）。
+    fn set_rows(&mut self, mut rows: Vec<Row>) {
+        let dir = self.cwd().to_path_buf();
+        if let Some(p) = parent_row(&dir) {
+            rows.insert(0, p);
+        }
+        self.rows = rows;
+        self.selected = 0;
+        self.rebuild_visible();
     }
 
     pub fn poll(&mut self) {
@@ -142,9 +153,7 @@ impl BrowseState {
             Ok(Ok(rows)) => {
                 if loader.generation == self.generation {
                     self.cache.insert(loader.dir.clone(), rows.clone());
-                    self.rows = rows;
-                    self.selected = 0;
-                    self.rebuild_visible();
+                    self.set_rows(rows);
                 }
             }
             Ok(Err(e)) => {
@@ -188,10 +197,13 @@ impl BrowseState {
     fn rebuild_visible(&mut self) {
         let needle = self.filter.to_lowercase();
         let show_hidden = self.show_hidden;
+        // 「..」虚拟行置顶，不参与过滤/排序。
+        let parent_idx = self.rows.iter().position(|r| r.parent);
         let mut idx: Vec<usize> = self
             .rows
             .iter()
             .enumerate()
+            .filter(|(_, r)| !r.parent)
             .filter(|(_, r)| show_hidden || !is_hidden(&r.child.path))
             .filter(|(_, r)| needle.is_empty() || row_matches(r, &needle))
             .map(|(i, _)| i)
@@ -209,7 +221,12 @@ impl BrowseState {
                     .then(self.rows[b].child.size.cmp(&self.rows[a].child.size))
             }),
         }
-        self.visible = idx;
+        let mut visible: Vec<usize> = Vec::with_capacity(idx.len() + 1);
+        if let Some(p) = parent_idx {
+            visible.push(p);
+        }
+        visible.extend(idx);
+        self.visible = visible;
         if self.selected >= self.visible.len() {
             self.selected = self.visible.len().saturating_sub(1);
         }
@@ -235,6 +252,10 @@ impl BrowseState {
     }
 
     fn enter(&mut self) {
+        if matches!(self.current(), Some(r) if r.parent) {
+            self.goto_parent();
+            return;
+        }
         let Some(row) = self.current() else { return };
         if matches!(row.child.kind, EntryKind::Dir | EntryKind::Mount) {
             let dir = row.child.path.clone();
@@ -242,6 +263,18 @@ impl BrowseState {
             self.load();
         } else {
             self.warn("只能进入目录");
+        }
+    }
+
+    /// 通过「..」虚拟行回到上级目录（可越过浏览起点，直到文件系统根）。
+    fn goto_parent(&mut self) {
+        let cur = self.cwd().to_path_buf();
+        match cur.parent() {
+            Some(parent) => {
+                self.stack.push(parent.to_path_buf());
+                self.load();
+            }
+            None => self.info("已在文件系统根目录"),
         }
     }
 
@@ -414,7 +447,7 @@ impl BrowseState {
             }
             KeyCode::Char('c') => {
                 if let Some(row) = self.current() {
-                    if row.rec.cleanable && !row.rec.protected {
+                    if row.rec.cleanable && !row.rec.protected && !row.parent {
                         self.confirm = true;
                     } else {
                         self.warn("该路径不可清理（未被规则命中或已在保护名单）");
@@ -426,6 +459,34 @@ impl BrowseState {
         }
         false
     }
+}
+
+/// 构造置顶的「..」虚拟行（回到上级目录）；文件系统根目录没有上级时返回 `None`。
+fn parent_row(dir: &Path) -> Option<Row> {
+    let parent = dir.parent()?;
+    Some(Row {
+        child: fsutil::ChildEntry {
+            path: parent.to_path_buf(),
+            kind: EntryKind::Dir,
+            size: 0,
+            target: None,
+        },
+        rec: Recognition {
+            title: "上级目录".into(),
+            note: "回到上一级".into(),
+            kind: PurposeKind::Other,
+            safety: Safety::Unknown,
+            source: Source::Unknown,
+            cleanable: false,
+            risk: None,
+            category: None,
+            rule_id: None,
+            explain: None,
+            protected: false,
+            reference: None,
+        },
+        parent: true,
+    })
 }
 
 fn spawn_load(dir: PathBuf, generation: u64) -> Loader {
@@ -441,7 +502,11 @@ fn spawn_load(dir: PathBuf, generation: u64) -> Loader {
                 .into_iter()
                 .map(|child| {
                     let rec = recognizer.recognize(&child.path);
-                    Row { child, rec }
+                    Row {
+                        child,
+                        rec,
+                        parent: false,
+                    }
                 })
                 .collect())
         })();
@@ -503,7 +568,12 @@ fn render_treemap(frame: &mut Frame, app: &BrowseState, area: Rect) {
         .title("占用图 (t 切换)");
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    let rows: Vec<&Row> = app.visible.iter().map(|&i| &app.rows[i]).collect();
+    let rows: Vec<&Row> = app
+        .visible
+        .iter()
+        .map(|&i| &app.rows[i])
+        .filter(|r| !r.parent)
+        .collect();
     if rows.is_empty() {
         return;
     }
@@ -535,28 +605,30 @@ fn render_list(frame: &mut Frame, app: &mut BrowseState, area: Rect) {
         .iter()
         .map(|&i| {
             let row = &app.rows[i];
-            let name = row
-                .child
-                .path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let icon = match row.child.kind {
-                EntryKind::Dir => "▸",
-                EntryKind::Mount => "⛃",
-                EntryKind::Symlink => "→",
-                EntryKind::Inaccessible => "✕",
-                EntryKind::File => " ",
+            let (icon, name, size) = if row.parent {
+                ("↰", "..".to_string(), " ".repeat(10))
+            } else {
+                let name = row
+                    .child
+                    .path
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let icon = match row.child.kind {
+                    EntryKind::Dir => "▸",
+                    EntryKind::Mount => "⛃",
+                    EntryKind::Symlink => "→",
+                    EntryKind::Inaccessible => "✕",
+                    EntryKind::File => " ",
+                };
+                (icon, name, format!("{:>9} ", size_cell(&row.child)))
             };
             ListItem::new(Line::from(vec![
                 Span::styled(
                     format!("{icon} "),
                     Style::default().fg(kind_color(row.child.kind)),
                 ),
-                Span::styled(
-                    format!("{:>9} ", size_cell(&row.child)),
-                    Style::default().fg(Color::White),
-                ),
+                Span::styled(size, Style::default().fg(Color::White)),
                 Span::styled(
                     format!(
                         "{} ",
@@ -574,9 +646,10 @@ fn render_list(frame: &mut Frame, app: &mut BrowseState, area: Rect) {
         .collect();
 
     // 内嵌时无面包屑，当前路径放在块标题里（避免与标题行重复）
+    let count = app.visible.iter().filter(|&&i| !app.rows[i].parent).count();
     let meta = format!(
         "{} 项 · 排序:{}{}",
-        app.visible.len(),
+        count,
         app.sort.label(),
         if app.show_hidden { " · 含隐藏" } else { "" }
     );
@@ -600,6 +673,22 @@ fn render_detail(frame: &mut Frame, app: &BrowseState, area: Rect) {
         );
         return;
     };
+    if row.parent {
+        let lines = vec![
+            Line::from(Span::styled(
+                "上级目录",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                row.child.path.display().to_string(),
+                Style::default().fg(Color::DarkGray),
+            )),
+            Line::from(""),
+            Line::from("按 Enter 回到上一级。"),
+        ];
+        frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
+        return;
+    }
     let r = &row.rec;
     let mut lines = vec![
         Line::from(Span::styled(
@@ -679,7 +768,7 @@ fn render_footer(frame: &mut Frame, app: &BrowseState, area: Rect) {
         (" 加载中…   Esc 取消".to_string(), toast::bar_style())
     } else {
         (
-            " ↑↓/jk 移动 · Enter/l 进入 · Backspace/h 上级 · / 过滤 · s 排序 · t 占用图 · c 清理 · q 退出"
+            " ↑↓/jk 移动 · Enter/l 进入 · .. 或 Backspace/h 上级 · / 过滤 · s 排序 · t 占用图 · c 清理 · q 退出"
                 .to_string(),
             toast::bar_style(),
         )
@@ -768,6 +857,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::from(""),
         Line::from("  ↑↓ / j k    移动"),
         Line::from("  Enter / → / l  进入目录"),
+        Line::from("  列表首行 ..   回到上级（可一直回到 /）"),
         Line::from("  Backspace / ← / h  返回上级"),
         Line::from("  g / G        跳到顶部 / 底部"),
         Line::from("  /            过滤（按名称/用途）"),
@@ -967,6 +1057,26 @@ mod tests {
         assert!(!is_hidden(Path::new("/a/bin")));
         assert_eq!(truncate("abcdef", 4), "abc…");
         assert_eq!(truncate("ab", 4), "ab");
+    }
+
+    #[test]
+    fn parent_row_only_below_root() {
+        assert!(parent_row(Path::new("/")).is_none(), "根目录没有上级");
+        let p = parent_row(Path::new("/Users/me")).expect("应有上级");
+        assert!(p.parent);
+        assert_eq!(p.child.path, Path::new("/Users"));
+    }
+
+    #[test]
+    fn dotdot_enters_parent() {
+        let dir = std::env::temp_dir();
+        let mut st = BrowseState::new(dir.clone());
+        st.loader = None;
+        st.set_rows(Vec::new());
+        // 第一项应是「..」虚拟行
+        assert!(st.current().map(|r| r.parent).unwrap_or(false));
+        st.enter();
+        assert_eq!(st.cwd(), dir.parent().unwrap());
     }
 
     #[test]
