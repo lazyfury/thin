@@ -244,6 +244,32 @@ pub fn expand_rule_scoped(rule: &Rule, scope: Option<&Path>) -> Vec<PathBuf> {
             found.dedup();
             found
         }
+        Matcher::FindFile {
+            roots,
+            extensions,
+            max_depth,
+            min_size,
+        } => {
+            let roots: Vec<PathBuf> = if let Some(root) = scope {
+                vec![root.to_path_buf()]
+            } else {
+                roots.iter().filter_map(|r| fsutil::expand(r)).collect()
+            };
+            let roots: Vec<PathBuf> = roots
+                .into_iter()
+                .filter(|r| r.is_dir())
+                .map(|r| fsutil::canonicalize_or(&r))
+                .collect();
+            let mut found =
+                fsutil::find_files(&roots, extensions, *max_depth, min_size.unwrap_or(0));
+            found = found
+                .into_iter()
+                .map(|p| fsutil::canonicalize_or(&p))
+                .collect();
+            found.sort();
+            found.dedup();
+            found
+        }
         Matcher::Script {
             roots,
             script,
@@ -299,6 +325,19 @@ pub fn check_rule_safety(rule: &Rule) -> Result<(), String> {
                 return Err(format!(
                     "按名字查找 {dir_name:?}（{what}）且未设置 requireSibling，可能误命中受保护目录"
                 ));
+            }
+        }
+        Matcher::FindFile {
+            roots, extensions, ..
+        } => {
+            if roots.is_empty() {
+                return Err("findFile 规则必须声明 roots（查找范围）".into());
+            }
+            let valid = extensions
+                .iter()
+                .any(|e| !e.trim().trim_matches('.').is_empty());
+            if !valid {
+                return Err("findFile 规则必须声明至少一个扩展名".into());
             }
         }
         Matcher::Script {
@@ -432,6 +471,16 @@ mod tests {
     }
 
     #[test]
+    fn builtin_rules_parse_and_have_unique_ids() {
+        let rules = builtin().expect("内置规则应能解析");
+        assert!(!rules.is_empty());
+        let mut ids = std::collections::HashSet::new();
+        for r in &rules {
+            assert!(ids.insert(r.id.clone()), "内置规则 id 重复: {}", r.id);
+        }
+    }
+
+    #[test]
     fn rules_d_accepts_array_and_single() {
         let base = std::env::temp_dir().join(format!("thin-rulesd-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -528,6 +577,56 @@ mod tests {
         };
         let got = expand_rule(&rule);
         assert_eq!(got, vec![real.canonicalize().unwrap()]);
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn find_file_rule_matches_by_extension_and_respects_min_size() {
+        let base = std::env::temp_dir().join(format!("thin-findfile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("nested")).unwrap();
+        std::fs::write(base.join("App.dmg"), b"x").unwrap();
+        std::fs::write(base.join("Notes.txt"), b"x").unwrap();
+        std::fs::write(base.join("nested/Archive.ZIP"), b"x").unwrap(); // 大小写不敏感
+
+        let mut r = make_path_rule(
+            "dl".into(),
+            "dl".into(),
+            String::new(),
+            Category::Other,
+            Risk::Confirm,
+            false,
+            "x".into(),
+            "w".into(),
+            "c".into(),
+            "r".into(),
+        );
+        r.matcher = Matcher::FindFile {
+            roots: vec![base.to_string_lossy().into_owned()],
+            extensions: vec!["dmg".into(), "zip".into()],
+            max_depth: Some(3),
+            min_size: None,
+        };
+        assert_eq!(expand_rule(&r).len(), 2);
+
+        // minSize 大于文件大小 → 全部过滤
+        if let Matcher::FindFile { min_size, .. } = &mut r.matcher {
+            *min_size = Some(1 << 20);
+        }
+        assert!(expand_rule(&r).is_empty());
+
+        // 缺少扩展名 → 预检拒绝
+        if let Matcher::FindFile {
+            min_size,
+            extensions,
+            ..
+        } = &mut r.matcher
+        {
+            *min_size = None;
+            extensions.clear();
+        }
+        assert!(check_rule_safety(&r).is_err());
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -128,6 +128,8 @@ echo '{
   "matcher": { "kind": "path", "paths": ["~/..."] }
   // 或 { "kind": "findDir", "roots": ["~/Documents"], "dirName": "target",
   //      "requireSibling": "Cargo.toml", "maxDepth": 6 }
+  // 或 { "kind": "findFile", "roots": ["~/Downloads"],
+  //      "extensions": ["dmg", "pkg", "zip", "tar.gz"], "maxDepth": 3, "minSize": 10485760 }
   // 或脚本型（动态产出路径，静态表达不了的场景，如“清 releases/* 但保留 current-version”）：
   // { "kind": "script", "roots": ["~/.pi/agent/install/releases"],
   //   "script": "...只枚举并 printf '%s\\0' 路径...", "timeoutSecs": 10,

@@ -305,14 +305,23 @@ thin schedule uninstall
 ## 规则系统
 
 所有可清理项声明在 [`rules/default.json`](./crates/thin-core/rules/default.json)，编译期嵌入。
-内置 **70 条**，覆盖常见 `~/Library` 缓存、大量 `~/.xx` / `~/.cache/*` 开发缓存
+内置 **84 条**，覆盖常见 `~/Library` 缓存、大量 `~/.xx` / `~/.cache/*` 开发缓存
 （pip/uv/yarn/pnpm/bun、Go、Maven、NuGet、CocoaPods/SwiftPM、Playwright、HuggingFace 等）
 以及 Xcode 大件（DeviceSupport / 模拟器缓存）。
+其中 `findDir` 规则会在 `~/Documents`、`~/Downloads`、`~/Desktop`、`~/Developer`、
+`~/Projects`、`~/code`、`~/src`、`~/dev`、`~/workspace`、`~/repos`、`~/work` 等常见
+home 工程目录下查找项目产物（`target/`、`node_modules/`、`.venv/`、`__pycache__/`、
+`.build/`、`.next/`、`dist/`、`vendor/`、`Pods/`）；易混淆的名字
+（如 `dist`/`vendor`/`Pods`）都要求同级存在标志文件（`package.json`/`composer.json`/`Podfile`）才命中。
+`~/Documents`、`~/Downloads` 等个人目录顶层本身永不被整体清理，只清理其中的可再生部分。
+`findFile` 规则会按扩展名枚举 `~/Downloads` 下的安装包/压缩包（`.dmg`/`.pkg`/`.zip`/`.tar.gz` 等，
+默认只列 ≥10MB），**风险为「需确认」**：默认 `thin clean` 不会清理、TUI 初始也不勾选，
+需手动选中（或 `clean --id downloads-installers`）才会处理。
 
 <details>
 <summary><b>展开：匹配方式与用户规则</b></summary>
 
-两种匹配方式：
+三种匹配方式：
 
 ```jsonc
 { "matcher": { "kind": "path", "paths": ["~/Library/Caches"] } }
@@ -323,6 +332,14 @@ thin schedule uninstall
     "dirName": "target",
     "requireSibling": "Cargo.toml",  // 必须是 cargo 项目产物
     "maxDepth": 6
+} }
+
+{ "matcher": {
+    "kind": "findFile",
+    "roots": ["~/Downloads"],
+    "extensions": ["dmg", "pkg", "zip", "tar.gz"],  // 忽略大小写与前导点
+    "maxDepth": 3,
+    "minSize": 10485760  // 只列 ≥ 10MB 的文件，可选
 } }
 ```
 

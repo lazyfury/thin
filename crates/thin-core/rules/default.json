@@ -10,10 +10,16 @@
       "kind": "findDir",
       "roots": [
         "~/Documents",
+        "~/Downloads",
+        "~/Desktop",
         "~/Developer",
         "~/Projects",
         "~/code",
-        "~/src"
+        "~/src",
+        "~/dev",
+        "~/workspace",
+        "~/repos",
+        "~/work"
       ],
       "dirName": "target",
       "requireSibling": "Cargo.toml",
@@ -37,10 +43,16 @@
       "kind": "findDir",
       "roots": [
         "~/Documents",
+        "~/Downloads",
+        "~/Desktop",
         "~/Developer",
         "~/Projects",
         "~/code",
-        "~/src"
+        "~/src",
+        "~/dev",
+        "~/workspace",
+        "~/repos",
+        "~/work"
       ],
       "dirName": "node_modules",
       "requireSibling": "package.json",
@@ -51,6 +63,269 @@
       "what": "npm/Node 项目依赖包",
       "cost": "删除后项目无法直接运行，需重新安装依赖",
       "recover": "重新 npm install 即可（需联网）"
+    }
+  },
+  {
+    "id": "python-venv",
+    "name": "Python 虚拟环境 (.venv/)",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Documents",
+        "~/Downloads",
+        "~/Desktop",
+        "~/Developer",
+        "~/Projects",
+        "~/code",
+        "~/src",
+        "~/dev",
+        "~/workspace",
+        "~/repos",
+        "~/work"
+      ],
+      "dirName": ".venv",
+      "maxDepth": 6
+    },
+    "reclaim": "cd <项目> && python -m venv .venv && pip install -r requirements.txt",
+    "explain": {
+      "what": "Python 项目的本地虚拟环境（含已安装依赖）",
+      "cost": "删除后项目无法直接运行，需重建环境并重新安装依赖",
+      "recover": "重新创建虚拟环境并安装依赖即可（需联网）"
+    }
+  },
+  {
+    "id": "python-pycache",
+    "name": "Python 字节码缓存 (__pycache__/)",
+    "category": "dev-cache",
+    "risk": "safe",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Documents",
+        "~/Downloads",
+        "~/Desktop",
+        "~/Developer",
+        "~/Projects",
+        "~/code",
+        "~/src",
+        "~/dev",
+        "~/workspace",
+        "~/repos",
+        "~/work"
+      ],
+      "dirName": "__pycache__",
+      "maxDepth": 6
+    },
+    "reclaim": "删除 __pycache__ 目录，Python 会在下次导入时重新生成",
+    "explain": {
+      "what": "Python 解释器缓存的 .pyc 字节码",
+      "cost": "首次导入模块时略慢",
+      "recover": "Python 自动重新生成，无需备份"
+    }
+  },
+  {
+    "id": "swiftpm-build",
+    "name": "SwiftPM 构建产物 (.build/)",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Documents",
+        "~/Downloads",
+        "~/Desktop",
+        "~/Developer",
+        "~/Projects",
+        "~/code",
+        "~/src",
+        "~/dev",
+        "~/workspace",
+        "~/repos",
+        "~/work"
+      ],
+      "dirName": ".build",
+      "requireSibling": "Package.swift",
+      "maxDepth": 6
+    },
+    "reclaim": "cd <项目> && swift package clean",
+    "explain": {
+      "what": "Swift Package Manager 的编译产物与依赖检出",
+      "cost": "下次构建需重新编译并解析依赖，耗时变长",
+      "recover": "重新 swift build 即可（需联网拉取依赖）"
+    }
+  },
+  {
+    "id": "next-build",
+    "name": "Next.js 构建产物 (.next/)",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Documents",
+        "~/Downloads",
+        "~/Desktop",
+        "~/Developer",
+        "~/Projects",
+        "~/code",
+        "~/src",
+        "~/dev",
+        "~/workspace",
+        "~/repos",
+        "~/work"
+      ],
+      "dirName": ".next",
+      "requireSibling": "package.json",
+      "maxDepth": 6
+    },
+    "reclaim": "cd <项目> && npm run build",
+    "explain": {
+      "what": "Next.js 项目的构建输出与增量编译缓存",
+      "cost": "需重新构建才能启动生产模式",
+      "recover": "重新 npm run build 即可（需联网）"
+    }
+  },
+  {
+    "id": "web-dist",
+    "name": "前端构建产物 (dist/)",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Documents",
+        "~/Downloads",
+        "~/Desktop",
+        "~/Developer",
+        "~/Projects",
+        "~/code",
+        "~/src",
+        "~/dev",
+        "~/workspace",
+        "~/repos",
+        "~/work"
+      ],
+      "dirName": "dist",
+      "requireSibling": "package.json",
+      "maxDepth": 6
+    },
+    "reclaim": "cd <项目> && npm run build",
+    "explain": {
+      "what": "前端打包输出目录（Vite/Webpack/Rollup 等）",
+      "cost": "需重新构建才能部署或预览",
+      "recover": "重新 npm run build 即可"
+    }
+  },
+  {
+    "id": "php-vendor",
+    "name": "PHP 依赖 (vendor/)",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Documents",
+        "~/Downloads",
+        "~/Desktop",
+        "~/Developer",
+        "~/Projects",
+        "~/code",
+        "~/src",
+        "~/dev",
+        "~/workspace",
+        "~/repos",
+        "~/work"
+      ],
+      "dirName": "vendor",
+      "requireSibling": "composer.json",
+      "maxDepth": 6
+    },
+    "reclaim": "cd <项目> && composer install",
+    "explain": {
+      "what": "Composer 安装的 PHP 依赖包",
+      "cost": "删除后项目无法直接运行，需重新安装依赖",
+      "recover": "重新 composer install 即可（需联网）"
+    }
+  },
+  {
+    "id": "cocoapods-pods",
+    "name": "CocoaPods 依赖 (Pods/)",
+    "category": "dev-cache",
+    "risk": "confirm",
+    "regenerable": true,
+    "sudo": false,
+    "matcher": {
+      "kind": "findDir",
+      "roots": [
+        "~/Documents",
+        "~/Downloads",
+        "~/Desktop",
+        "~/Developer",
+        "~/Projects",
+        "~/code",
+        "~/src",
+        "~/dev",
+        "~/workspace",
+        "~/repos",
+        "~/work"
+      ],
+      "dirName": "Pods",
+      "requireSibling": "Podfile",
+      "maxDepth": 6
+    },
+    "reclaim": "cd <项目> && pod install",
+    "explain": {
+      "what": "CocoaPods 下载并集成的第三方依赖",
+      "cost": "删除后需重新 pod install，工程才能编译",
+      "recover": "重新 pod install 即可（需联网）"
+    }
+  },
+  {
+    "id": "downloads-installers",
+    "name": "下载的安装包/压缩包 (~/Downloads)",
+    "category": "other",
+    "risk": "confirm",
+    "regenerable": false,
+    "sudo": false,
+    "matcher": {
+      "kind": "findFile",
+      "roots": [
+        "~/Downloads"
+      ],
+      "extensions": [
+        "dmg",
+        "pkg",
+        "mpkg",
+        "iso",
+        "xip",
+        "zip",
+        "tar.gz",
+        "tgz",
+        "7z",
+        "rar"
+      ],
+      "maxDepth": 3,
+      "minSize": 10485760
+    },
+    "reclaim": "确认已安装/已解压后，移入废纸篓或 thin 隔离区（可恢复）",
+    "explain": {
+      "what": "下载目录里的安装包与压缩包（.dmg/.pkg/.zip/.tar.gz 等，默认只列 ≥10MB）",
+      "cost": "多为一次性的安装/解压素材；删后如需再用需重新下载",
+      "recover": "从原来源重新下载；重要内容请先解压或移到别处"
     }
   },
   {

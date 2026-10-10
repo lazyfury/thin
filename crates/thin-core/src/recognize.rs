@@ -66,6 +66,8 @@ struct RuleIndex {
     paths: Vec<(PathBuf, usize)>,
     /// (目录名, 需要的同级文件, 规则下标)
     find_dirs: Vec<(String, Option<String>, usize)>,
+    /// (规范化后的后缀（含前导点）, 规则下标)
+    find_files: Vec<(Vec<String>, usize)>,
     rules: Vec<Rule>,
 }
 
@@ -73,6 +75,7 @@ impl RuleIndex {
     fn build(rules: Vec<Rule>) -> Self {
         let mut paths = Vec::new();
         let mut find_dirs = Vec::new();
+        let mut find_files = Vec::new();
         for (i, r) in rules.iter().enumerate() {
             match &r.matcher {
                 Matcher::Path { paths: ps } => {
@@ -87,6 +90,18 @@ impl RuleIndex {
                     require_sibling,
                     ..
                 } => find_dirs.push((dir_name.clone(), require_sibling.clone(), i)),
+                Matcher::FindFile { extensions, .. } => {
+                    let exts: Vec<String> = extensions
+                        .iter()
+                        .map(|e| {
+                            format!(".{}", e.trim().trim_start_matches('.').to_ascii_lowercase())
+                        })
+                        .filter(|e| e.len() > 1)
+                        .collect();
+                    if !exts.is_empty() {
+                        find_files.push((exts, i));
+                    }
+                }
                 // 脚本型 matcher 不预展开（避免浏览时执行脚本）；仅清理扫描时运行
                 Matcher::Script { .. } => {}
             }
@@ -94,6 +109,7 @@ impl RuleIndex {
         RuleIndex {
             paths,
             find_dirs,
+            find_files,
             rules,
         }
     }
@@ -124,7 +140,18 @@ impl RuleIndex {
     }
 
     fn lookup(&self, path: &Path) -> Option<&Rule> {
-        self.match_path(path).or_else(|| self.match_find_dir(path))
+        self.match_path(path)
+            .or_else(|| self.match_find_dir(path))
+            .or_else(|| self.match_find_file(path))
+    }
+
+    /// 命中 findFile 规则（按文件名后缀）
+    fn match_find_file(&self, path: &Path) -> Option<&Rule> {
+        let name = path.file_name()?.to_str()?.to_ascii_lowercase();
+        self.find_files
+            .iter()
+            .find(|(exts, _)| exts.iter().any(|e| name.ends_with(e.as_str())))
+            .map(|(_, i)| &self.rules[*i])
     }
 }
 

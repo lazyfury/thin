@@ -78,6 +78,17 @@ pub enum Matcher {
         require_sibling: Option<String>,
         max_depth: Option<usize>,
     },
+    /// 在某组根目录下按扩展名查找文件
+    #[serde(rename_all = "camelCase")]
+    FindFile {
+        roots: Vec<String>,
+        /// 扩展名或后缀（如 `dmg`、`tar.gz`），比较时忽略大小写与前导点
+        extensions: Vec<String>,
+        max_depth: Option<usize>,
+        /// 只保留不小于该字节数的文件（默认 0）
+        #[serde(default)]
+        min_size: Option<u64>,
+    },
     /// 运行只读脚本，把 stdout 输出当作候选路径。
     ///
     /// 用于「一次性 / 动态」场景（如保留 current-version 指向的目录、清其余旧版本），

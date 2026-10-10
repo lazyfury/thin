@@ -306,6 +306,70 @@ pub fn children_entries_progress(
     v
 }
 
+/// 在 roots 下按扩展名/后缀查找文件（限定深度与最小大小），不跨卷。
+///
+/// `extensions` 忽略大小写与可选的前导点，支持复合后缀（如 `tar.gz`）。
+pub fn find_files(
+    roots: &[PathBuf],
+    extensions: &[String],
+    max_depth: Option<usize>,
+    min_size: u64,
+) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    if extensions.is_empty() {
+        return found;
+    }
+    let max = max_depth.unwrap_or(6);
+    let exts: Vec<String> = extensions
+        .iter()
+        .map(|e| format!(".{}", e.trim().trim_start_matches('.').to_ascii_lowercase()))
+        .filter(|e| e.len() > 1)
+        .collect();
+    if exts.is_empty() {
+        return found;
+    }
+
+    for root in roots {
+        if !root.is_dir() {
+            continue;
+        }
+        let root_dev = device_of(root);
+        let mut it = WalkDir::new(root)
+            .max_depth(max)
+            .follow_links(false)
+            .into_iter();
+        while let Some(entry) = it.next() {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            if entry.depth() == 0 {
+                continue;
+            }
+            let md = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if md.is_dir() {
+                if (root_dev.is_some() && Some(md.dev()) != root_dev)
+                    || is_mount_point(entry.path())
+                {
+                    it.skip_current_dir();
+                }
+                continue;
+            }
+            if !md.file_type().is_file() || md.len() < min_size {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+            if exts.iter().any(|ext| name.ends_with(ext.as_str())) {
+                found.push(entry.path().to_path_buf());
+            }
+        }
+    }
+    found
+}
+
 /// 在 roots 下查找名为 dir_name 的目录（限定深度），可选要求同级存在某个文件。
 pub fn find_dirs(
     roots: &[PathBuf],
