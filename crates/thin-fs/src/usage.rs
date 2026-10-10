@@ -1,10 +1,9 @@
 //! 单遍用量聚合。
 //!
-//! 一次遍历同时算出实际分配 (`allocated`)、逻辑大小 (`logical`) 与文件数 (`files`)，
-//! 替代过去 `size_of` + `logical_size` 的两次遍历。
+//! 一次遍历同时算出实际分配 (`allocated`)、逻辑大小 (`logical`) 与文件数 (`files`)。
 //!
 //! - `allocated` 按 inode 去重（硬链接不重复计入），与 `du` 口径一致；
-//! - `logical` 不去重（与既有语义一致，用于跨卷复制前的空间预估）。
+//! - `logical` 不去重（所有文件大小之和）。
 //!
 //! 注意：iCloud「云占位」(dataless) 纯 Rust 无法可靠识别，不在此层；由 `thin-core`
 //! 用平台能力叠加。

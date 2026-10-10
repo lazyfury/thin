@@ -1,6 +1,7 @@
 //! 扫描 / 发现 / 计划 / 执行 / 大文件 / 重复文件。
 
 use super::clean::{resolve_mode, warn_snapshots};
+use crate::spin::with_progress;
 use crate::*;
 
 pub(crate) fn cmd_scan(args: ScanArgs) -> Result<()> {
@@ -324,8 +325,9 @@ pub(crate) fn cmd_apply(args: ApplyArgs) -> Result<()> {
 pub(crate) fn cmd_large(args: LargeArgs) -> Result<()> {
     let root = expand_root(&args.root);
     let min = parse_size_arg(&args.min)?;
-    eprintln!("扫描大文件…");
-    let files = finder::find_large(&[root], min, args.limit);
+    let files = with_progress("扫描大文件", |p| {
+        finder::find_large(&[root], min, args.limit, p)
+    });
     let protect_list = protect::load();
     let is_protected = |p: &PathBuf| protect::matches(&protect_list, p);
     if args.json {
@@ -365,8 +367,9 @@ pub(crate) fn cmd_large(args: LargeArgs) -> Result<()> {
 pub(crate) fn cmd_dupes(args: DupesArgs) -> Result<()> {
     let root = expand_root(&args.root);
     let min = parse_size_arg(&args.min)?;
-    eprintln!("扫描重复文件（需读取内容，可能较慢）…");
-    let groups = finder::find_duplicates(&[root], min, args.limit);
+    let groups = with_progress("扫描重复文件（需读取内容）", |p| {
+        finder::find_duplicates(&[root], min, args.limit, p)
+    });
     if groups.is_empty() {
         println!("未发现重复文件。");
         return Ok(());

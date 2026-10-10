@@ -8,8 +8,10 @@ pub fn run(path: PathBuf, limit: usize) {
         return;
     }
 
-    // 并行统计各直接子项（不跨卷），已按大小降序
-    let children = thin_core::fsutil::children_sizes(&path);
+    // 并行统计各直接子项（不跨卷），已按大小降序；带 stderr 进度
+    let children = crate::spin::with_progress("统计目录占用", |p| {
+        thin_core::fsutil::children_sizes(&path, p)
+    });
 
     let home = std::env::var("HOME").unwrap_or_default();
 

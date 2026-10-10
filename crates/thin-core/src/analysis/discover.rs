@@ -75,12 +75,7 @@ impl Report {
 /// 分类基于**全部**直接子项（不受 `min_size` 影响），`findings` 只保留达到
 /// 阈值的项用于展示；因此 `uncovered` 能诚实回答「这个目录还有多少没归类」。
 ///
-/// 默认不查询 iCloud 云占位（逐文件 XPC，较慢）；需要时用 [`analyze_opts`]。
-pub fn analyze(root: &Path, min_size: u64, catalog: &[Rule]) -> Report {
-    analyze_opts(root, min_size, catalog, false)
-}
-
-/// 同 [`analyze`]，`include_icloud=true` 时额外按需统计云占位（较慢）。
+/// 默认不查询 iCloud 云占位（逐文件 XPC，较慢）；`include_icloud=true` 时额外统计。
 pub fn analyze_opts(root: &Path, min_size: u64, catalog: &[Rule], include_icloud: bool) -> Report {
     // 展开所有规则路径（去重）
     let mut rule_paths: Vec<(PathBuf, String)> = Vec::new();

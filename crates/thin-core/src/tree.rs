@@ -46,11 +46,6 @@ impl TreeNode {
             c.item_indices(out);
         }
     }
-
-    /// 本节点（含子树）的所有清理项数量。
-    pub fn item_count(&self) -> usize {
-        self.count
-    }
 }
 
 #[derive(Default)]

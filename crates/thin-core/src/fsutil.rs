@@ -56,14 +56,6 @@ pub fn size_of(path: &Path) -> u64 {
     }
 }
 
-/// 逻辑大小：所有文件 `len()` 之和（不跨越文件系统边界）。
-///
-/// 与 [`size_of`]（按实际分配块）不同，用于跨卷复制前的空间预估，
-/// 因为复制会把稀疏文件的空洞也写成实心。
-pub fn logical_size(path: &Path) -> u64 {
-    thin_fs::usage(path, &walk_opts(None), &no_ctl()).logical
-}
-
 /// 路径用量：实际占用 + 逻辑大小 + iCloud 占位。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Usage {
@@ -106,16 +98,8 @@ pub fn dir_dataless(path: &Path) -> Option<(u64, u64)> {
     crate::platform::platform().dir_dataless(path)
 }
 
-/// 列出目录下各直接子项的大小（降序，并行统计）
-pub fn children_sizes(root: &Path) -> Vec<(PathBuf, u64)> {
-    children_sizes_progress(root, &crate::progress::Progress::new())
-}
-
-/// 带进度上报的 children_sizes
-pub fn children_sizes_progress(
-    root: &Path,
-    progress: &crate::progress::Progress,
-) -> Vec<(PathBuf, u64)> {
+/// 列出目录下各直接子项的大小（降序，并行统计），带进度上报。
+pub fn children_sizes(root: &Path, progress: &crate::progress::Progress) -> Vec<(PathBuf, u64)> {
     let mut paths = Vec::new();
     if let Ok(entries) = std::fs::read_dir(root) {
         for e in entries.flatten() {
@@ -174,14 +158,7 @@ pub struct ChildEntry {
 
 /// 列出目录的直接子项（含类型），按大小降序。与 [`children_sizes`] 不同：
 /// 不过滤 0 字节、区分文件/链接/挂载/无权限，适合文件浏览。
-pub fn children_entries(root: &Path) -> Vec<ChildEntry> {
-    children_entries_progress(root, &crate::progress::Progress::new())
-}
-
-pub fn children_entries_progress(
-    root: &Path,
-    progress: &crate::progress::Progress,
-) -> Vec<ChildEntry> {
+pub fn children_entries(root: &Path, progress: &crate::progress::Progress) -> Vec<ChildEntry> {
     let mut paths = Vec::new();
     if let Ok(entries) = std::fs::read_dir(root) {
         for e in entries.flatten() {
@@ -295,15 +272,11 @@ mod tests {
         assert_eq!(dir_size(&base), unique_alloc);
         assert_eq!(size_of(&base), unique_alloc);
 
-        // 逻辑大小：不去重，硬链接重复计入
-        assert_eq!(logical_size(&base), 40_000);
-
-        // 单文件：size_of 取实际块，logical_size 取 len
+        // 单文件：size_of 取实际块
         assert_eq!(
             size_of(&base.join("a")),
             fs::metadata(base.join("a")).unwrap().blocks() * 512
         );
-        assert_eq!(logical_size(&base.join("a")), 10_000);
 
         // usage：单遍聚合
         let u = rust_usage(&base);

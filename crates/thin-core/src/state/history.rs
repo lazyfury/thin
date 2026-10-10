@@ -63,10 +63,6 @@ impl Record {
     }
 }
 
-pub fn history_path() -> PathBuf {
-    history_path_in(&clean::thin_home())
-}
-
 pub fn history_path_in(home: &Path) -> PathBuf {
     home.join("history.jsonl")
 }

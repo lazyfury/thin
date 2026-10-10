@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 use thin_core::catalog::Safety;
 use thin_core::fmt::human;
 use thin_core::fsutil::{self, ChildEntry, EntryKind};
+use thin_core::progress::Progress;
 use thin_core::recognize::{Recognition, Recognizer, Source};
 
 #[derive(clap::Args)]
@@ -76,7 +77,7 @@ fn collect(dir: &Path, depth: usize, recognizer: &Recognizer, all: bool) -> Vec<
     if depth == 0 {
         return Vec::new();
     }
-    fsutil::children_entries(dir)
+    fsutil::children_entries(dir, &Progress::new())
         .into_iter()
         .filter(|c| all || !is_hidden(&c.path))
         .map(|child| {

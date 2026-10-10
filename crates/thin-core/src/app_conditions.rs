@@ -58,10 +58,6 @@ pub fn builtin() -> Result<Vec<AppCondition>> {
 }
 
 /// 用户条件目录：`~/.thin/app-leftovers.d/`（一文件可含单条或数组）
-pub fn user_dir() -> PathBuf {
-    user_dir_in(&clean::thin_home())
-}
-
 pub fn user_dir_in(home: &Path) -> PathBuf {
     home.join("app-leftovers.d")
 }

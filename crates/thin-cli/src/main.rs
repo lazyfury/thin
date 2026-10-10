@@ -2,6 +2,7 @@ mod browse;
 mod cmd;
 mod ls;
 mod report;
+mod spin;
 mod text;
 mod toast;
 mod top;

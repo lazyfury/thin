@@ -92,12 +92,8 @@ pub struct LargeFile {
     pub size: u64,
 }
 
-/// 查找最大的文件（按实际占用降序，取前 limit 个）
-pub fn find_large(roots: &[PathBuf], min_size: u64, limit: usize) -> Vec<LargeFile> {
-    find_large_progress(roots, min_size, limit, &Progress::new())
-}
-
-pub fn find_large_progress(
+/// 查找最大的文件（按实际占用降序，取前 limit 个），带进度上报。
+pub fn find_large(
     roots: &[PathBuf],
     min_size: u64,
     limit: usize,
@@ -135,12 +131,8 @@ impl DupeGroup {
     }
 }
 
-/// 查找内容相同的重复文件（先按大小、再按部分哈希、最后全量哈希）
-pub fn find_duplicates(roots: &[PathBuf], min_size: u64, limit: usize) -> Vec<DupeGroup> {
-    find_duplicates_progress(roots, min_size, limit, &Progress::new())
-}
-
-pub fn find_duplicates_progress(
+/// 查找内容相同的重复文件（先按大小、再按部分哈希、最后全量哈希），带进度上报。
+pub fn find_duplicates(
     roots: &[PathBuf],
     min_size: u64,
     limit: usize,
@@ -237,12 +229,12 @@ mod tests {
         std::fs::write(base.join("b.bin"), &content).unwrap();
         std::fs::write(base.join("c.bin"), vec![9u8; 4096]).unwrap();
 
-        let groups = find_duplicates(std::slice::from_ref(&base), 1, 100);
+        let groups = find_duplicates(std::slice::from_ref(&base), 1, 100, &Progress::new());
         assert_eq!(groups.len(), 1, "应只有一组重复");
         assert_eq!(groups[0].paths.len(), 2);
         assert_eq!(groups[0].wasted(), 4096);
 
-        let large = find_large(std::slice::from_ref(&base), 1, 10);
+        let large = find_large(std::slice::from_ref(&base), 1, 10, &Progress::new());
         assert_eq!(large.len(), 3);
 
         let _ = std::fs::remove_dir_all(&base);

@@ -115,10 +115,6 @@ pub fn save_user_rules_in(home: &Path, rules: &[Rule]) -> Result<PathBuf> {
 }
 
 /// 把单条规则写入 `rules.d/<id>.json`（一规则一文件，便于逐步添加/管理）
-pub fn save_dir_rule(rule: &Rule) -> Result<PathBuf> {
-    save_dir_rule_in(&clean::thin_home(), rule)
-}
-
 pub fn save_dir_rule_in(home: &Path, rule: &Rule) -> Result<PathBuf> {
     let dir = user_rules_dir_in(home);
     std::fs::create_dir_all(&dir)?;

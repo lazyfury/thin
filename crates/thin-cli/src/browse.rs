@@ -496,7 +496,7 @@ fn spawn_load(dir: PathBuf, generation: u64) -> Loader {
     let work_dir = dir.clone();
     std::thread::spawn(move || {
         let res = (|| -> std::result::Result<Vec<Row>, String> {
-            let entries = fsutil::children_entries_progress(&work_dir, &p);
+            let entries = fsutil::children_entries(&work_dir, &p);
             let recognizer = Recognizer::load().map_err(|e| format!("{e:#}"))?;
             Ok(entries
                 .into_iter()
