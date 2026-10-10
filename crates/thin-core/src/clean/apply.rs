@@ -9,40 +9,20 @@ use crate::model::CleanItem;
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-fn available_bytes(path: &Path) -> Option<u64> {
-    let p = if path.exists() { path } else { path.parent()? };
-    let c = std::ffi::CString::new(p.to_string_lossy().into_owned()).ok()?;
-    unsafe {
-        let mut st: libc::statfs = std::mem::zeroed();
-        if libc::statfs(c.as_ptr(), &mut st) != 0 {
-            return None;
-        }
-        Some((st.f_bavail as u64).saturating_mul(st.f_bsize as u64))
-    }
-}
-
 pub(super) fn move_path(src: &Path, dst: &Path) -> Result<()> {
     if let Some(parent) = dst.parent() {
         std::fs::create_dir_all(parent).context("创建目标目录失败")?;
     }
     match std::fs::rename(src, dst) {
         Ok(()) => Ok(()),
-        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => {
-            // 跨文件系统：复制前先确认空间足够，再复制后删除
-            let need = crate::fsutil::logical_size(src);
-            if let Some(avail) = available_bytes(dst)
-                && avail < need
-            {
-                anyhow::bail!(
-                    "目标卷空间不足：需要 {}，可用 {}",
-                    crate::fmt::human(need),
-                    crate::fmt::human(avail)
-                );
-            }
-            copy_recursive(src, dst)?;
-            remove_path(src)?;
-            Ok(())
-        }
+        // 卷隔离（安全不变量 5）：目标必须与隔离区同卷。安全门已在 plan 阶段拒绝
+        // 跨卷项，故这里若仍收到 EXDEV，说明前置校验被绕过——直接拒绝，绝不回退到
+        // 「复制后删除」（那既引入直接 rm，又可能留下半成品数据）。
+        Err(e) if e.raw_os_error() == Some(libc::EXDEV) => anyhow::bail!(
+            "拒绝跨卷移动（{} -> {}）：目标必须与隔离区同卷",
+            src.display(),
+            dst.display()
+        ),
         Err(e) => {
             Err(e).with_context(|| format!("移动失败: {} -> {}", src.display(), dst.display()))
         }
@@ -116,7 +96,11 @@ fn is_app_container(path: &Path) -> bool {
     s.contains("/Library/Containers/") || s.contains("/Library/Group Containers/")
 }
 
-/// 移动失败是否因为目标带 `deny delete` ACL（EPERM / EACCES）。
+/// 移动失败是否可归因于目标带 `deny delete` ACL（EPERM / EACCES）。
+///
+/// macOS 上带 `deny delete` 的目录（`~/Library/Caches`、`~/Library/Logs`）整体
+/// rename 会返回 EPERM/EACCES。退化行为「只搬内容」本身是安全的，因此这里对这两类
+/// 错误一律按 ACL 拒绝处理；即使实际是其它权限问题，退化也不会造成数据丢失。
 fn is_delete_denied(e: &anyhow::Error) -> bool {
     e.chain().any(|c| {
         matches!(
@@ -125,31 +109,6 @@ fn is_delete_denied(e: &anyhow::Error) -> bool {
             Some(libc::EPERM) | Some(libc::EACCES)
         )
     })
-}
-
-fn copy_recursive(src: &Path, dst: &Path) -> Result<()> {
-    if src.is_dir() {
-        std::fs::create_dir_all(dst)?;
-        for entry in std::fs::read_dir(src)? {
-            let entry = entry?;
-            copy_recursive(&entry.path(), &dst.join(entry.file_name()))?;
-        }
-    } else {
-        if let Some(parent) = dst.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        std::fs::copy(src, dst)?;
-    }
-    Ok(())
-}
-
-fn remove_path(path: &Path) -> Result<()> {
-    if path.is_dir() {
-        std::fs::remove_dir_all(path)?;
-    } else if path.exists() {
-        std::fs::remove_file(path)?;
-    }
-    Ok(())
 }
 
 /// 清理方式
