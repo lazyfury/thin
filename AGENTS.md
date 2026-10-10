@@ -26,13 +26,21 @@ thin 是 macOS 系统空间扫描与安全清理的 **Rust CLI + TUI**。核心�
 ```
 crates/
   thin-core/   核心库（无 UI 依赖）
-    src/{lib,model,fsutil,probe,rules,scan,clean,protect,discover,finder,
-         apps,app_conditions,orphans,spotlight,preset,history,schedule,status,progress,proc,
-         recognize,catalog,script,platform,tree}.rs
+    src/{lib,model,fsutil,rules,scan,finder,app_conditions,orphans,script,tree}.rs
+    src/clean/{policy,plan,apply,journal,elevate}.rs   安全门/计划/执行/账本/提权（clean.rs 为 facade）
+    src/apps/{tokens,leftovers}.rs                     App token 推导 / 残留匹配（apps.rs 为列表/运行态）
+    src/sys/{probe,platform,status}.rs                 磁盘探测/平台抽象/系统状态
+    src/state/{history,preset,schedule,protect}.rs     ~/.thin 下的持久状态
+    src/analysis/{recognize,catalog,discover,spotlight}.rs  只读分析与归因
+    src/util/{proc,fmt,progress}.rs                    外部命令/格式化/进度
     rules/default.json        内置清理规则
     rules/app-leftovers.json  内置 App 残留条件表（tokens/aliases/forcePaths/require/exclude）
   thin-fs/     只读文件系统遍历/用量/查找（Rust 默认 + native 可选后端）
-  thin-cli/    前端：clap CLI (main.rs) + ratatui TUI (tui.rs) + report/browse/ls/top/treemap
+  thin-cli/    前端：clap CLI + ratatui TUI
+    src/main.rs          参数解析、Cmd 分发、公共工具
+    src/cmd/{scan,rules,clean,apps,state}.rs          子命令实现
+    src/tui.rs + tui/{render,rows}.rs                 TUI 状态机 + 渲染/树行
+    src/{report,browse,ls,top,treemap}.rs
   thin-sys/    macOS 底层能力 FFI（Swift/ThinKit）；无 Swift 工具链时降级为纯 Rust
 docs/
   agent-prompt.md   ★ 面向使用者的 agent 提示词（`thin agents` 内嵌）
@@ -131,11 +139,11 @@ Swift `dir_usage` 目前只接在 `discover` 的 `fsutil::usage` 上。
 | `thin scan` / `plan` / `apply` | `scan.rs`、`clean.rs` |
 | `thin discover` / `top` | `discover.rs`、`thin-cli/src/top.rs` |
 | `thin rules ...` | `rules.rs` + `thin-cli/src/main.rs` `cmd_rules` |
-| `thin clean` / quarantine | `clean.rs`（`--sudo` 提权见 `clean::run_elevated` / `elevated_move`） |
+| `thin clean` / quarantine | `clean.rs`（facade）+ `clean/policy.rs`、`clean/plan.rs`、`clean/apply.rs`、`clean/journal.rs`、`clean/elevate.rs`（`--sudo` 提权见 `clean::run_elevated` / `elevated_move`） |
 | `thin protect` | `protect.rs` |
 | `thin preset` / `history` / `schedule` | `preset.rs` / `history.rs` / `schedule.rs` |
 | `thin large` / `dupes` | `finder.rs` |
-| `thin apps` / `uninstall` | `apps.rs`、`app_conditions.rs`、`spotlight.rs`、`recognize.rs`（`--sudo` 提权同 clean） |
+| `thin apps` / `uninstall` | `apps.rs`（列表/运行态）、`apps/tokens.rs`、`apps/leftovers.rs`、`app_conditions.rs`、`spotlight.rs`、`recognize.rs`（`--sudo` 提权同 clean） |
 | `thin orphans` | `orphans.rs`（已卸载 App 的孤立残留，复用 `clean::plan` 安全门；`--sudo` 提权同 clean） |
 | `thin ls` / `tui` | `thin-cli/src/ls.rs` / `tui.rs`、`browse.rs`、`treemap.rs` |
 | `thin agents` | `thin-cli/src/main.rs`（内嵌 `docs/agent-prompt.md`） |

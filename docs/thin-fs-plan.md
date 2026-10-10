@@ -1,6 +1,9 @@
 # thin-fs 抽象计划 + 模块拆分体检
 
-> 状态：**S0–S4 已落地**（`crates/thin-fs` + `thin-core` 接入 + native 后端）；S5 会话缓存待做。
+> 状态：**S0–S4 已落地**（`crates/thin-fs` + `thin-core` 接入 + native 后端）；
+> **S6 已完成**（清理死代码 + `ProgressSink` 接线）；P1（`apps.rs`/`clean.rs`）与
+> P2/P3 模块拆分均已落地（`sys/`、`state/`、`analysis/`、`util/`、`thin-cli/cmd/`、`thin-cli/tui/`）；
+> S5 会话缓存**待重新设计**（曾尝试的「扫描内计量缓存」因自锁挂死已回退，见 `scan.rs` 回归测试）。
 > 目标是把散落的文件系统遍历收敛成一个独立、只读、可双后端的 crate，
 > 为后续「全盘搜索 / 更快的文件检查」打底；并顺带评估 `thin-core` / `thin-cli` 里其他值得拆分的模块。
 >
@@ -93,7 +96,6 @@ crates/thin-fs/
   Cargo.toml
   src/
     lib.rs
-    error.rs        // FsError（权限/不存在/IO），不 panic
     mount.rs        // 挂载点集合（getmntinfo 缓存）、卷边界判断
     kind.rs         // Kind / Meta / Entry
     walk.rs         // WalkOptions + Walk::run（唯一的不变量实现处）
@@ -281,7 +283,7 @@ pub struct UsageCache { /* canonical path -> (dev, ino, mtime, Usage) */ }
 | **S3** | `fsutil` 退化为 re-export 薄层；删除重复遍历代码 | ✅（仅剩 `clean::chown_recursive` 写操作） |
 | **S4** | 实现 `NativeBackend`（`getattrlistbulk`）+ `backend_parity` 对拍测试 | ✅（`--features native`） |
 | **S5** | 接入会话缓存，验证 `scan` 重复遍历次数下降 | ⏳ |
-| **S6** | 清理死代码与文档，更新 `AGENTS.md` 命令索引 | 部分（文档已更新） |
+| **S6** | 清理死代码与文档，更新 `AGENTS.md` 命令索引 | ✅（删除未用的 `FsError`/`mount_point_list`/`is_same_device`；`ProgressSink` 接线；`--no-default-features` 零 warning） |
 
 **S1 的等价性测试是安全网**：同一临时树（含符号链接、硬链接、嵌套、不可读目录）跑新旧两套实现，
 断言结果相等；此后任何一步回归都会被测出。
@@ -305,8 +307,8 @@ pub struct UsageCache { /* canonical path -> (dev, ino, mtime, Usage) */ }
 
 | 优先级 | 模块 | 行数 | 现状职责 | 拆分建议 | 风险 |
 |---|---|---|---|---|---|
-| **P1** | `thin-core/src/clean.rs` | 1548 | 保护策略 + 计划 + 执行 + 隔离区账本 + 提权 | 拆为 **crate 内子模块**：`clean/policy.rs`、`clean/plan.rs`、`clean/apply.rs`、`clean/journal.rs`、`clean/elevate.rs`，`clean.rs` 只做 facade re-export | 高（安全门核心，必须保持统一入口，逐块搬运 + 对拍） |
-| **P1** | `thin-core/src/apps.rs` | 1354 | App 列表/运行态 + token 生成 + 残留匹配 + Darwin 临时目录 + 沙盒容器 | 拆出 `apps/tokens.rs`（`*_token`/`name_tokens`）、`apps/leftovers.rs`（`find_leftovers*`/`candidate_paths`/`condition_allows`）；`apps.rs` 保留列表与运行态 | 中（残留匹配是行为主体，需快照测试） |
+| **P1** | `thin-core/src/clean.rs` | 1548 | 保护策略 + 计划 + 执行 + 隔离区账本 + 提权 | 拆为 **crate 内子模块**：`clean/policy.rs`、`clean/plan.rs`、`clean/apply.rs`、`clean/journal.rs`、`clean/elevate.rs`，`clean.rs` 只做 facade re-export | 高（安全门核心，必须保持统一入口，逐块搬运 + 对拍）——**✅ 已完成**（facade + 5 子模块，对外 API 不变，测试全绿） |
+| **P1** | `thin-core/src/apps.rs` | 1354 | App 列表/运行态 + token 生成 + 残留匹配 + Darwin 临时目录 + 沙盒容器 | 拆出 `apps/tokens.rs`（`*_token`/`name_tokens`）、`apps/leftovers.rs`（`find_leftovers*`/`candidate_paths`/`condition_allows`）；`apps.rs` 保留列表与运行态 | 中（残留匹配是行为主体，需快照测试）——**✅ 已完成**（401/242/749 三模块，测试全绿） |
 | **P2** | `probe.rs` + `platform.rs` + `status.rs` | 248+226+385 | 磁盘探测 / 平台能力 trait / CPU·内存·电池 | 收拢为 `thin-platform`（或 `thin-core/src/sys/`）：`disk.rs`、`platform.rs`、`live.rs` | 中（`Platform` trait 被多处引用，先内部模块化再考虑独立 crate） |
 | **P2** | `history.rs` + `preset.rs` + `schedule.rs` + `protect.rs` | 227+305+206+189 | 都在 `~/.thin` 下读写状态 | 收拢为 `thin-core/src/state/`（或 `thin-state` crate）：账本、预设、定时、保护名单 | 中（`preset`/`history` 依赖 `clean`，需保持单向） |
 | **P2** | `thin-cli/src/main.rs` | 2865 | 全部子命令 + 参数解析 + 格式化 | 拆为 `thin-cli/src/cmd/<sub>.rs`，`main.rs` 只保留 `Cmd` 分发与公共工具 | 低（纯搬迁，编译期即可发现遗漏） |
@@ -316,10 +318,18 @@ pub struct UsageCache { /* canonical path -> (dev, ino, mtime, Usage) */ }
 
 **说明**：
 
+- **已完成**：P1 `apps.rs`（→`apps/{tokens,leftovers}.rs`）、`clean.rs`（→`clean/{policy,plan,apply,journal,elevate}.rs`）；
+  P2 `probe/platform/status`（→`sys/`）、`history/preset/schedule/protect`（→`state/`）、
+  `main.rs`（→`cmd/{scan,rules,clean,apps,state}.rs`，main 仅留参数/分发/公共工具）；
+  P3 `tui.rs`（→`tui/{render,rows}.rs`）、`recognize/catalog/discover/spotlight`（→`analysis/`）、
+  `proc/fmt/progress`（→`util/`）。均以 re-export 保持既有路径，行为不变。
 - 只有 `thin-fs` 建议做**独立 crate**。其余优先做**crate 内子模块拆分**——不动依赖图和对外 API，
   风险最低、review 最容易。
 - `clean.rs` 虽然最该拆，但它是安全不变量 #1–#10 的落点，**必须放在 `thin-fs` 稳定之后**，
-  且拆完仍需保证「提权单一入口」「dry-run = apply」两条不破。
+  且拆完仍需保证「提权单一入口」「dry-run = apply」两条不破。**✅ 已完成**：
+  `clean.rs` 仅保留 facade re-export + 测试，安全门（`policy`/`plan`）、执行（`apply`）、
+  账本（`journal`）、提权（`elevate`）各自成模块，`plan_elevated_in` 与 `quarantine_plan_into`
+  仍是唯一提权入口。
 - `rules.rs`（781）职责相对内聚（装载/保存/展开/安全预检），**暂不拆**；展开逻辑在 S3 后会调用
   `thin-fs`，但规则语义仍在 `rules`。
 
@@ -328,7 +338,9 @@ pub struct UsageCache { /* canonical path -> (dev, ino, mtime, Usage) */ }
 ## 10. 开放问题 / 待确认
 
 1. `thin-fs` 的进度类型：复用 `thin-core::progress::Progress`（会造成 `thin-core ↔ thin-fs` 循环），
-   还是在 `thin-fs` 定义 `ProgressSink` trait、由 `thin-core` 适配？**计划采用后者（trait + 适配器）**。
+   还是在 `thin-fs` 定义 `ProgressSink` trait、由 `thin-core` 适配？**✅ 已采用后者**：
+   `thin-core::progress::Progress` 实现 `thin_fs::ProgressSink`，`finder::walk_files` 经
+   `Control::with_progress` 接线（不再手工 `touch`）。
 2. `NativeBackend` 的 `getattrlistbulk` 是纯 `libc` 还是引入 `rustix`/`nix`？**倾向纯 `libc`**，
    与现有 `probe.rs`/`fsutil.rs` 风格一致，少一个依赖。
 3. 会话缓存的失效粒度：仅按 `(dev, ino, mtime)`，还是叠加目录 mtime 链？先做简单版，按需再深化。
