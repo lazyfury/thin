@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/thin-core", "crates/thin-cli", "crates/thin-sys"]
+members = ["crates/thin-core", "crates/thin-cli", "crates/thin-fs", "crates/thin-sys"]
 
 [workspace.package]
 version = "0.1.0"
@@ -16,6 +16,7 @@ rayon = "1"
 anyhow = "1"
 libc = "0.2"
 blake3 = "1"
+thin-fs = { path = "crates/thin-fs" }
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
 crossterm = "0.28"

@@ -1,6 +1,7 @@
 # thin-fs 抽象计划 + 模块拆分体检
 
-> 状态：**计划中（未落地）**。目标是把散落的文件系统遍历收敛成一个独立、只读、可双后端的 crate，
+> 状态：**S0–S3 已落地**（`crates/thin-fs` + `thin-core` 接入）；S4 native 后端、S5 会话缓存待做。
+> 目标是把散落的文件系统遍历收敛成一个独立、只读、可双后端的 crate，
 > 为后续「全盘搜索 / 更快的文件检查」打底；并顺带评估 `thin-core` / `thin-cli` 里其他值得拆分的模块。
 >
 > 相关：[`AGENTS.md`](../AGENTS.md)（安全不变量）、[`docs/swift-ffi.md`](./swift-ffi.md)（native 能力）、
@@ -272,15 +273,15 @@ pub struct UsageCache { /* canonical path -> (dev, ino, mtime, Usage) */ }
 
 ## 7. 迁移路线（每步可独立合并 + 可回退）
 
-| 步骤 | 内容 | 验收 |
+| 步骤 | 内容 | 状态 |
 |---|---|---|
-| **S0** | 新建 `thin-fs` crate 骨架（mount/kind/walk/rust backend），接入 workspace，暂不被使用 | `cargo build -p thin-fs`、clippy 无 warning |
-| **S1** | 实现 `Walk`；用新实现重写 `dir_size`/`logical_size`/`find_files`/`find_dirs`/`walk_files`；旧实现保留做对拍 | 新增等价性测试全绿；`cargo test` 行为不变 |
-| **S2** | 合并为单遍 `usage`，去掉 `size_of`+`logical_size` 双走；修硬链接逻辑去重 | `Usage` 三口径与旧实现一致（允许 documented 差异） |
-| **S3** | `fsutil` 退化为 re-export 薄层；删除重复遍历代码 | 全仓无第二处 `WalkDir::new`（`chown` 除外，标注） |
-| **S4** | 实现 `NativeBackend`（`getattrlistbulk`）+ `backend_parity` 对拍测试 | macOS 上两后端结果一致；`--no-default-features` 仍可编 |
-| **S5** | 接入会话缓存，验证 `scan` 重复遍历次数下降 | 基准：`thin scan` 用时/系统调用数对比 |
-| **S6** | 清理死代码与文档，更新 `AGENTS.md` 命令索引 | `cargo test` + `clippy --all-targets` + `fmt` 全绿 |
+| **S0** | 新建 `thin-fs` crate 骨架（mount/kind/walk/rust backend），接入 workspace | ✅ |
+| **S1** | 实现 `Walk`；用新实现重写 `dir_size`/`logical_size`/`find_files`/`find_dirs`/`walk_files` | ✅（含不变量 + 等价测试） |
+| **S2** | 合并为单遍 `usage`，去掉 `size_of`+`logical_size` 双走；修硬链接逻辑去重 | ✅ |
+| **S3** | `fsutil` 退化为 re-export 薄层；删除重复遍历代码 | ✅（仅剩 `clean::chown_recursive` 写操作） |
+| **S4** | 实现 `NativeBackend`（`getattrlistbulk`）+ `backend_parity` 对拍测试 | ⏳ |
+| **S5** | 接入会话缓存，验证 `scan` 重复遍历次数下降 | ⏳ |
+| **S6** | 清理死代码与文档，更新 `AGENTS.md` 命令索引 | 部分（文档已更新） |
 
 **S1 的等价性测试是安全网**：同一临时树（含符号链接、硬链接、嵌套、不可读目录）跑新旧两套实现，
 断言结果相等；此后任何一步回归都会被测出。

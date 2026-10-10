@@ -87,12 +87,7 @@ impl Platform for LibcPlatform {
     }
 
     fn dir_usage(&self, path: &Path) -> Option<Usage> {
-        Some(Usage {
-            allocated: crate::fsutil::size_of(path),
-            logical: crate::fsutil::logical_size(path),
-            dataless: 0,
-            files: 0,
-        })
+        Some(crate::fsutil::rust_usage(path))
     }
 
     fn app_sandbox_info(&self, _app: &Path) -> Option<SandboxInfo> {

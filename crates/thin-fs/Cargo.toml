@@ -1,0 +1,17 @@
+[package]
+name = "thin-fs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "thin 的只读文件系统遍历、用量聚合与查找"
+
+[features]
+# 默认纯 Rust（walkdir + std::fs），永远可用。
+default = []
+# macOS getattrlistbulk 批量后端（可选，缺失时自动回退 Rust）。
+native = []
+
+[dependencies]
+walkdir.workspace = true
+libc.workspace = true

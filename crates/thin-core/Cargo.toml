@@ -20,4 +20,5 @@ rayon.workspace = true
 anyhow.workspace = true
 libc.workspace = true
 blake3.workspace = true
+thin-fs.workspace = true
 thin-sys = { path = "../thin-sys", optional = true }

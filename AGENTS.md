@@ -31,6 +31,7 @@ crates/
          recognize,catalog,script,platform,tree}.rs
     rules/default.json        内置清理规则
     rules/app-leftovers.json  内置 App 残留条件表（tokens/aliases/forcePaths/require/exclude）
+  thin-fs/     只读文件系统遍历/用量/查找（Rust 默认 + native 可选后端）
   thin-cli/    前端：clap CLI (main.rs) + ratatui TUI (tui.rs) + report/browse/ls/top/treemap
   thin-sys/    macOS 底层能力 FFI（Swift/ThinKit）；无 Swift 工具链时降级为纯 Rust
 docs/
@@ -72,7 +73,9 @@ cargo build -p thin-core --no-default-features
   `rules/app-leftovers.json`（+ 用户 `~/.thin/app-leftovers.d/*.json`，按 `bundleId` 覆盖），
   而不是在 `apps.rs` 里硬编码 `APP_HINTS`。
 - **匹配器三类**：`path`、`findDir`（目录名 + `requireSibling` 标记 + `maxDepth`）、
-  `script`（动态枚举，必须带 `review.hash` 脚本风险审查，见 `script.rs`）。
+  `findFile`（扩展名/后缀 + `minSize`）、`script`（动态枚举，必须带 `review.hash` 脚本风险审查，见 `script.rs`）。
+- **文件系统遍历统一走 `thin-fs`**：不跨卷、不跟符号链接、深度/取消/进度等不变量只在该 crate 实现一次；
+  `fsutil` 只做薄封装。`thin-fs` **只读**，不得引入删除/移动/提权。
 - **外部命令必须带超时**：`tmutil`/`plutil`/`pgrep`/`mount`/`date`/`swift` 等一律加超时，避免挂死。
 - **核算诚实**：体积统计要排除嵌套重复、跨卷、受保护项，不能虚高。
 

@@ -6,7 +6,6 @@ use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use walkdir::WalkDir;
 
 /// 遍历时跳过的目录（避免 iCloud 等网络卷、系统索引目录）
 fn excluded(path: &Path) -> bool {
@@ -51,42 +50,32 @@ fn walk_files(roots: &[PathBuf], min_size: u64, progress: Option<&Progress>) -> 
             }
             continue;
         }
-        let root_dev = crate::fsutil::device_of(root);
-        let mut it = WalkDir::new(root).follow_links(false).into_iter();
-        while let Some(entry) = it.next() {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
+        let walk = thin_fs::Walk::new(thin_fs::WalkOptions::default());
+        walk.run(std::slice::from_ref(root), &thin_fs::Control::none(), |e| {
+            let Some(m) = e.meta else {
+                return thin_fs::Visit::Continue;
             };
-            if entry.depth() == 0 {
-                continue;
-            }
-            let md = match entry.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if md.is_dir() {
-                if excluded(entry.path()) {
-                    it.skip_current_dir();
-                    continue;
+            match m.kind {
+                thin_fs::Kind::Dir => {
+                    if excluded(e.path) {
+                        return thin_fs::Visit::Skip;
+                    }
                 }
-                if Some(md.dev()) != root_dev || crate::fsutil::is_mount_point(entry.path()) {
-                    it.skip_current_dir();
+                thin_fs::Kind::File if m.size >= min_size => {
+                    out.push(Found {
+                        path: e.path.to_path_buf(),
+                        size: m.size,
+                        alloc: m.alloc,
+                        inode: (m.dev, m.ino),
+                    });
+                    if let Some(p) = progress {
+                        p.touch();
+                    }
                 }
-                continue;
+                _ => {}
             }
-            if md.file_type().is_file() && md.len() >= min_size {
-                out.push(Found {
-                    path: entry.path().to_path_buf(),
-                    size: md.len(),
-                    alloc: md.blocks().saturating_mul(512),
-                    inode: (md.dev(), md.ino()),
-                });
-                if let Some(p) = progress {
-                    p.touch();
-                }
-            }
-        }
+            thin_fs::Visit::Continue
+        });
     }
     out
 }

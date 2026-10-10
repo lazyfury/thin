@@ -741,7 +741,16 @@ dependencies = [
  "rayon",
  "serde",
  "serde_json",
+ "thin-fs",
  "thin-sys",
+ "walkdir",
+]
+
+[[package]]
+name = "thin-fs"
+version = "0.1.0"
+dependencies = [
+ "libc",
  "walkdir",
 ]
 

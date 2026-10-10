@@ -1,39 +1,9 @@
 use rayon::prelude::*;
-use std::collections::HashSet;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use walkdir::WalkDir;
 
-/// 系统挂载点集合（进程内缓存，只取一次）。
-///
-/// 注意：APFS 各卷共享同一个 `st_dev`，因此**不能用设备号区分卷**，必须靠挂载点，
-/// 否则 `/System` 会把 `/System/Volumes/Data`（数据卷）整个算进去、与 `/Users` 重复。
-fn mount_points() -> &'static HashSet<PathBuf> {
-    static MOUNTS: OnceLock<HashSet<PathBuf>> = OnceLock::new();
-    MOUNTS.get_or_init(|| {
-        let mut set = HashSet::new();
-        unsafe {
-            let mut buf: *mut libc::statfs = std::ptr::null_mut();
-            let n = libc::getmntinfo(&mut buf, libc::MNT_NOWAIT);
-            if n > 0 && !buf.is_null() {
-                for i in 0..n as isize {
-                    let fs = &*buf.offset(i);
-                    let mp = std::ffi::CStr::from_ptr(fs.f_mntonname.as_ptr());
-                    if let Ok(s) = mp.to_str() {
-                        set.insert(PathBuf::from(s));
-                    }
-                }
-            }
-        }
-        set
-    })
-}
-
-/// 路径是否是挂载点（另一卷的挂载根）。用于避免跨卷统计/遍历。
-pub fn is_mount_point(path: &Path) -> bool {
-    mount_points().contains(path)
-}
+/// 遍历/挂载点能力来自 [`thin_fs`]（不变量集中实现），这里保持原有 API 形状。
+pub use thin_fs::{device_of, is_mount_point};
 
 /// 展开开头的 ~ 为用户主目录
 pub fn expand(path: &str) -> Option<PathBuf> {
@@ -56,9 +26,16 @@ pub fn canonicalize_or(path: &Path) -> PathBuf {
     path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// 取路径所在设备号（用于避免跨越挂载点）
-pub fn device_of(path: &Path) -> Option<u64> {
-    std::fs::metadata(path).ok().map(|m| m.dev())
+/// 目录遍历选项：默认不跟符号链接、不跨卷、不限深度。
+fn walk_opts(max_depth: Option<usize>) -> thin_fs::WalkOptions {
+    thin_fs::WalkOptions {
+        max_depth,
+        ..Default::default()
+    }
+}
+
+fn no_ctl() -> thin_fs::Control<'static> {
+    thin_fs::Control::none()
 }
 
 /// 类似 `du -sh`：统计目录实际占用，且不跨越文件系统边界。
@@ -67,39 +44,7 @@ pub fn device_of(path: &Path) -> Option<u64> {
 /// - 按 (dev, inode) 去重，硬链接不会重复计算
 /// - 已知近似：APFS 克隆共享的块无法在此层面拆分
 pub fn dir_size(path: &Path) -> u64 {
-    let root_dev = match device_of(path) {
-        Some(d) => d,
-        None => return 0,
-    };
-
-    let mut total: u64 = 0;
-    // 按 (设备号, inode) 去重，避免硬链接被重复计算（与 du 行为一致）
-    let mut seen: HashSet<(u64, u64)> = HashSet::new();
-    let mut it = WalkDir::new(path).follow_links(false).into_iter();
-    while let Some(entry) = it.next() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if entry.depth() == 0 {
-            continue;
-        }
-        let md = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if md.is_dir() {
-            // 遇到别的设备或挂载点（APFS 各卷共享 st_dev，故必须查挂载点）则不下钻
-            if md.dev() != root_dev || is_mount_point(entry.path()) {
-                it.skip_current_dir();
-            }
-            continue;
-        }
-        if md.file_type().is_file() && seen.insert((md.dev(), md.ino())) {
-            total = total.saturating_add(md.blocks().saturating_mul(512));
-        }
-    }
-    total
+    thin_fs::usage(path, &walk_opts(None), &no_ctl()).allocated
 }
 
 /// 路径总大小：文件取实际分配块，目录递归求和
@@ -116,37 +61,7 @@ pub fn size_of(path: &Path) -> u64 {
 /// 与 [`size_of`]（按实际分配块）不同，用于跨卷复制前的空间预估，
 /// 因为复制会把稀疏文件的空洞也写成实心。
 pub fn logical_size(path: &Path) -> u64 {
-    if let Ok(m) = std::fs::metadata(path)
-        && m.is_file()
-    {
-        return m.len();
-    }
-    let root_dev = device_of(path);
-    let mut total: u64 = 0;
-    let mut it = WalkDir::new(path).follow_links(false).into_iter();
-    while let Some(entry) = it.next() {
-        let entry = match entry {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if entry.depth() == 0 {
-            continue;
-        }
-        let md = match entry.metadata() {
-            Ok(m) => m,
-            Err(_) => continue,
-        };
-        if md.is_dir() {
-            if (root_dev.is_some() && Some(md.dev()) != root_dev) || is_mount_point(entry.path()) {
-                it.skip_current_dir();
-            }
-            continue;
-        }
-        if md.file_type().is_file() {
-            total = total.saturating_add(md.len());
-        }
-    }
-    total
+    thin_fs::usage(path, &walk_opts(None), &no_ctl()).logical
 }
 
 /// 路径用量：实际占用 + 逻辑大小 + iCloud 占位。
@@ -158,20 +73,26 @@ pub struct Usage {
     pub logical: u64,
     /// iCloud 未下载占位字节（本地不占空间）
     pub dataless: u64,
-    /// 文件数（Swift 后端去重硬链接；回退为 0）
+    /// 文件数（硬链接去重；纯 Rust 后端也提供）
     pub files: u64,
 }
 
-/// 统一的路径用量查询：优先平台后端（含 iCloud 感知），缺失时回退纯 Rust 遍历。
+/// 纯 Rust 单遍用量（无 iCloud 占位识别）。
+pub(crate) fn rust_usage(path: &Path) -> Usage {
+    let u = thin_fs::usage(path, &walk_opts(None), &no_ctl());
+    Usage {
+        allocated: u.allocated,
+        logical: u.logical,
+        dataless: 0,
+        files: u.files,
+    }
+}
+
+/// 统一的路径用量查询：优先平台后端（含 iCloud 感知），缺失时回退纯 Rust 单遍遍历。
 pub fn usage(path: &Path) -> Usage {
     crate::platform::platform()
         .dir_usage(path)
-        .unwrap_or_else(|| Usage {
-            allocated: size_of(path),
-            logical: logical_size(path),
-            dataless: 0,
-            files: 0,
-        })
+        .unwrap_or_else(|| rust_usage(path))
 }
 
 /// 列出目录下各直接子项的大小（降序，并行统计）
@@ -315,59 +236,11 @@ pub fn find_files(
     max_depth: Option<usize>,
     min_size: u64,
 ) -> Vec<PathBuf> {
-    let mut found = Vec::new();
     if extensions.is_empty() {
-        return found;
+        return Vec::new();
     }
-    let max = max_depth.unwrap_or(6);
-    let exts: Vec<String> = extensions
-        .iter()
-        .map(|e| format!(".{}", e.trim().trim_start_matches('.').to_ascii_lowercase()))
-        .filter(|e| e.len() > 1)
-        .collect();
-    if exts.is_empty() {
-        return found;
-    }
-
-    for root in roots {
-        if !root.is_dir() {
-            continue;
-        }
-        let root_dev = device_of(root);
-        let mut it = WalkDir::new(root)
-            .max_depth(max)
-            .follow_links(false)
-            .into_iter();
-        while let Some(entry) = it.next() {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if entry.depth() == 0 {
-                continue;
-            }
-            let md = match entry.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if md.is_dir() {
-                if (root_dev.is_some() && Some(md.dev()) != root_dev)
-                    || is_mount_point(entry.path())
-                {
-                    it.skip_current_dir();
-                }
-                continue;
-            }
-            if !md.file_type().is_file() || md.len() < min_size {
-                continue;
-            }
-            let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            if exts.iter().any(|ext| name.ends_with(ext.as_str())) {
-                found.push(entry.path().to_path_buf());
-            }
-        }
-    }
-    found
+    let opts = walk_opts(Some(max_depth.unwrap_or(6)));
+    thin_fs::query::find_files(roots, extensions, opts, min_size, &no_ctl())
 }
 
 /// 在 roots 下查找名为 dir_name 的目录（限定深度），可选要求同级存在某个文件。
@@ -377,50 +250,97 @@ pub fn find_dirs(
     require_sibling: Option<&str>,
     max_depth: Option<usize>,
 ) -> Vec<PathBuf> {
-    let mut found = Vec::new();
-    let max = max_depth.unwrap_or(6);
+    let opts = walk_opts(Some(max_depth.unwrap_or(6)));
+    thin_fs::query::find_dir(roots, dir_name, require_sibling, opts, &no_ctl())
+}
 
-    for root in roots {
-        if !root.is_dir() {
-            continue;
-        }
-        let mut it = WalkDir::new(root)
-            .max_depth(max)
-            .follow_links(false)
-            .into_iter();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::os::unix::fs::MetadataExt;
 
-        while let Some(entry) = it.next() {
-            let entry = match entry {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            if entry.depth() == 0 || !entry.file_type().is_dir() {
-                continue;
-            }
-            // 不跨卷查找（挂载点/其他 APFS 卷）
-            if is_mount_point(entry.path()) {
-                it.skip_current_dir();
-                continue;
-            }
-            if entry.file_name() != dir_name {
-                continue;
-            }
-            // 可选约束：同级必须存在某个标志文件（如 Cargo.toml）
-            if let Some(sib) = require_sibling {
-                let ok = entry
-                    .path()
-                    .parent()
-                    .map(|p| p.join(sib).exists())
-                    .unwrap_or(false);
-                if !ok {
-                    it.skip_current_dir();
-                    continue;
-                }
-            }
-            found.push(entry.path().to_path_buf());
-            // 命中后不再下钻，避免重复统计
-            it.skip_current_dir();
-        }
+    fn tmp(tag: &str) -> PathBuf {
+        let base =
+            std::env::temp_dir().join(format!("thin-core-fsutil-{}-{tag}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        base
     }
-    found
+
+    #[test]
+    fn size_matches_manual_and_dedupes_hardlinks() {
+        let base = tmp("size");
+        fs::create_dir_all(base.join("sub")).unwrap();
+        fs::write(base.join("a"), vec![0u8; 10_000]).unwrap();
+        fs::write(base.join("sub/b"), vec![0u8; 20_000]).unwrap();
+        fs::hard_link(base.join("a"), base.join("a2")).unwrap();
+
+        // 实占：按 inode 去重（a 与 a2 同 inode，只算一次）
+        let unique_alloc: u64 = [base.join("a"), base.join("sub/b")]
+            .iter()
+            .map(|p| fs::metadata(p).unwrap().blocks().saturating_mul(512))
+            .sum();
+        assert_eq!(dir_size(&base), unique_alloc);
+        assert_eq!(size_of(&base), unique_alloc);
+
+        // 逻辑大小：不去重，硬链接重复计入
+        assert_eq!(logical_size(&base), 40_000);
+
+        // 单文件：size_of 取实际块，logical_size 取 len
+        assert_eq!(
+            size_of(&base.join("a")),
+            fs::metadata(base.join("a")).unwrap().blocks() * 512
+        );
+        assert_eq!(logical_size(&base.join("a")), 10_000);
+
+        // usage：单遍聚合
+        let u = rust_usage(&base);
+        assert_eq!(u.allocated, unique_alloc);
+        assert_eq!(u.logical, 40_000);
+        assert_eq!(u.files, 2);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn find_files_respects_suffix_depth_and_size() {
+        let base = tmp("find-files");
+        fs::create_dir_all(base.join("nested")).unwrap();
+        fs::write(base.join("App.dmg"), vec![0u8; 2 * 1024 * 1024]).unwrap();
+        fs::write(base.join("nested/Archive.ZIP"), vec![0u8; 2 * 1024 * 1024]).unwrap();
+        fs::write(base.join("tiny.zip"), b"x").unwrap();
+        fs::write(base.join("keep.txt"), b"x").unwrap();
+
+        let got = find_files(
+            std::slice::from_ref(&base),
+            &["dmg".to_string(), "zip".to_string()],
+            Some(3),
+            1024,
+        );
+        assert_eq!(got.len(), 2, "tiny.zip 因低于 min_size 被过滤");
+        assert!(got.iter().any(|p| p.ends_with("App.dmg")));
+        assert!(got.iter().any(|p| p.ends_with("Archive.ZIP")));
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn find_dirs_requires_sibling() {
+        let base = tmp("find-dirs");
+        fs::create_dir_all(base.join("proj/target")).unwrap();
+        fs::create_dir_all(base.join("junk/target")).unwrap();
+        fs::write(base.join("proj/Cargo.toml"), b"").unwrap();
+
+        let got = find_dirs(
+            std::slice::from_ref(&base),
+            "target",
+            Some("Cargo.toml"),
+            Some(4),
+        );
+        assert_eq!(got.len(), 1);
+        assert!(got[0].ends_with("proj/target"));
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }
