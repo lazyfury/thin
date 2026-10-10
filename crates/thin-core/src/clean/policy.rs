@@ -234,3 +234,21 @@ pub fn protection_reason(path: &Path) -> Option<String> {
     let home = user_home();
     protection_reason_in(path, home.as_deref())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 防止 `HOME_BARE_ROOTS` 与 `is_sensitive_dir_name` 的名单漂移：
+    /// 后者用于 `findDir` 规则预检，必须覆盖前者，否则可能放过「按名字发现
+    /// 并整体清理用户个人目录」的危险规则。
+    #[test]
+    fn sensitive_names_cover_home_bare_roots() {
+        for name in HOME_BARE_ROOTS {
+            assert!(
+                is_sensitive_dir_name(name).is_some(),
+                "HOME_BARE_ROOTS 的 {name} 未出现在 is_sensitive_dir_name 名单中"
+            );
+        }
+    }
+}
