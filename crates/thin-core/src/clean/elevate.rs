@@ -101,6 +101,19 @@ pub fn elevated_move(manifest: &Path, user_home: &Path) -> Result<Journal> {
     // 保护对调用者仍然生效。
     // SAFETY: 这是提权子进程入口，此刻尚未启动其它线程，修改环境变量不会竞争。
     unsafe { std::env::set_var("HOME", user_home) };
+    // 清单写在用户可写目录，来源与内容都不可信：拒绝符号链接，并要求属主为调用者，
+    // 防止提权窗口内被替换（内容仍会在下方重过安全门，这里是纵深防御）。
+    let md = std::fs::symlink_metadata(manifest).context("读取提权清单属性失败")?;
+    if !md.is_file() {
+        anyhow::bail!("提权清单不是普通文件，拒绝执行");
+    }
+    let home_md = std::fs::metadata(user_home).context("读取用户主目录属性失败")?;
+    {
+        use std::os::unix::fs::MetadataExt;
+        if md.uid() != home_md.uid() {
+            anyhow::bail!("提权清单属主不是调用者，拒绝执行");
+        }
+    }
     let raw = std::fs::read(manifest).context("读取提权清单失败")?;
     let items: Vec<CleanItem> = serde_json::from_slice(&raw).context("解析提权清单失败")?;
     if items.is_empty() {
