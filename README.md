@@ -201,6 +201,17 @@ thin protect remove .             # 解除
 
 </details>
 
+<details open>
+<summary><b>安装 / 更新</b></summary>
+
+```bash
+thin update                       # 通过 cargo 从 git 安装/更新 thin 自身（等价 cargo install --git … thin-cli --force）
+thin update --dry-run             # 只打印将执行的命令
+thin update --git <url>           # 从指定仓库安装
+```
+
+</details>
+
 <details>
 <summary><b>大文件 / 重复文件 / App 管理</b></summary>
 

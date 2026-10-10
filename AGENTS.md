@@ -147,6 +147,7 @@ Swift `dir_usage` 目前只接在 `discover` 的 `fsutil::usage` 上。
 | `thin orphans` | `orphans.rs`（已卸载 App 的孤立残留，复用 `clean::plan` 安全门；`--sudo` 提权同 clean） |
 | `thin ls` / `tui` | `thin-cli/src/ls.rs` / `tui.rs`、`browse.rs`、`treemap.rs` |
 | `thin agents` | `thin-cli/src/main.rs`（内嵌 `docs/agent-prompt.md`） |
+| `thin update` | `thin-cli/src/cmd/update.rs`（`cargo install --git … thin-cli --force`） |
 
 ---
 

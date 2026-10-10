@@ -24,6 +24,7 @@ use cmd::clean::{cmd_clean, cmd_protect, cmd_quarantine};
 use cmd::rules::cmd_rules;
 use cmd::scan::{cmd_apply, cmd_discover, cmd_dupes, cmd_large, cmd_plan, cmd_scan};
 use cmd::state::{cmd_history, cmd_preset, cmd_schedule};
+use cmd::update::cmd_update;
 
 #[derive(Parser)]
 #[command(
@@ -103,9 +104,22 @@ enum Cmd {
     /// Agent 工作流：打印内嵌的用户提示词（探索 → 写规则 → 可恢复清理）
     Agents,
 
+    /// 通过 cargo 从 git 安装/更新 thin 自身
+    Update(UpdateArgs),
+
     /// 内部：提权子进程入口，供 `clean --sudo` 通过系统授权框调用（不面向用户）
     #[command(hide = true, name = "__elevated-move")]
     ElevatedMove(ElevatedMoveArgs),
+}
+
+#[derive(clap::Args)]
+struct UpdateArgs {
+    /// 从指定 git 仓库安装（默认官方仓库）
+    #[arg(long, default_value = "https://github.com/lazyfury/thin.git")]
+    git: String,
+    /// 只打印将执行的命令，不实际安装
+    #[arg(long)]
+    dry_run: bool,
 }
 
 #[derive(clap::Args)]
@@ -648,6 +662,7 @@ fn main() -> Result<()> {
         Cmd::Schedule(args) => cmd_schedule(args)?,
         Cmd::Protect(args) => cmd_protect(args)?,
         Cmd::Agents => print_agents(),
+        Cmd::Update(args) => cmd_update(args)?,
         Cmd::ElevatedMove(args) => cmd_elevated_move(args)?,
     }
     Ok(())

@@ -5,3 +5,4 @@ pub mod clean;
 pub mod rules;
 pub mod scan;
 pub mod state;
+pub mod update;
