@@ -41,6 +41,16 @@ pub struct DirUsage {
     pub dataless_count: u64,
 }
 
+/// 目录里 iCloud 未下载占位（按需查询，逐文件 XPC，较慢）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub struct DirDataless {
+    /// 未下载占位的逻辑字节（本地不占空间）
+    pub dataless: u64,
+    /// 未下载占位的文件数
+    #[serde(rename = "datalessCount", default)]
+    pub dataless_count: u64,
+}
+
 /// App 沙盒信息（来自代码签名 entitlements）。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -99,9 +109,15 @@ pub fn full_disk_access() -> Option<bool> {
     imp::full_disk_access()
 }
 
-/// 批量统计目录用量（Swift 枚举器一次走完）；后端不可用或路径不存在时返回 `None`。
+/// 批量统计目录用量（Swift 枚举器一次走完，**不含 iCloud 云占位**）；
+/// 后端不可用或路径不存在时返回 `None`。
 pub fn dir_usage(path: &Path) -> Option<DirUsage> {
     imp::dir_usage(path)
+}
+
+/// 按需统计目录里 iCloud 未下载占位（逐文件查询，较慢）；后端不可用时返回 `None`。
+pub fn dir_dataless(path: &Path) -> Option<DirDataless> {
+    imp::dir_dataless(path)
 }
 
 /// 读取 .app 的沙盒信息（bundle id / 是否沙盒 / group id / iCloud 容器 / team id）。
@@ -121,7 +137,9 @@ pub fn trash_item(path: &Path) -> Option<bool> {
 
 #[cfg(all(target_os = "macos", thin_sys_swift))]
 mod imp {
-    use super::{ABI_VERSION, AppSandboxInfo, DirUsage, SandboxContainer, VolumeCapacity};
+    use super::{
+        ABI_VERSION, AppSandboxInfo, DirDataless, DirUsage, SandboxContainer, VolumeCapacity,
+    };
     use std::ffi::{CStr, CString};
     use std::os::raw::c_char;
     use std::path::Path;
@@ -141,6 +159,7 @@ mod imp {
         fn thin_bundle_id(path: *const c_char) -> *mut c_char;
         fn thin_full_disk_access() -> i32;
         fn thin_dir_usage_json(path: *const c_char) -> *mut c_char;
+        fn thin_dir_dataless_json(path: *const c_char) -> *mut c_char;
         fn thin_app_sandbox_info_json(path: *const c_char) -> *mut c_char;
         fn thin_sandbox_containers_json(home: *const c_char) -> *mut c_char;
         fn thin_trash_item(path: *const c_char) -> i32;
@@ -247,6 +266,23 @@ mod imp {
         }
     }
 
+    pub fn dir_dataless(path: &Path) -> Option<DirDataless> {
+        if !backend_available() {
+            return None;
+        }
+        let c = CString::new(path.to_string_lossy().as_bytes()).ok()?;
+        // SAFETY: 返回 `strdup` 的 JSON C 字符串或 NULL，所有权随后归还。
+        unsafe {
+            let p = thin_dir_dataless_json(c.as_ptr());
+            if p.is_null() {
+                return None;
+            }
+            let s = CStr::from_ptr(p).to_string_lossy().into_owned();
+            thin_string_free(p);
+            serde_json::from_str(&s).ok()
+        }
+    }
+
     pub fn app_sandbox_info(app: &Path) -> Option<AppSandboxInfo> {
         if !backend_available() {
             return None;
@@ -293,7 +329,7 @@ mod imp {
 
 #[cfg(not(all(target_os = "macos", thin_sys_swift)))]
 mod imp {
-    use super::{AppSandboxInfo, DirUsage, SandboxContainer, VolumeCapacity};
+    use super::{AppSandboxInfo, DirDataless, DirUsage, SandboxContainer, VolumeCapacity};
     use std::path::Path;
 
     pub fn backend_available() -> bool {
@@ -321,6 +357,10 @@ mod imp {
     }
 
     pub fn dir_usage(_path: &Path) -> Option<DirUsage> {
+        None
+    }
+
+    pub fn dir_dataless(_path: &Path) -> Option<DirDataless> {
         None
     }
 
@@ -395,6 +435,22 @@ mod tests {
         assert!(u.logical >= 12288, "逻辑至少 12KB，实得 {}", u.logical);
         assert!(u.allocated > 0);
         assert_eq!(u.dataless, 0, "本地文件不应算作云占位");
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn dir_dataless_zero_for_local_tree() {
+        if !backend_available() {
+            return;
+        }
+        let base = std::env::temp_dir().join(format!("thin-dataless-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("a")).unwrap();
+        std::fs::write(base.join("a/x.bin"), vec![0u8; 4096]).unwrap();
+
+        let d = dir_dataless(&base).expect("应可查询云占位");
+        assert_eq!(d.dataless, 0, "本地文件不应算作云占位");
+        assert_eq!(d.dataless_count, 0);
         let _ = std::fs::remove_dir_all(&base);
     }
 

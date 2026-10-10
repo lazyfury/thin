@@ -51,6 +51,13 @@ pub trait Platform: Send + Sync {
     /// 路径用量（实际占用 / 逻辑 / iCloud 占位）；`None` 表示无法统计。
     fn dir_usage(&self, path: &Path) -> Option<Usage>;
 
+    /// 目录里 iCloud 未下载占位 `(逻辑字节, 文件数)`；默认不支持（`None`）。
+    ///
+    /// 与 [`Platform::dir_usage`] 分开：逐文件查询 iCloud 状态较慢，仅按需调用。
+    fn dir_dataless(&self, _path: &Path) -> Option<(u64, u64)> {
+        None
+    }
+
     /// 读取 .app 的沙盒信息；`None` 表示无法读取。
     fn app_sandbox_info(&self, app: &Path) -> Option<SandboxInfo>;
 
@@ -152,6 +159,11 @@ impl Platform for SwiftPlatform {
             });
         }
         LibcPlatform.dir_usage(path)
+    }
+
+    fn dir_dataless(&self, path: &Path) -> Option<(u64, u64)> {
+        let d = thin_sys::dir_dataless(path)?;
+        Some((d.dataless, d.dataless_count))
     }
 
     fn app_sandbox_info(&self, app: &Path) -> Option<SandboxInfo> {

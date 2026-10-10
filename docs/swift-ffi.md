@@ -159,6 +159,11 @@ pub struct MacPlatform;    // thin-sys 包装的 Swift 后端（feature = "swift
   dataless=235.1 MB；`discover` 正确把 `com~apple~CloudDocs` 的 197 MB 标为「云占位」且不计入合计。
 - **scan 热路径不替换**（有意取舍）：`st_blocks` 已等价于 allocated 且更快；`usage()` 保留给需要
   iCloud/逻辑体积的场景（discover、未来面板）。ABI 升至 3。
+- ⚠️ **性能修复（后续）**：`isUbiquitousItem` / `ubiquitousItemDownloadingStatus` 是逐文件 XPC，
+  实测 2 万文件目录从 0.09s 拖到 ~1.0s（~10×）；且每文件额外的 `volumeIdentifierKey` 校验也有开销。
+  现已从 `thin_dir_usage_json` 热路径移除（只留 `fileResourceIdentifier` 做硬链接去重 + `isVolume` 跨卷跳过），
+  云占位改为按需的 `thin_dir_dataless_json`（`thin discover --icloud`）。热身后 1.3–1.6s → 0.13s。
+  对比方式见 `AGENTS.md`（`THIN_BACKEND=libc`、`thin-fs/examples/fs-usage.rs`）。
 - objc2 备选：`getattrlistbulk` 可直接用 Rust syscall，未必需要 Swift；iCloud 状态仍需 Foundation。
 
 ### M3 · 卸载与删除语义 ✅（NSFileCoordinator 暂缓）

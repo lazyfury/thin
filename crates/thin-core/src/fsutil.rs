@@ -95,6 +95,13 @@ pub fn usage(path: &Path) -> Usage {
         .unwrap_or_else(|| rust_usage(path))
 }
 
+/// 目录里 iCloud 未下载占位 `(逻辑字节, 文件数)`；后端不支持时返回 `None`。
+///
+/// **按需调用**：逐文件查询 iCloud 状态较慢，不要放进默认热路径。
+pub fn dir_dataless(path: &Path) -> Option<(u64, u64)> {
+    crate::platform::platform().dir_dataless(path)
+}
+
 /// 列出目录下各直接子项的大小（降序，并行统计）
 pub fn children_sizes(root: &Path) -> Vec<(PathBuf, u64)> {
     children_sizes_progress(root, &crate::progress::Progress::new())

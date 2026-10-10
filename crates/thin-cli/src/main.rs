@@ -338,6 +338,9 @@ struct DiscoverArgs {
     /// 输出 JSON
     #[arg(long)]
     json: bool,
+    /// 额外统计 iCloud 云占位（逐文件查询，较慢）
+    #[arg(long)]
+    icloud: bool,
 }
 
 #[derive(clap::Args)]
@@ -969,7 +972,7 @@ fn cmd_discover(args: DiscoverArgs) -> Result<()> {
     let min = parse_size_arg(&args.min)?;
     let catalog = rules::load()?;
     eprintln!("分析 {} …", root.display());
-    let report = discover::analyze(&root, min, &catalog);
+    let report = discover::analyze_opts(&root, min, &catalog, args.icloud);
 
     if args.json {
         let findings: Vec<_> = report

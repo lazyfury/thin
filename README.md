@@ -127,6 +127,7 @@ thin scan --preset dev --root .   # 只看当前项目下的开发产物（targe
 thin scan --tree                  # 按文件夹合并成树形展示（只读）
 thin top ~/Library --limit 20     # 某目录下最大的子项（类似 du -sh | sort -rh）
 thin discover --min 1G            # 找出「未被规则覆盖」的大目录
+thin discover --icloud            # 额外统计 iCloud 云占位（逐文件查询，较慢）
 thin discover --json              # 机器可读
 
 # 浏览与学习：给目录标注用途（这是什么 / 能不能删）
@@ -434,8 +435,10 @@ crates/
     src/{lib,model,fsutil,probe,rules,scan,clean,protect,discover,finder,
          apps,preset,history,schedule,status,progress,proc,fmt}.rs
     rules/default.json
+  thin-fs/       只读文件系统遍历/用量/查找（Rust 默认 + macOS native 可选后端）
   thin-cli/      前端：CLI (clap) + TUI (ratatui)
     src/{main,report,top,tui,treemap}.rs
+  thin-sys/      macOS 底层能力 FFI（Swift/ThinKit）；无 Swift 工具链时降级为纯 Rust
 ```
 
 分层目的：核心逻辑可被 CLI、TUI、未来的 SwiftUI GUI 或测试复用。
